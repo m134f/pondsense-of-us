@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-label="Red Tilapia">
+  <rect width="320" height="220" rx="32" fill="#fff1f2"/>
+  <ellipse cx="150" cy="110" rx="86" ry="44" fill="#fb7185"/>
+  <path d="M220 110l58-44v88z" fill="#e11d48"/>
+  <path d="M111 74c28 24 58 24 89 0-13-17-74-20-89 0z" fill="#fda4af"/>
+  <path d="M113 146c28-22 58-22 87 0-18 17-67 18-87 0z" fill="#f43f5e"/>
+  <circle cx="91" cy="101" r="10" fill="#0f172a"/>
+  <circle cx="94" cy="98" r="3" fill="#fff"/>
+  <path d="M65 116c15 18 39 23 64 13" stroke="#be123c" stroke-width="7" stroke-linecap="round" fill="none"/>
+  <text x="160" y="190" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#be123c">Red Tilapia</text>
+</svg>

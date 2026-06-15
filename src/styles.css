@@ -1,0 +1,222 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    @apply bg-slate-100 text-slate-900 antialiased;
+  }
+
+  button,
+  input {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .card {
+    @apply rounded-2xl border border-slate-200 bg-white shadow-card;
+  }
+
+  .soft-button {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-700 transition hover:border-teal-200 hover:bg-teal-50 hover:text-teal-700;
+  }
+
+  .primary-button {
+    @apply inline-flex items-center justify-center gap-2 rounded-xl bg-teal-600 px-4 py-3 text-sm font-bold text-white shadow-sm transition hover:bg-teal-700;
+    transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease;
+  }
+
+  .primary-button:hover:not(:disabled) {
+    transform: translateY(-2px);
+    box-shadow: 0 14px 28px rgba(13, 148, 136, 0.24);
+  }
+
+  .primary-button:active:not(:disabled) {
+    transform: translateY(0);
+  }
+
+  .auth-subtle-button {
+    transition: transform 180ms ease, box-shadow 180ms ease, background-color 180ms ease, color 180ms ease;
+  }
+
+  .auth-subtle-button:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 8px 18px rgba(15, 23, 42, 0.08);
+  }
+
+  .auth-card {
+    animation: auth-card-enter 520ms ease-out both;
+  }
+
+  .auth-input {
+    transition: border-color 180ms ease, box-shadow 180ms ease, background-color 180ms ease, transform 180ms ease;
+  }
+
+  .auth-input:focus {
+    border-color: rgb(20 184 166);
+    background-color: white;
+    box-shadow: 0 0 0 4px rgba(45, 212, 191, 0.18), 0 10px 22px rgba(15, 118, 110, 0.08);
+  }
+
+  .auth-message {
+    animation: auth-message-in 220ms ease-out both;
+  }
+
+  .auth-error {
+    animation: auth-message-in 220ms ease-out both, auth-error-shake 320ms ease-out both;
+  }
+
+  .loading-spinner {
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid rgba(255, 255, 255, 0.55);
+    border-top-color: white;
+    border-radius: 9999px;
+    animation: auth-spin 700ms linear infinite;
+  }
+
+  .range-rainbow {
+    @apply h-2 w-full cursor-pointer appearance-none rounded-full bg-gradient-to-r from-red-500 via-amber-300 via-emerald-400 via-amber-300 to-red-500;
+  }
+
+  .range-rainbow::-webkit-slider-thumb {
+    @apply h-5 w-5 appearance-none rounded-full border-2 border-white bg-teal-600 shadow-md;
+  }
+
+  .range-rainbow::-moz-range-thumb {
+    @apply h-5 w-5 rounded-full border-2 border-white bg-teal-600 shadow-md;
+  }
+
+  .admin-login-shell {
+    background-image:
+      linear-gradient(115deg, rgba(2, 6, 23, 0.58), rgba(15, 118, 110, 0.22), rgba(2, 6, 23, 0.48)),
+      url("/laguna-de-bay-enhanced.jpg");
+    background-position: center;
+    background-size: cover;
+  }
+
+  .admin-login-shell::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(circle at 20% 20%, rgba(20, 184, 166, 0.18), transparent 28%),
+      linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(2, 6, 23, 0.2) 80%);
+    pointer-events: none;
+  }
+
+  .admin-water-glow {
+    position: absolute;
+    inset: auto -20% -30% -20%;
+    height: 48%;
+    background: linear-gradient(90deg, rgba(13, 148, 136, 0), rgba(94, 234, 212, 0.38), rgba(13, 148, 136, 0));
+    filter: blur(36px);
+    opacity: 0.8;
+    animation: admin-drift 18s ease-in-out infinite alternate;
+  }
+
+  .admin-ripple {
+    position: absolute;
+    width: 22rem;
+    height: 22rem;
+    border: 1px solid rgba(204, 251, 241, 0.34);
+    border-radius: 9999px;
+    pointer-events: none;
+    animation: admin-ripple 18s ease-in-out infinite;
+  }
+
+  .admin-ripple-one {
+    left: 8%;
+    bottom: 12%;
+  }
+
+  .admin-ripple-two {
+    right: 10%;
+    top: 12%;
+    animation-delay: 6s;
+  }
+}
+
+@keyframes auth-card-enter {
+  from {
+    opacity: 0;
+    transform: translateY(18px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes auth-message-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes auth-error-shake {
+  0%, 100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-3px);
+  }
+  50% {
+    transform: translateX(3px);
+  }
+  75% {
+    transform: translateX(-2px);
+  }
+}
+
+@keyframes auth-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes admin-drift {
+  from {
+    transform: translateX(-4%) translateY(0);
+  }
+  to {
+    transform: translateX(4%) translateY(-8%);
+  }
+}
+
+@keyframes admin-ripple {
+  0% {
+    transform: scale(0.72);
+    opacity: 0;
+  }
+  28% {
+    opacity: 0.65;
+  }
+  100% {
+    transform: scale(1.32);
+    opacity: 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .auth-card,
+  .auth-message,
+  .auth-error,
+  .loading-spinner,
+  .admin-water-glow,
+  .admin-ripple {
+    animation: none;
+  }
+
+  .primary-button,
+  .auth-subtle-button,
+  .auth-input {
+    transition: none;
+  }
+}

@@ -1,0 +1,13 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-label="Rainbow Trout">
+  <rect width="320" height="220" rx="32" fill="#fdf2f8"/>
+  <ellipse cx="151" cy="111" rx="91" ry="40" fill="#c4b5fd"/>
+  <path d="M226 111l54-38v76z" fill="#8b5cf6"/>
+  <path d="M76 112c48 24 111 23 159 0-48-10-106-10-159 0z" fill="#f472b6"/>
+  <path d="M105 82c34-17 76-15 114 4-41 7-79 5-114-4z" fill="#ddd6fe"/>
+  <circle cx="89" cy="101" r="9" fill="#111827"/>
+  <circle cx="92" cy="98" r="3" fill="#fff"/>
+  <g fill="#7c3aed">
+    <circle cx="132" cy="95" r="3"/><circle cx="150" cy="126" r="3"/><circle cx="178" cy="92" r="3"/><circle cx="202" cy="126" r="3"/>
+  </g>
+  <text x="160" y="190" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#7c3aed">Rainbow Trout</text>
+</svg>

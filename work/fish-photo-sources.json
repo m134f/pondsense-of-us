@@ -1,0 +1,36 @@
+{
+  "tilapia": {
+    "title": "Oreochromis niloticus",
+    "status": "missing thumbnail"
+  },
+  "catfish": {
+    "title": "Clarias batrachus",
+    "status": "missing thumbnail"
+  },
+  "common-carp": {
+    "title": "Cyprinus carpio",
+    "status": "missing thumbnail"
+  },
+  "bangus": {
+    "title": "Chanos chanos",
+    "status": "missing thumbnail"
+  },
+  "grass-carp": {
+    "title": "Ctenopharyngodon idella",
+    "status": "missing thumbnail"
+  },
+  "rainbow-trout": {
+    "title": "Oncorhynchus mykiss",
+    "status": "missing thumbnail"
+  },
+  "snakehead": {
+    "title": "Channa striata",
+    "source": "https://upload.wikimedia.org/wikipedia/commons/thumb/0/05/Gabus_070909_0074_rwg.jpg/960px-Gabus_070909_0074_rwg.jpg",
+    "file": "public\\fish\\snakehead.jpg",
+    "bytes": 127940
+  },
+  "red-tilapia": {
+    "title": "Red tilapia",
+    "status": "missing thumbnail"
+  }
+}

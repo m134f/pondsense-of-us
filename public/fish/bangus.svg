@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 320 220" role="img" aria-label="Milkfish Bangus">
+  <rect width="320" height="220" rx="32" fill="#eff6ff"/>
+  <ellipse cx="151" cy="110" rx="91" ry="38" fill="#60a5fa"/>
+  <path d="M226 110l55-36v72z" fill="#2563eb"/>
+  <path d="M82 114c30 19 98 25 156 1-59 7-117 4-156-1z" fill="#dbeafe"/>
+  <path d="M114 80c34-16 69-16 105 3-42 7-74 7-105-3z" fill="#93c5fd"/>
+  <circle cx="88" cy="101" r="9" fill="#0f172a"/>
+  <circle cx="91" cy="98" r="3" fill="#fff"/>
+  <path d="M56 121c13 10 30 11 51 2" stroke="#1d4ed8" stroke-width="6" stroke-linecap="round" fill="none"/>
+  <text x="160" y="190" text-anchor="middle" font-family="Arial, sans-serif" font-size="22" font-weight="700" fill="#1d4ed8">Milkfish (Bangus)</text>
+</svg>
