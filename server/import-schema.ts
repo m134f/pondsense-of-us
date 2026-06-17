@@ -21,7 +21,7 @@ const connection = await mysql.createConnection({
   password: process.env.MYSQL_PASSWORD,
   database: process.env.MYSQL_DATABASE,
   multipleStatements: true,
-  ssl: process.env.MYSQL_SSL === "true" ? { rejectUnauthorized: true } : undefined
+  ssl: process.env.MYSQL_SSL === "true" ? { rejectUnauthorized: false } : undefined
 });
 
 try {
