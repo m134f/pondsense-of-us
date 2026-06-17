@@ -29,7 +29,7 @@ function base64urlJson(value: object) {
 
 function sign(input: string) {
   return crypto
-    .createHmac("sha256", process.env.SESSION_SECRET || defaultSecret)
+    .createHmac("sha256", process.env.SESSION_SECRET || process.env.JWT_SECRET || defaultSecret)
     .update(input)
     .digest("base64url");
 }
@@ -54,7 +54,7 @@ export function createAuthSession(res: Response, userId: number, role: Role) {
   const token = `${unsigned}.${sign(unsigned)}`;
   res.cookie(cookieName, token, {
     httpOnly: true,
-    sameSite: "lax",
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
     secure: process.env.NODE_ENV === "production",
     maxAge: 1000 * 60 * 60 * 8,
     path: "/"
@@ -62,7 +62,11 @@ export function createAuthSession(res: Response, userId: number, role: Role) {
 }
 
 export function clearAuthSession(res: Response) {
-  res.clearCookie(cookieName, { path: "/" });
+  res.clearCookie(cookieName, {
+    sameSite: process.env.NODE_ENV === "production" ? "none" : "lax",
+    secure: process.env.NODE_ENV === "production",
+    path: "/"
+  });
 }
 
 export function verifyAuthToken(req: Request): JwtPayload | null {

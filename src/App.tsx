@@ -419,9 +419,16 @@ function formattedClock(date: Date) {
   return date.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
 }
 
+const apiBaseUrl = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+
+function apiUrl(path: string) {
+  if (!apiBaseUrl || /^https?:\/\//.test(path)) return path;
+  return `${apiBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
+}
+
 async function postJson<T>(url: string, body: unknown): Promise<{ data: T | null; error: string | null }> {
   try {
-    const response = await fetch(url, {
+    const response = await fetch(apiUrl(url), {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
@@ -437,7 +444,7 @@ async function postJson<T>(url: string, body: unknown): Promise<{ data: T | null
 
 async function apiJson<T>(url: string, options: RequestInit = {}): Promise<{ data: T | null; error: string | null }> {
   try {
-    const response = await fetch(url, {
+    const response = await fetch(apiUrl(url), {
       ...options,
       credentials: "include",
       headers: {
