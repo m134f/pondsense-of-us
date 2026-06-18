@@ -106,7 +106,7 @@ async function safeExecute(sql: string, params: SqlValue[] = []) {
     await pool.execute(sql, params);
   } catch (error) {
     const code = (error as { code?: string }).code;
-    if (code !== "ER_DUP_FIELDNAME" && code !== "ER_DUP_KEYNAME" && code !== "ER_DUP_ENTRY") {
+    if (code !== "ER_DUP_FIELDNAME" && code !== "ER_DUP_KEYNAME" && code !== "ER_DUP_ENTRY" && code !== "ER_NO_SUCH_TABLE") {
       throw error;
     }
   }
@@ -128,6 +128,14 @@ async function ensureAdminStorage() {
   `);
   await safeExecute("ALTER TABLE users ADD COLUMN username VARCHAR(100) NULL");
   await safeExecute("ALTER TABLE users ADD UNIQUE INDEX users_username_unique (username)");
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS admin_settings (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      setting_key VARCHAR(100) NOT NULL UNIQUE,
+      setting_val VARCHAR(255),
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )
+  `);
   await safeExecute("ALTER TABLE alerts ADD COLUMN sms_status ENUM('sent','failed','skipped') DEFAULT 'skipped'");
   await safeExecute("ALTER TABLE alerts ADD COLUMN sms_error TEXT");
   await pool.execute(`
