@@ -473,6 +473,7 @@ export default function App() {
   const [authOpen, setAuthOpen] = useState(false);
   const [sms, setSms] = useState("");
   const [clock, setClock] = useState(new Date());
+  const [hasAnalyzed, setHasAnalyzed] = useState(false);
   const text = ui[lang];
 
   useEffect(() => {
@@ -530,6 +531,7 @@ export default function App() {
   const currentStatus = overallStatus(params);
 
   const runAnalysis = async () => {
+    setHasAnalyzed(true);
     const record: SessionRecord = {
       id: crypto.randomUUID(),
       timestamp: new Date().toLocaleString("en-PH"),
@@ -748,6 +750,7 @@ export default function App() {
           selectedRank={selectedRank}
           best={best}
           currentStatus={currentStatus}
+          hasAnalyzed={hasAnalyzed}
           onAnalyze={runAnalysis}
           onTestSms={testSms}
           onSelectFish={setSelectedFishId}
@@ -886,6 +889,7 @@ function AnalysisPage({
   selectedRank,
   best,
   currentStatus,
+  hasAnalyzed,
   onAnalyze,
   onTestSms,
   onSelectFish,
@@ -901,6 +905,7 @@ function AnalysisPage({
   selectedRank: number;
   best: FishScore;
   currentStatus: AlertLevel;
+  hasAnalyzed: boolean;
   onAnalyze: () => void;
   onTestSms: () => void;
   onSelectFish: (id: string) => void;
@@ -910,32 +915,69 @@ function AnalysisPage({
     <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-5 px-4 pb-8 sm:px-6 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
       <aside className="space-y-5">
         <WaterParametersPanel lang={lang} params={params} setParams={setParams} onAnalyze={onAnalyze} text={text} />
-        <FeedingCard params={params} lang={lang} text={text} />
-        <button
-          className="w-full rounded-2xl border border-emerald-200 bg-emerald-100 px-4 py-3 text-sm font-black text-emerald-800 shadow-sm transition hover:bg-emerald-200"
-          onClick={onTestSms}
-        >
-          📱 Test SMS Alert
-        </button>
+        {hasAnalyzed && (
+          <>
+            <FeedingCard params={params} lang={lang} text={text} />
+            <button
+              className="w-full rounded-2xl border border-emerald-200 bg-emerald-100 px-4 py-3 text-sm font-black text-emerald-800 shadow-sm transition hover:bg-emerald-200"
+              onClick={onTestSms}
+            >
+              Test SMS Alert
+            </button>
+          </>
+        )}
       </aside>
 
       <section className="space-y-5">
-        <AlertBanner alert={alerts[0]} lang={lang} />
-        <SummaryBanner status={currentStatus} lang={lang} />
-        <WhatToDoNow alerts={alerts} status={currentStatus} lang={lang} />
-        <QuickStatusCards lang={lang} params={params} />
-        <BestMatchCard selectedScore={selectedScore} selectedRank={selectedRank} best={best} text={text} />
-        <FarmerGuideCard selectedScore={selectedScore} lang={lang} text={text} />
-        <ParameterAnalysis lang={lang} selectedScore={selectedScore} />
-        <CorrectiveActions alerts={alerts} status={currentStatus} lang={lang} text={text} />
+        {hasAnalyzed ? (
+          <>
+            <AlertBanner alert={alerts[0]} lang={lang} />
+            <SummaryBanner status={currentStatus} lang={lang} />
+            <WhatToDoNow alerts={alerts} status={currentStatus} lang={lang} />
+            <QuickStatusCards lang={lang} params={params} />
+            <BestMatchCard selectedScore={selectedScore} selectedRank={selectedRank} best={best} text={text} />
+            <FarmerGuideCard selectedScore={selectedScore} lang={lang} text={text} />
+            <ParameterAnalysis lang={lang} selectedScore={selectedScore} />
+            <CorrectiveActions alerts={alerts} status={currentStatus} lang={lang} text={text} />
+          </>
+        ) : (
+          <AnalysisEmptyState />
+        )}
       </section>
 
-      <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} text={text} />
-      <DashboardTrends params={params} sessions={sessions} text={text} />
+      {hasAnalyzed ? (
+        <>
+          <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} text={text} />
+          <DashboardTrends params={params} sessions={sessions} text={text} />
+        </>
+      ) : (
+        <aside className="card h-fit p-6">
+          <h2 className="flex items-center gap-2 text-lg font-black text-slate-950">
+            <Fish className="text-teal-600" size={21} /> Fish Suitability Ranking
+          </h2>
+          <p className="mt-3 text-sm font-medium leading-6 text-slate-600">
+            No fish ranking yet. Adjust the water parameters, then click Analyze Water Quality to generate recommendations.
+          </p>
+        </aside>
+      )}
     </main>
   );
 }
 
+function AnalysisEmptyState() {
+  return (
+    <section className="card flex min-h-[420px] flex-col items-center justify-center p-8 text-center">
+      <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-50 text-teal-700 ring-1 ring-teal-100">
+        <BarChart3 size={30} />
+      </div>
+      <h2 className="mt-5 text-2xl font-black text-slate-950">No water quality analysis yet</h2>
+      <p className="mt-3 max-w-xl text-sm font-medium leading-6 text-slate-600">
+        Set the current pH, temperature, dissolved oxygen, turbidity, and ammonia values on the left. Results, alerts,
+        corrective actions, fish ranking, and trends will appear after you click Analyze Water Quality.
+      </p>
+    </section>
+  );
+}
 function WaterParametersPanel({
   lang,
   params,
