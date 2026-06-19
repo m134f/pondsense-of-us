@@ -90,6 +90,17 @@ CREATE TABLE IF NOT EXISTS admin_settings (
   updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS sensor_devices (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  device_name VARCHAR(100) NOT NULL,
+  api_key_hash VARCHAR(255) NOT NULL,
+  owner_user_id INT,
+  is_active TINYINT(1) DEFAULT 1,
+  last_seen_at DATETIME,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL
+);
+
 INSERT INTO fish_species
   (name, scientific_name, optimal_ph_min, optimal_ph_max,
    optimal_temp_min, optimal_temp_max,

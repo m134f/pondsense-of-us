@@ -6,10 +6,12 @@ import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { hasDbConfig, pool } from "./db";
 import { isSmsConfigured, sendSms } from "./sms";
 import { clearAuthSession, createAuthSession, requireAdmin, verifyAuthToken, type AuthRequest } from "./auth";
+import { DecisionSupportService, type AlertResult } from "./services/DecisionSupportService";
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
 const guestPhone = "+639000000000";
+const decisionSupport = new DecisionSupportService();
 
 type AlertPayload = {
   level?: "safe" | "warning" | "critical";
@@ -34,7 +36,21 @@ type FishThresholdUpdate = {
   max_ammonia?: number;
 };
 
-app.use(cors({ credentials: true, origin: true }));
+const allowedOrigins = [
+  "http://localhost:5173",
+  "http://127.0.0.1:5173",
+  process.env.FRONTEND_URL
+].filter(Boolean) as string[];
+
+app.use(cors({
+  credentials: true,
+  origin(origin, callback) {
+    if (!origin || process.env.NODE_ENV !== "production" || allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    }
+    return callback(new Error(`Origin not allowed by CORS: ${origin}`));
+  }
+}));
 app.use(express.json());
 
 app.get("/api/health", async (_req, res) => {
@@ -53,7 +69,8 @@ app.get("/api/health", async (_req, res) => {
       name: "PondSense API",
       database: hasDbConfig() ? "mysql-connected" : "local-demo-mode"
     });
-  } catch {
+  } catch (error) {
+    console.error("Health database error:", error);
     res.status(503).json({
       ok: false,
       name: "PondSense API",
@@ -84,6 +101,29 @@ function normalizeStatus(status: unknown) {
 
 function normalizeRole(role: unknown) {
   return role === "admin" ? "admin" : "farmer";
+}
+
+function numberFromBody(value: unknown) {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+}
+
+function validateReadingPayload(reading: Record<string, unknown>) {
+  const ph = numberFromBody(reading.ph);
+  const temperature = numberFromBody(reading.temperature);
+  const turbidity = numberFromBody(reading.turbidity);
+  const ammonia = numberFromBody(reading.ammonia);
+  const dissolvedOxygen = numberFromBody(reading.dissolvedOxygen ?? reading.dissolved_oxygen);
+
+  if (ph === null || ph < 0 || ph > 14) return { error: "Invalid pH value.", values: null };
+  if (temperature === null || temperature < 0 || temperature > 60) return { error: "Invalid temperature value.", values: null };
+  if (turbidity === null || turbidity < 0 || turbidity > 1000) return { error: "Invalid turbidity value.", values: null };
+  if (ammonia === null || ammonia < 0 || ammonia > 10) return { error: "Invalid ammonia value.", values: null };
+  if (dissolvedOxygen === null || dissolvedOxygen < 0 || dissolvedOxygen > 30) {
+    return { error: "Invalid dissolved oxygen value.", values: null };
+  }
+
+  return { values: { ph, temperature, turbidity, ammonia, dissolvedOxygen }, error: null };
 }
 
 function adminPublicUser(row: RowDataPacket) {
@@ -136,6 +176,18 @@ async function ensureAdminStorage() {
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
     )
   `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS sensor_devices (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      device_name VARCHAR(100) NOT NULL,
+      api_key_hash VARCHAR(255) NOT NULL,
+      owner_user_id INT,
+      is_active TINYINT(1) DEFAULT 1,
+      last_seen_at DATETIME,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
   await safeExecute("ALTER TABLE alerts ADD COLUMN sms_status ENUM('sent','failed','skipped') DEFAULT 'skipped'");
   await safeExecute("ALTER TABLE alerts ADD COLUMN sms_error TEXT");
   await pool.execute(`
@@ -173,6 +225,22 @@ async function ensureAdminStorage() {
       ]
     );
   }
+
+  if (process.env.SENSOR_API_KEY) {
+    const sensorOwnerPhone = process.env.SENSOR_OWNER_PHONE || guestPhone;
+    const [owners] = await pool.execute<RowDataPacket[]>("SELECT id FROM users WHERE phone = ? LIMIT 1", [sensorOwnerPhone]);
+    const ownerUserId = Number(owners[0]?.id) || await getGuestUserId();
+    const [devices] = await pool.execute<RowDataPacket[]>("SELECT id FROM sensor_devices WHERE device_name = ? LIMIT 1", [
+      process.env.SENSOR_DEVICE_NAME || "ESP32 PondSense Device"
+    ]);
+    if (!devices.length) {
+      const apiKeyHash = await bcrypt.hash(process.env.SENSOR_API_KEY, 10);
+      await pool.execute(
+        "INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)",
+        [process.env.SENSOR_DEVICE_NAME || "ESP32 PondSense Device", apiKeyHash, ownerUserId || null]
+      );
+    }
+  }
 }
 
 function formatAlertSms(reading: Record<string, unknown>, alerts: AlertPayload[]) {
@@ -206,6 +274,51 @@ async function logAdminAction(req: AuthRequest, action: string, details: string)
     "INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)",
     [req.auth?.sub ?? null, action, details]
   );
+}
+
+async function authenticateSensorDevice(apiKey: string) {
+  if (!pool || !apiKey) return null;
+
+  const [devices] = await pool.execute<RowDataPacket[]>(
+    "SELECT id, device_name, api_key_hash, owner_user_id FROM sensor_devices WHERE is_active = 1"
+  );
+
+  for (const device of devices) {
+    const valid = await bcrypt.compare(apiKey, String(device.api_key_hash));
+    if (valid) {
+      await pool.execute("UPDATE sensor_devices SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?", [device.id]);
+      return {
+        id: Number(device.id),
+        deviceName: String(device.device_name),
+        ownerUserId: device.owner_user_id ? Number(device.owner_user_id) : null
+      };
+    }
+  }
+
+  return null;
+}
+
+async function logReadingAlerts(readingId: number, userId: number, alerts: Array<AlertPayload | AlertResult>, smsResult: { ok: boolean; message: string }, shouldSendSms: boolean) {
+  if (!pool) return;
+
+  for (const alert of alerts) {
+    if (alert.level !== "warning" && alert.level !== "critical") continue;
+    const smsStatus = smsResult.ok ? "sent" : shouldSendSms ? "failed" : "skipped";
+    await pool.execute(
+      `INSERT INTO alerts (reading_id, user_id, alert_type, message, severity, sms_sent, sms_status, sms_error)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        readingId,
+        userId,
+        alert.title ?? "Water Quality Alert",
+        alert.message ?? "",
+        alert.level,
+        smsResult.ok ? 1 : 0,
+        smsStatus,
+        smsResult.ok ? null : smsResult.message
+      ]
+    );
+  }
 }
 
 async function sendAccountSms(user: SmsRecipient, action: "register" | "login") {
@@ -330,6 +443,8 @@ app.post("/api/logout", (_req, res) => {
 
 app.post("/api/readings", async (req, res) => {
   const reading = req.body ?? {};
+  const validation = validateReadingPayload(reading);
+  if (validation.error || !validation.values) return res.status(400).json({ message: validation.error });
   if (!pool) {
     return res.json({ saved: true, demo: true, reading });
   }
@@ -350,11 +465,11 @@ app.post("/api/readings", async (req, res) => {
       [
         userId,
         reading.inputMode ?? "manual",
-        reading.ph,
-        reading.temperature,
-        reading.turbidity,
-        reading.ammonia,
-        reading.dissolvedOxygen,
+        validation.values.ph,
+        validation.values.temperature,
+        validation.values.turbidity,
+        validation.values.ammonia,
+        validation.values.dissolvedOxygen,
         reading.bestFish,
         reading.score,
         reading.confidence,
@@ -379,29 +494,93 @@ app.post("/api/readings", async (req, res) => {
       smsResult = await sendSms(String(recipient?.phone || ""), formatAlertSms(reading, alerts));
     }
 
-    for (const alert of alerts) {
-      if (alert.level !== "warning" && alert.level !== "critical") continue;
-      const smsStatus = smsResult.ok ? "sent" : shouldSendSms ? "failed" : "skipped";
-      await pool.execute(
-        `INSERT INTO alerts (reading_id, user_id, alert_type, message, severity, sms_sent, sms_status, sms_error)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-        [
-          readingId,
-          userId,
-          alert.title ?? "Water Quality Alert",
-          alert.message ?? "",
-          alert.level,
-          smsResult.ok ? 1 : 0,
-          smsStatus,
-          smsResult.ok ? null : smsResult.message
-        ]
-      );
-    }
+    await logReadingAlerts(readingId, userId, alerts, smsResult, shouldSendSms);
 
     res.json({ saved: true, readingId, userId, sms: smsResult });
   } catch (error) {
     console.error("Reading database error:", error);
     res.status(503).json({ message: "Database is not ready. Check XAMPP MySQL and schema import." });
+  }
+});
+
+app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
+  const providedKey = String(req.headers["x-api-key"] || req.headers["x-sensor-key"] || req.body?.deviceKey || "");
+  if (!providedKey) return res.status(401).json({ message: "Sensor API key is required." });
+  if (!pool) return res.status(503).json({ message: "Database is required for sensor readings." });
+
+  const reading = req.body ?? {};
+  const validation = validateReadingPayload(reading);
+  if (validation.error || !validation.values) return res.status(400).json({ message: validation.error });
+
+  try {
+    const device = await authenticateSensorDevice(providedKey);
+    if (!device) return res.status(401).json({ message: "Invalid or inactive sensor device." });
+
+    const fallbackGuestId = await getGuestUserId();
+    const userId = device.ownerUserId || fallbackGuestId;
+    if (!userId) return res.status(500).json({ message: "Unable to resolve sensor owner." });
+
+    const analysis = decisionSupport.analyze(validation.values);
+
+    const [result] = await pool.execute<ResultSetHeader>(
+      `INSERT INTO water_readings
+        (user_id, input_mode, ph, temperature, turbidity, ammonia, dissolved_oxygen,
+         best_fish, best_score, confidence, status)
+       VALUES (?, 'sensor', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        fallbackGuestId,
+        validation.values.ph,
+        validation.values.temperature,
+        validation.values.turbidity,
+        validation.values.ammonia,
+        validation.values.dissolvedOxygen,
+        analysis.bestFish,
+        analysis.bestScore,
+        analysis.confidence,
+        analysis.status
+      ]
+    );
+
+    const criticalAlerts = analysis.alerts.filter((alert) => alert.level === "critical");
+    let smsResult = { configured: isSmsConfigured(), ok: false, message: "No critical sensor alert was sent." };
+    const shouldSendSms = criticalAlerts.length > 0;
+    if (shouldSendSms) {
+      const alreadySentToday = await hasSentWaterAlertToday(userId);
+      if (alreadySentToday) {
+        smsResult = {
+          configured: isSmsConfigured(),
+          ok: false,
+          message: "Daily SMS limit reached. One water warning text was already sent today."
+        };
+      } else {
+        const [users] = await pool.execute<RowDataPacket[]>("SELECT phone, full_name FROM users WHERE id = ? LIMIT 1", [userId]);
+        const recipient = users[0];
+        smsResult = await sendSms(String(recipient?.phone || ""), formatAlertSms({
+          ...validation.values,
+          status: analysis.status
+        }, criticalAlerts));
+      }
+    }
+
+    await logReadingAlerts(result.insertId, userId, analysis.alerts, smsResult, shouldSendSms);
+
+    res.json({
+      saved: true,
+      readingId: result.insertId,
+      inputMode: "sensor",
+      device: { id: device.id, name: device.deviceName },
+      analysis: {
+        status: analysis.status,
+        bestFish: analysis.bestFish,
+        score: analysis.bestScore,
+        confidence: analysis.confidence,
+        alerts: analysis.alerts
+      },
+      sms: smsResult
+    });
+  } catch (error) {
+    console.error("Sensor reading database error:", error);
+    res.status(503).json({ message: "Unable to save sensor reading." });
   }
 });
 
