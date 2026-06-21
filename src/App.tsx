@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -962,6 +962,9 @@ function AnalysisPage({
   onSelectFish: (id: string) => void;
   text: typeof ui.en;
 }) {
+  const [showParameterDetails, setShowParameterDetails] = useState(false);
+  const [showAllActions, setShowAllActions] = useState(false);
+
   return (
     <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-5 px-4 pb-8 sm:px-6 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
       <aside className="space-y-5">
@@ -986,10 +989,33 @@ function AnalysisPage({
             <SummaryBanner status={currentStatus} lang={lang} />
             <WhatToDoNow alerts={alerts} status={currentStatus} lang={lang} />
             <QuickStatusCards lang={lang} params={params} />
+            <DashboardTrends params={params} sessions={sessions} text={text} />
             <BestMatchCard selectedScore={selectedScore} selectedRank={selectedRank} best={best} lang={lang} text={text} />
             <FarmerGuideCard selectedScore={selectedScore} lang={lang} text={text} />
-            <ParameterAnalysis lang={lang} selectedScore={selectedScore} />
-            <CorrectiveActions alerts={alerts} status={currentStatus} lang={lang} text={text} />
+            <CollapsiblePanel
+              title={lang === "tl" ? "Detalyadong Parameter Analysis" : "Detailed Parameter Analysis"}
+              description={
+                lang === "tl"
+                  ? "Buksan ito kung gusto mong makita ang score ng bawat water parameter."
+                  : "Open this only when you need the full score explanation for each water parameter."
+              }
+              open={showParameterDetails}
+              onToggle={() => setShowParameterDetails((value) => !value)}
+            >
+              <ParameterAnalysis lang={lang} selectedScore={selectedScore} />
+            </CollapsiblePanel>
+            <CollapsiblePanel
+              title={lang === "tl" ? "Lahat ng Corrective Actions" : "All Corrective Actions"}
+              description={
+                lang === "tl"
+                  ? "Nasa taas na ang pinakamahalagang gagawin. Buksan ito para makita ang lahat ng hakbang."
+                  : "The most urgent steps are already shown above. Open this to view the complete action list."
+              }
+              open={showAllActions}
+              onToggle={() => setShowAllActions((value) => !value)}
+            >
+              <CorrectiveActions alerts={alerts} status={currentStatus} lang={lang} text={text} />
+            </CollapsiblePanel>
           </>
         ) : (
           <AnalysisEmptyState />
@@ -999,7 +1025,6 @@ function AnalysisPage({
       {hasAnalyzed ? (
         <>
           <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} lang={lang} text={text} />
-          <DashboardTrends params={params} sessions={sessions} text={text} />
         </>
       ) : (
         <aside className="card h-fit p-6">
@@ -1029,6 +1054,36 @@ function AnalysisEmptyState() {
     </section>
   );
 }
+
+function CollapsiblePanel({
+  title,
+  description,
+  open,
+  onToggle,
+  children
+}: {
+  title: string;
+  description: string;
+  open: boolean;
+  onToggle: () => void;
+  children: ReactNode;
+}) {
+  return (
+    <section className="card p-5">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h2 className="text-lg font-black text-slate-950">{title}</h2>
+          <p className="mt-1 text-sm font-semibold leading-6 text-slate-500">{description}</p>
+        </div>
+        <button className="soft-button shrink-0" onClick={onToggle}>
+          {open ? "Hide details" : "View details"}
+        </button>
+      </div>
+      {open && <div className="mt-5">{children}</div>}
+    </section>
+  );
+}
+
 function WaterParametersPanel({
   lang,
   params,
@@ -1541,7 +1596,7 @@ function DashboardTrends({
   ] as const;
 
   return (
-    <section className="card lg:col-span-3 p-5">
+    <section className="card p-5">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="flex items-center gap-2 text-xl font-black text-slate-950">
@@ -1556,7 +1611,7 @@ function DashboardTrends({
         </span>
       </div>
 
-      <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
+      <div className="mt-5 grid gap-4 md:grid-cols-2 2xl:grid-cols-5">
         {trendCards.map((card) => (
           <article key={card.key} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
             <div className="flex items-center justify-between gap-3">
