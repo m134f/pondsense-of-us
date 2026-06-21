@@ -415,6 +415,57 @@ function progressWidth(score: number) {
   return "w-1/6";
 }
 
+function recommendationLabel(score: number, lang: Lang) {
+  if (score >= 85) return lang === "tl" ? "Inirerekomenda" : "Recommended";
+  if (score >= 65) return lang === "tl" ? "May Pag-iingat" : "Use Caution";
+  return lang === "tl" ? "Hindi Muna Angkop" : "Not Recommended";
+}
+
+function recommendationClasses(score: number) {
+  if (score >= 85) return "bg-emerald-50 text-emerald-700 ring-emerald-200";
+  if (score >= 65) return "bg-amber-50 text-amber-700 ring-amber-200";
+  return "bg-red-50 text-red-700 ring-red-200";
+}
+
+function parameterMatchLevel(value: number): AlertLevel {
+  if (value >= 85) return "safe";
+  if (value >= 65) return "warning";
+  return "critical";
+}
+
+function strongestFishReason(score: FishScore, lang: Lang) {
+  const entries = parameterMeta
+    .map((meta) => ({ meta, value: score.breakdown[meta.key] }))
+    .sort((a, b) => b.value - a.value);
+  const bestMatches = entries.filter((entry) => entry.value >= 85).length;
+  const weakest = entries[entries.length - 1];
+  const best = entries[0];
+
+  if (score.score >= 85) {
+    return lang === "tl"
+      ? `Angkop dahil ${bestMatches} sa 5 parameter ang malapit sa ideal range.`
+      : `Good match because ${bestMatches} of 5 parameters are near the ideal range.`;
+  }
+  if (score.score >= 65) {
+    return lang === "tl"
+      ? `Pwede pero bantayan ang ${weakest.meta.label.tl.toLowerCase()} bago mag-stock.`
+      : `Possible option, but watch ${weakest.meta.label.en.toLowerCase()} before stocking.`;
+  }
+  return lang === "tl"
+    ? `Hindi pa ideal dahil mahina ang match sa ${weakest.meta.label.tl.toLowerCase()}.`
+    : `Not ideal yet because ${weakest.meta.label.en.toLowerCase()} has the weakest match.`;
+}
+
+function bestFishExplanation(score: FishScore, lang: Lang) {
+  const safeCount = parameterMeta.filter((meta) => score.breakdown[meta.key] >= 85).length;
+  const cautionCount = parameterMeta.filter((meta) => score.breakdown[meta.key] >= 65 && score.breakdown[meta.key] < 85).length;
+  const problemCount = parameterMeta.length - safeCount - cautionCount;
+  if (lang === "tl") {
+    return `${safeCount} ligtas na match, ${cautionCount} bantayan, ${problemCount} kailangan pagbutihin.`;
+  }
+  return `${safeCount} strong matches, ${cautionCount} caution points, ${problemCount} needs improvement.`;
+}
+
 function formattedClock(date: Date) {
   return date.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
 }
@@ -935,7 +986,7 @@ function AnalysisPage({
             <SummaryBanner status={currentStatus} lang={lang} />
             <WhatToDoNow alerts={alerts} status={currentStatus} lang={lang} />
             <QuickStatusCards lang={lang} params={params} />
-            <BestMatchCard selectedScore={selectedScore} selectedRank={selectedRank} best={best} text={text} />
+            <BestMatchCard selectedScore={selectedScore} selectedRank={selectedRank} best={best} lang={lang} text={text} />
             <FarmerGuideCard selectedScore={selectedScore} lang={lang} text={text} />
             <ParameterAnalysis lang={lang} selectedScore={selectedScore} />
             <CorrectiveActions alerts={alerts} status={currentStatus} lang={lang} text={text} />
@@ -947,7 +998,7 @@ function AnalysisPage({
 
       {hasAnalyzed ? (
         <>
-          <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} text={text} />
+          <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} lang={lang} text={text} />
           <DashboardTrends params={params} sessions={sessions} text={text} />
         </>
       ) : (
@@ -1143,11 +1194,13 @@ function BestMatchCard({
   selectedScore,
   selectedRank,
   best,
+  lang,
   text
 }: {
   selectedScore: FishScore;
   selectedRank: number;
   best: FishScore;
+  lang: Lang;
   text: typeof ui.en;
 }) {
   const isBest = selectedScore.fish.id === best.fish.id;
@@ -1173,6 +1226,13 @@ function BestMatchCard({
               </span>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{selectedScore.fish.category}</span>
               <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-black text-slate-600">{selectedScore.fish.marketValue} {text.marketValue}</span>
+            </div>
+            <div className="mt-4 rounded-2xl border border-teal-100 bg-teal-50 p-3">
+              <p className="text-xs font-black uppercase tracking-wide text-teal-700">
+                {lang === "tl" ? "Bakit ito ang napili" : "Why this fish"}
+              </p>
+              <p className="mt-1 text-sm font-bold leading-6 text-slate-700">{strongestFishReason(selectedScore, lang)}</p>
+              <p className="mt-1 text-xs font-semibold text-slate-500">{bestFishExplanation(selectedScore, lang)}</p>
             </div>
           </div>
         </div>
@@ -1367,11 +1427,13 @@ function FishRankingPanel({
   scores,
   selectedId,
   onSelectFish,
+  lang,
   text
 }: {
   scores: FishScore[];
   selectedId: string;
   onSelectFish: (id: string) => void;
+  lang: Lang;
   text: typeof ui.en;
 }) {
   return (
@@ -1380,11 +1442,20 @@ function FishRankingPanel({
         <Fish className="text-teal-600" size={21} /> {text.ranking}
       </h2>
       <p className="mt-2 text-sm font-medium text-slate-500">{text.clickFish}</p>
+      <div className="mt-4 grid grid-cols-3 gap-2 text-center text-[11px] font-black">
+        <span className="rounded-full bg-emerald-50 px-2 py-1 text-emerald-700 ring-1 ring-emerald-100">{lang === "tl" ? "Angkop" : "Good"}</span>
+        <span className="rounded-full bg-amber-50 px-2 py-1 text-amber-700 ring-1 ring-amber-100">{lang === "tl" ? "Bantayan" : "Caution"}</span>
+        <span className="rounded-full bg-red-50 px-2 py-1 text-red-700 ring-1 ring-red-100">{lang === "tl" ? "Problema" : "Risk"}</span>
+      </div>
       <div className="mt-5 space-y-3">
         {scores.map((score, index) => {
           const confidence = confidenceLevel(score.score);
           const isTop = index === 0;
           const isSelected = selectedId === score.fish.id;
+          const parameterBadges = parameterMeta.map((meta) => {
+            const matchLevel = parameterMatchLevel(score.breakdown[meta.key]);
+            return { meta, matchLevel, value: score.breakdown[meta.key] };
+          });
           return (
             <button
               key={score.fish.id}
@@ -1404,10 +1475,33 @@ function FishRankingPanel({
                 </span>
                 <span className="text-sm font-black text-teal-700">{score.score}%</span>
               </div>
+              <div className="mt-3 flex flex-wrap gap-1.5">
+                <span className={`rounded-full px-2.5 py-1 text-[11px] font-black ring-1 ${recommendationClasses(score.score)}`}>
+                  {recommendationLabel(score.score, lang)}
+                </span>
+                {isTop && (
+                  <span className="rounded-full bg-teal-50 px-2.5 py-1 text-[11px] font-black text-teal-700 ring-1 ring-teal-100">
+                    {lang === "tl" ? "Pinakaangkop" : "Top Match"}
+                  </span>
+                )}
+              </div>
               <div className="mt-3 h-2 overflow-hidden rounded-full bg-slate-100">
                 <div className={`h-full rounded-full ${progressColor(score.score)} ${progressWidth(score.score)}`} />
               </div>
-              <div className="mt-3 flex justify-end">
+              <p className="mt-3 text-xs font-semibold leading-5 text-slate-600">{strongestFishReason(score, lang)}</p>
+              <div className="mt-3 grid grid-cols-5 gap-1">
+                {parameterBadges.map(({ meta, matchLevel, value }) => (
+                  <span
+                    key={meta.key}
+                    className={`rounded-lg px-1.5 py-1 text-center text-[10px] font-black ring-1 ${badgeClasses(matchLevel)}`}
+                    title={`${meta.label[lang]} ${value}%`}
+                  >
+                    {meta.key === "dissolvedOxygen" ? "DO" : meta.key === "temperature" ? "Temp" : meta.key === "ammonia" ? "NH3" : meta.key === "turbidity" ? "Turb" : "pH"}
+                  </span>
+                ))}
+              </div>
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <span className="text-[11px] font-bold text-slate-500">{bestFishExplanation(score, lang)}</span>
                 <span className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-black ring-1 ${badgeClasses(confidence)}`}>
                   <span className="h-2 w-2 rounded-full bg-current" /> {confidence}
                 </span>
