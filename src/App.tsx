@@ -759,7 +759,7 @@ export default function App() {
     <div className="min-h-screen bg-slate-100">
       {sms && (
         <button
-          className="fixed bottom-5 right-5 z-50 max-w-sm rounded-2xl bg-slate-950 px-5 py-4 text-left text-sm font-medium text-white shadow-2xl"
+          className="fixed inset-x-3 bottom-4 z-50 rounded-2xl bg-slate-950 px-4 py-3 text-left text-sm font-medium text-white shadow-2xl sm:inset-x-auto sm:right-5 sm:max-w-sm sm:px-5 sm:py-4"
           onClick={() => setSms("")}
         >
           {sms}
@@ -855,34 +855,34 @@ function Header({
 }) {
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
-      <div className="mx-auto flex max-w-[1500px] flex-col gap-4 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
-        <button className="flex items-center gap-3 text-left" onClick={onHome} title="PondSense dashboard">
-          <span className="grid h-12 w-12 place-items-center overflow-hidden rounded-2xl bg-white ring-1 ring-teal-100">
+      <div className="mx-auto flex max-w-[1500px] flex-col gap-3 px-3 py-3 sm:px-6 sm:py-4 lg:flex-row lg:items-center lg:justify-between">
+        <button className="flex min-w-0 items-center gap-2 text-left sm:gap-3" onClick={onHome} title="PondSense dashboard">
+          <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-white ring-1 ring-teal-100 sm:h-12 sm:w-12 sm:rounded-2xl">
             <img src="/logofishpond.png?v=logo-20260612" alt="PondSense of Us logo" className="h-full w-full object-cover" />
           </span>
-          <span>
-            <span className="block text-lg font-black leading-tight text-slate-950">PondSense of Us</span>
-            <span className="block text-sm text-slate-500">{text.subtitle}</span>
+          <span className="min-w-0">
+            <span className="block truncate text-base font-black leading-tight text-slate-950 sm:text-lg">PondSense of Us</span>
+            <span className="block truncate text-xs text-slate-500 sm:text-sm">{text.subtitle}</span>
           </span>
         </button>
 
-        <div className="flex flex-wrap items-center gap-2">
+        <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
           <div className="flex rounded-xl bg-slate-100 p-1">
             {(["en", "tl"] as const).map((item) => (
               <button
                 key={item}
-                className={`rounded-lg px-3 py-1.5 text-xs font-black transition ${lang === item ? "bg-teal-600 text-white shadow-sm" : "text-slate-500 hover:text-teal-700"}`}
+                className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-black transition ${lang === item ? "bg-teal-600 text-white shadow-sm" : "text-slate-500 hover:text-teal-700"}`}
                 onClick={() => setLang(item)}
               >
                 {item.toUpperCase()}
               </button>
             ))}
           </div>
-          <span className="inline-flex items-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">
+          <span className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">
             <Clock3 size={16} /> {formattedClock(clock)}
           </span>
-          <span className="inline-flex items-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-700 ring-1 ring-amber-100">
-            <User size={16} /> {currentUser ? currentUser.fullName : text.guest}
+          <span className="inline-flex min-w-0 items-center justify-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-700 ring-1 ring-amber-100">
+            <User size={16} className="shrink-0" /> <span className="truncate">{currentUser ? currentUser.fullName : text.guest}</span>
           </span>
           <button className="soft-button" onClick={onPrint}>
             <Printer size={16} /> {text.print}
@@ -910,13 +910,13 @@ function Tabs({ active, onChange, text }: { active: AppTab; onChange: (tab: AppT
   ];
 
   return (
-    <nav className="mx-auto flex max-w-[1500px] gap-2 px-4 py-4 sm:px-6">
-      <div className="inline-flex flex-wrap gap-1 rounded-2xl bg-slate-200/70 p-1 shadow-inner">
+    <nav className="mx-auto flex max-w-[1500px] gap-2 overflow-x-auto px-3 py-3 sm:px-6 sm:py-4">
+      <div className="grid min-w-full grid-cols-3 gap-1 rounded-2xl bg-slate-200/70 p-1 shadow-inner sm:inline-flex sm:min-w-0 sm:flex-wrap">
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
             onClick={() => onChange(id)}
-            className={`inline-flex items-center gap-2 rounded-xl px-4 py-2.5 text-sm font-black transition ${
+            className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-black transition sm:gap-2 sm:px-4 sm:py-2.5 sm:text-sm ${
               active === id ? "bg-white text-slate-950 shadow-sm ring-1 ring-slate-200" : "text-slate-500 hover:bg-white/70 hover:text-slate-800"
             }`}
           >
@@ -966,7 +966,7 @@ function AnalysisPage({
   const [showAllActions, setShowAllActions] = useState(false);
 
   return (
-    <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-5 px-4 pb-8 sm:px-6 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
+    <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-4 px-3 pb-6 sm:gap-5 sm:px-6 sm:pb-8 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
       <aside className="space-y-5">
         <WaterParametersPanel lang={lang} params={params} setParams={setParams} onAnalyze={onAnalyze} text={text} />
         {hasAnalyzed && (
@@ -1042,7 +1042,7 @@ function AnalysisPage({
 
 function AnalysisEmptyState() {
   return (
-    <section className="card flex min-h-[420px] flex-col items-center justify-center p-8 text-center">
+    <section className="card flex min-h-[360px] flex-col items-center justify-center p-6 text-center sm:min-h-[420px] sm:p-8">
       <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-50 text-teal-700 ring-1 ring-teal-100">
         <BarChart3 size={30} />
       </div>
@@ -1069,7 +1069,7 @@ function CollapsiblePanel({
   children: ReactNode;
 }) {
   return (
-    <section className="card p-5">
+    <section className="card p-4 sm:p-5">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-lg font-black text-slate-950">{title}</h2>
@@ -1098,11 +1098,11 @@ function WaterParametersPanel({
   text: typeof ui.en;
 }) {
   return (
-    <section className="card h-fit p-5">
+    <section className="card h-fit p-4 sm:p-5">
       <h2 className="mb-5 flex items-center gap-2 text-lg font-black text-slate-950">
         <Droplets className="text-teal-600" size={21} /> {text.waterParameters}
       </h2>
-      <div className="space-y-6">
+      <div className="space-y-5 sm:space-y-6">
         {parameterMeta.map((meta) => {
           const status = statusFor(meta.key, params[meta.key]);
           const isSafe = status === "safe";
@@ -1133,7 +1133,7 @@ function WaterParametersPanel({
           );
         })}
       </div>
-      <button className="primary-button mt-6 w-full py-4" onClick={onAnalyze}>
+      <button className="primary-button mt-5 w-full py-3.5 sm:mt-6 sm:py-4" onClick={onAnalyze}>
         <Fish size={18} /> {text.analyze}
       </button>
     </section>
@@ -1143,12 +1143,12 @@ function WaterParametersPanel({
 function AlertBanner({ alert, lang }: { alert: AlertItem; lang: Lang }) {
   const Icon = alert.level === "safe" ? Check : AlertTriangle;
   return (
-    <section className={`flex items-start gap-4 rounded-2xl border p-5 shadow-card ${levelClasses(alert.level)}`}>
-      <span className="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-white/70">
+    <section className={`flex items-start gap-3 rounded-2xl border p-4 shadow-card sm:gap-4 sm:p-5 ${levelClasses(alert.level)}`}>
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-full bg-white/70 sm:h-11 sm:w-11">
         <Icon size={23} />
       </span>
       <div>
-        <h2 className="text-lg font-black">{localize(alert.title, lang)}</h2>
+        <h2 className="text-base font-black sm:text-lg">{localize(alert.title, lang)}</h2>
         <p className="mt-1 text-sm font-medium opacity-90">{localize(alert.message, lang)}</p>
       </div>
     </section>
@@ -1165,12 +1165,12 @@ function SummaryBanner({ status, lang }: { status: AlertLevel; lang: Lang }) {
       : "Some readings are outside the ideal range. Monitor closely and apply the recommended actions.";
   const Icon = isSafe ? Check : AlertTriangle;
   return (
-    <section className={`flex items-center gap-4 rounded-2xl border p-5 shadow-card ${levelClasses(status)}`}>
-      <span className="grid h-12 w-12 shrink-0 place-items-center rounded-2xl bg-white/70 ring-1 ring-current/10">
+    <section className={`flex items-center gap-3 rounded-2xl border p-4 shadow-card sm:gap-4 sm:p-5 ${levelClasses(status)}`}>
+      <span className="grid h-10 w-10 shrink-0 place-items-center rounded-xl bg-white/70 ring-1 ring-current/10 sm:h-12 sm:w-12 sm:rounded-2xl">
         <Icon size={24} />
       </span>
       <div>
-        <h2 className="text-lg font-black">{localize(title, lang)}</h2>
+        <h2 className="text-base font-black sm:text-lg">{localize(title, lang)}</h2>
         <p className="mt-1 text-sm font-medium opacity-90">{localize(message, lang)}</p>
       </div>
     </section>
@@ -1201,13 +1201,13 @@ function WhatToDoNow({ alerts, status, lang }: { alerts: AlertItem[]; status: Al
         ? "Continue regular water monitoring."
         : "These are the most important steps to reduce fish stress.";
   return (
-    <section className={`rounded-2xl border p-5 shadow-card ${levelClasses(status)}`}>
+    <section className={`rounded-2xl border p-4 shadow-card sm:p-5 ${levelClasses(status)}`}>
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-black uppercase tracking-wide opacity-80">
             {lang === "tl" ? "Gabay ng mangingisda" : "Farmer action guide"}
           </p>
-          <h2 className="mt-1 text-2xl font-black">{title}</h2>
+          <h2 className="mt-1 text-xl font-black sm:text-2xl">{title}</h2>
           <p className="mt-1 text-sm font-semibold opacity-90">{subtitle}</p>
         </div>
         <span className={`w-fit rounded-full px-3 py-1 text-xs font-black ring-1 ${badgeClasses(status)}`}>
@@ -1216,7 +1216,7 @@ function WhatToDoNow({ alerts, status, lang }: { alerts: AlertItem[]; status: Al
       </div>
       <ol className="mt-4 grid gap-3 sm:grid-cols-3">
         {mainActions.map((action, index) => (
-          <li key={action} className="rounded-xl bg-white/75 p-4 text-sm font-bold shadow-sm ring-1 ring-current/10">
+          <li key={action} className="rounded-xl bg-white/75 p-3 text-sm font-bold shadow-sm ring-1 ring-current/10 sm:p-4">
             <span className="mb-2 grid h-8 w-8 place-items-center rounded-full bg-slate-950 text-sm font-black text-white">{index + 1}</span>
             {localize(action, lang)}
           </li>
@@ -1228,13 +1228,13 @@ function WhatToDoNow({ alerts, status, lang }: { alerts: AlertItem[]; status: Al
 
 function QuickStatusCards({ lang, params }: { lang: Lang; params: WaterParams }) {
   return (
-    <section className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-5">
+    <section className="grid grid-cols-2 gap-2 sm:gap-3 xl:grid-cols-5">
       {parameterMeta.map((meta) => {
         const status = statusFor(meta.key, params[meta.key]);
         return (
-          <article key={meta.key} className={`rounded-2xl border bg-white p-4 shadow-card ${status === "critical" ? "border-red-200" : status === "warning" ? "border-amber-200" : "border-emerald-100"}`}>
+          <article key={meta.key} className={`rounded-2xl border bg-white p-3 shadow-card sm:p-4 ${status === "critical" ? "border-red-200" : status === "warning" ? "border-amber-200" : "border-emerald-100"}`}>
             <p className="text-xs font-bold text-slate-500">{meta.label[lang]}</p>
-            <p className="mt-1 text-2xl font-black text-slate-950">{valueText(meta.key, params[meta.key])}{meta.unit}</p>
+            <p className="mt-1 break-words text-xl font-black text-slate-950 sm:text-2xl">{valueText(meta.key, params[meta.key])}{meta.unit}</p>
             <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-black ring-1 ${badgeClasses(status)}`}>
               {status}
             </span>
@@ -1260,10 +1260,10 @@ function BestMatchCard({
 }) {
   const isBest = selectedScore.fish.id === best.fish.id;
   return (
-    <section className="card overflow-hidden p-6">
+    <section className="card overflow-hidden p-4 sm:p-6">
       <div className="flex flex-col gap-6 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex min-w-0 gap-4">
-          <div className="relative grid h-24 w-28 shrink-0 place-items-center overflow-hidden rounded-2xl bg-gradient-to-br from-slate-100 to-teal-100 ring-1 ring-slate-200">
+          <div className="relative grid h-20 w-24 shrink-0 place-items-center overflow-hidden rounded-2xl bg-gradient-to-br from-slate-100 to-teal-100 ring-1 ring-slate-200 sm:h-24 sm:w-28">
             <img
               src={fishImageSrc(selectedScore.fish.id)}
               alt={selectedScore.fish.name}
@@ -1273,7 +1273,7 @@ function BestMatchCard({
           </div>
           <div className="min-w-0">
             <p className="text-xs font-black uppercase tracking-wider text-teal-700">{isBest ? text.bestMatch : text.selectedFish}</p>
-            <h1 className="mt-2 text-3xl font-black text-slate-950">{selectedScore.fish.name}</h1>
+            <h1 className="mt-2 text-2xl font-black text-slate-950 sm:text-3xl">{selectedScore.fish.name}</h1>
             <p className="mt-1 text-sm italic text-slate-500">{selectedScore.fish.scientificName}</p>
             <div className="mt-4 flex flex-wrap gap-2">
               <span className={`rounded-full px-3 py-1 text-xs font-black ring-1 ${badgeClasses(selectedScore.confidence)}`}>
@@ -1291,7 +1291,9 @@ function BestMatchCard({
             </div>
           </div>
         </div>
-        <ScoreGauge score={selectedScore.score} confidence={selectedScore.confidence} />
+        <div className="self-center sm:self-auto">
+          <ScoreGauge score={selectedScore.score} confidence={selectedScore.confidence} />
+        </div>
       </div>
     </section>
   );
@@ -1302,8 +1304,8 @@ function ScoreGauge({ score, confidence }: { score: number; confidence: FishScor
   const circumference = 2 * Math.PI * radius;
   const offset = circumference - (score / 100) * circumference;
   return (
-    <div className="relative grid h-32 w-32 shrink-0 place-items-center">
-      <svg className="h-32 w-32 -rotate-90" viewBox="0 0 110 110" aria-label={`Score ${score}%`}>
+    <div className="relative grid h-28 w-28 shrink-0 place-items-center sm:h-32 sm:w-32">
+      <svg className="h-28 w-28 -rotate-90 sm:h-32 sm:w-32" viewBox="0 0 110 110" aria-label={`Score ${score}%`}>
         <circle cx="55" cy="55" r={radius} fill="none" stroke="#e2e8f0" strokeWidth="10" />
         <circle
           cx="55"
@@ -1318,7 +1320,7 @@ function ScoreGauge({ score, confidence }: { score: number; confidence: FishScor
         />
       </svg>
       <div className="absolute text-center">
-        <div className="text-3xl font-black text-teal-700">{score}%</div>
+        <div className="text-2xl font-black text-teal-700 sm:text-3xl">{score}%</div>
         <div className="text-xs font-bold text-slate-500">{confidence}</div>
       </div>
     </div>
@@ -1327,7 +1329,7 @@ function ScoreGauge({ score, confidence }: { score: number; confidence: FishScor
 
 function FarmerGuideCard({ selectedScore, lang, text }: { selectedScore: FishScore; lang: Lang; text: typeof ui.en }) {
   return (
-    <section className="card border-teal-100 bg-teal-50/70 p-5">
+    <section className="card border-teal-100 bg-teal-50/70 p-4 sm:p-5">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div>
           <p className="text-xs font-black uppercase tracking-wide text-teal-700">
@@ -1367,7 +1369,7 @@ function ParameterAnalysis({ lang, selectedScore }: { lang: Lang; selectedScore:
           const score = selectedScore.breakdown[meta.key];
           const status = score >= 85 ? "safe" : score >= 65 ? "warning" : "critical";
           return (
-            <article key={meta.key} className={`rounded-2xl border p-5 shadow-card ${levelClasses(status)}`}>
+            <article key={meta.key} className={`rounded-2xl border p-4 shadow-card sm:p-5 ${levelClasses(status)}`}>
               <div className="flex items-center justify-between gap-4">
                 <div className="flex items-center gap-3">
                   <span className="h-3 w-3 rounded-full bg-current" />
@@ -1416,7 +1418,7 @@ function CorrectiveActions({ alerts, status, lang, text }: { alerts: AlertItem[]
     return lang === "tl" ? "Bantayan" : "Monitor";
   };
   return (
-    <section className="card p-5">
+    <section className="card p-4 sm:p-5">
       <div className="flex items-center justify-between gap-3">
         <h2 className="text-lg font-black text-slate-950">{text.correctiveActions}</h2>
         <span className={`rounded-full px-3 py-1 text-xs font-black ring-1 ${badgeClasses(status)}`}>{status}</span>
@@ -1424,13 +1426,13 @@ function CorrectiveActions({ alerts, status, lang, text }: { alerts: AlertItem[]
       <div className="mt-4 space-y-3">
         {alerts.map((alert) => (
           <article key={alert.title} className={`overflow-hidden rounded-2xl border ${levelClasses(alert.level)}`}>
-            <div className="flex items-center justify-between gap-3 border-b border-current/10 px-4 py-3">
+            <div className="flex items-center justify-between gap-3 border-b border-current/10 px-3 py-3 sm:px-4">
               <strong>{localize(alert.title, lang)}</strong>
               <span className={`rounded-full px-2.5 py-1 text-xs font-black ring-1 ${badgeClasses(alert.level)}`}>{alert.level}</span>
             </div>
-            <ol className="space-y-2 px-5 py-4 text-sm font-medium">
+            <ol className="space-y-2 px-3 py-3 text-sm font-medium sm:px-5 sm:py-4">
               {alert.actions.map((action, index) => (
-                <li key={action} className="flex gap-3 rounded-xl bg-white/50 p-3">
+                <li key={action} className="flex gap-2 rounded-xl bg-white/50 p-3 sm:gap-3">
                   <span className="grid h-6 w-6 shrink-0 place-items-center rounded-full bg-white/80 text-xs font-black">{index + 1}</span>
                   <span className="min-w-0">
                     <span className="mb-1 inline-flex rounded-full bg-slate-950 px-2 py-0.5 text-[10px] font-black uppercase tracking-wide text-white">
@@ -1452,7 +1454,7 @@ function FeedingCard({ params, lang, text }: { params: WaterParams; lang: Lang; 
   const hour = new Date().getHours();
   const activeWindow = hour >= 6 && hour < 8 ? "morning" : hour >= 16 && hour < 18 ? "afternoon" : "";
   return (
-    <section className="card p-5">
+    <section className="card p-4 sm:p-5">
       <h2 className="flex items-center gap-2 text-lg font-black text-slate-950">🍽️ {text.feedingManagement}</h2>
       <div className="mt-4 rounded-2xl border border-emerald-200 bg-emerald-50 p-4 text-emerald-800">
         <p className="flex items-center gap-2 text-sm font-black">
@@ -1492,7 +1494,7 @@ function FishRankingPanel({
   text: typeof ui.en;
 }) {
   return (
-    <section className="card h-fit p-5">
+    <section className="card h-fit p-4 sm:p-5">
       <h2 className="flex items-center gap-2 text-lg font-black text-slate-950">
         <Fish className="text-teal-600" size={21} /> {text.ranking}
       </h2>
@@ -1514,14 +1516,14 @@ function FishRankingPanel({
           return (
             <button
               key={score.fish.id}
-              className={`w-full rounded-2xl border bg-white p-4 text-left transition hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-card ${
+              className={`w-full rounded-2xl border bg-white p-3 text-left transition hover:-translate-y-0.5 hover:border-teal-200 hover:shadow-card sm:p-4 ${
                 isTop ? "border-teal-500 ring-2 ring-teal-100" : isSelected ? "border-teal-300" : "border-slate-200"
               }`}
               onClick={() => onSelectFish(score.fish.id)}
             >
               <div className="flex items-start gap-3">
                 <span className="mt-1 text-sm font-black text-slate-500">#{index + 1}</span>
-                <span className="grid h-12 w-12 shrink-0 place-items-center overflow-hidden rounded-2xl bg-slate-100 ring-1 ring-slate-200">
+                <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-xl bg-slate-100 ring-1 ring-slate-200 sm:h-12 sm:w-12 sm:rounded-2xl">
                   <img src={fishImageSrc(score.fish.id)} alt={score.fish.name} className="h-full w-full object-cover" />
                 </span>
                 <span className="min-w-0 flex-1">
@@ -1596,7 +1598,7 @@ function DashboardTrends({
   ] as const;
 
   return (
-    <section className="card p-5">
+    <section className="card p-4 sm:p-5">
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="flex items-center gap-2 text-xl font-black text-slate-950">
@@ -1611,16 +1613,16 @@ function DashboardTrends({
         </span>
       </div>
 
-      <div className="mt-5 grid gap-4 md:grid-cols-2 2xl:grid-cols-5">
+      <div className="mt-4 flex snap-x gap-3 overflow-x-auto pb-2 md:grid md:grid-cols-2 md:overflow-visible md:pb-0 2xl:grid-cols-5">
         {trendCards.map((card) => (
-          <article key={card.key} className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+          <article key={card.key} className="min-w-[230px] snap-start rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:min-w-[260px] sm:p-4 md:min-w-0">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-black uppercase tracking-wide text-slate-600">{card.label}</h3>
               <span className="text-sm font-black text-slate-950">
                 {valueText(card.key, params[card.key])}
               </span>
             </div>
-            <div className="mt-3 h-32">
+            <div className="mt-3 h-28 sm:h-32">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
