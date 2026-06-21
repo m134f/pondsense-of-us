@@ -1597,28 +1597,188 @@ function HistoryPage({ sessions, onExport, text }: { sessions: SessionRecord[]; 
 }
 
 function FarmerGuidePage({ lang, fishDb, text }: { lang: Lang; fishDb: FishSpecies[]; text: typeof ui.en }) {
+  const guideText = {
+    en: {
+      title: "Farmer Field Guide",
+      intro: "Use this guide after every reading. It focuses on simple actions for fish cages and ponds near Laguna de Bay.",
+      dailyTitle: "Daily Pond Routine",
+      warningTitle: "When There Is a Warning",
+      feedingTitle: "Feeding Best Practices",
+      diseaseTitle: "Disease Prevention",
+      emergencyTitle: "Emergency Response",
+      harvestTitle: "Harvest and Market Tips",
+      contactsTitle: "Who to Contact",
+      fishTitle: "Fish Notes",
+      daily: [
+        "Check fish behavior first: gasping, weak swimming, staying near the surface, or sudden loss of appetite.",
+        "Record pH, temperature, dissolved oxygen, turbidity, and ammonia at the same time each day.",
+        "Clean nets, cages, and feeding areas so waste does not build up under the fish.",
+        "Keep a simple notebook or app record of feeding, weather, and water readings."
+      ],
+      warning: [
+        "Stop or reduce feeding when oxygen is low, ammonia is high, or the water is very cloudy.",
+        "Increase aeration or water circulation if available, especially early morning and late afternoon.",
+        "Remove dead fish, spoiled feed, and organic waste immediately.",
+        "Do not add chemicals or treatments without advice from BFAR, LGU, or an aquaculture technician."
+      ],
+      feeding: [
+        "Feed only what fish can finish quickly. Extra feed becomes ammonia and dirty water.",
+        "Avoid heavy feeding during very hot weather, after strong rain, or when fish look stressed.",
+        "Use smaller feeding amounts when ammonia rises or dissolved oxygen drops.",
+        "Observe fish response during feeding; weak appetite is an early warning sign."
+      ],
+      disease: [
+        "Separate sick or dead fish quickly and record what you observed.",
+        "Keep cages clean and avoid overcrowding because stress increases disease risk.",
+        "Do not mix new fish stocks without observation or quarantine when possible.",
+        "Ask for expert help if fish show wounds, red patches, abnormal swimming, or repeated deaths."
+      ],
+      emergency: [
+        "If DO is critical, maximize aeration and stop feeding immediately.",
+        "If ammonia is critical, stop feeding for 24-48 hours and remove organic waste.",
+        "If turbidity is high, avoid disturbing the lake bottom and clean the cage area.",
+        "If many fish are stressed or dying, contact BFAR/LGU and prepare recent water readings."
+      ],
+      harvest: [
+        "Plan harvest when fish reach marketable size and water readings are stable.",
+        "Avoid handling or harvest during extreme heat, low oxygen, or after heavy rainfall.",
+        "Sort fish gently to reduce stress and damage before selling.",
+        "Track market demand so harvest timing matches better price opportunities."
+      ],
+      contacts: [
+        "Barangay or City Agriculture Office",
+        "BFAR regional or local fisheries office",
+        "LGU disaster or environmental office during fish kill or water pollution events",
+        "Aquaculture adviser, technician, or instructor for treatment decisions"
+      ],
+      rangeNote: "Use these as quick reference ranges. Species-specific ranges may be adjusted by the admin only with adviser or BFAR guidance."
+    },
+    tl: {
+      title: "Gabay sa Bukid-Isdaan",
+      intro: "Gamitin ang gabay na ito pagkatapos ng bawat reading. Nakatuon ito sa madaling gawin para sa palaisdaan at fish cage malapit sa Laguna de Bay.",
+      dailyTitle: "Araw-araw na Routine",
+      warningTitle: "Kapag May Babala",
+      feedingTitle: "Tamang Pagpapakain",
+      diseaseTitle: "Pag-iwas sa Sakit",
+      emergencyTitle: "Emergency Response",
+      harvestTitle: "Ani at Bentahan",
+      contactsTitle: "Sino ang Kokontakin",
+      fishTitle: "Tala sa Isda",
+      daily: [
+        "Unahin tingnan ang kilos ng isda: paghahabol ng hangin, mahinang langoy, pag-angat sa ibabaw, o biglang ayaw kumain.",
+        "I-record ang pH, temperatura, dissolved oxygen, turbidity, at ammonia sa parehong oras araw-araw.",
+        "Linisin ang lambat, kulungan, at feeding area para hindi maipon ang dumi.",
+        "Magtabi ng simpleng record ng pakain, panahon, at water readings."
+      ],
+      warning: [
+        "Itigil o bawasan ang pakain kapag mababa ang oxygen, mataas ang ammonia, o sobrang labo ng tubig.",
+        "Dagdagan ang aeration o sirkulasyon kung mayroon, lalo na sa umaga at hapon.",
+        "Alisin agad ang patay na isda, sirang pakain, at organic waste.",
+        "Huwag maglagay ng kemikal o gamot nang walang payo mula sa BFAR, LGU, o aquaculture technician."
+      ],
+      feeding: [
+        "Pakainin lang ang kaya nilang ubusin agad. Ang sobrang pakain ay nagiging ammonia at dumi sa tubig.",
+        "Iwasan ang malakas na pakain sa sobrang init, pagkatapos ng malakas na ulan, o kapag stressed ang isda.",
+        "Bawasan ang pakain kapag tumataas ang ammonia o bumababa ang dissolved oxygen.",
+        "Obserbahan ang gana sa pagkain; ang mahinang gana ay maagang senyales ng problema."
+      ],
+      disease: [
+        "Ihiwalay o alisin agad ang may sakit o patay na isda at isulat ang nakita.",
+        "Panatilihing malinis ang kulungan at iwasan ang sobrang siksikan.",
+        "Huwag basta maghalo ng bagong isda nang walang obserbasyon o quarantine kung kaya.",
+        "Humingi ng tulong kapag may sugat, pulang marka, kakaibang langoy, o paulit-ulit na pagkamatay."
+      ],
+      emergency: [
+        "Kung critical ang DO, lakasan ang aeration at itigil agad ang pakain.",
+        "Kung critical ang ammonia, itigil ang pakain ng 24-48 oras at alisin ang dumi.",
+        "Kung mataas ang turbidity, iwasang galawin ang ilalim ng lawa at linisin ang cage area.",
+        "Kung maraming isda ang stressed o namamatay, kontakin ang BFAR/LGU at ihanda ang recent water readings."
+      ],
+      harvest: [
+        "Mag-ani kapag marketable na ang laki ng isda at stable ang water readings.",
+        "Iwasan ang paghawak o pag-ani sa sobrang init, mababang oxygen, o pagkatapos ng malakas na ulan.",
+        "Dahan-dahang i-sort ang isda para iwas stress at damage bago ibenta.",
+        "Bantayan ang demand sa merkado para mas maganda ang timing ng benta."
+      ],
+      contacts: [
+        "Barangay o City Agriculture Office",
+        "BFAR regional o local fisheries office",
+        "LGU disaster o environmental office kapag may fish kill o polusyon",
+        "Aquaculture adviser, technician, o instructor para sa treatment decisions"
+      ],
+      rangeNote: "Gamitin ito bilang quick reference. Ang species-specific ranges ay dapat baguhin lang ng admin kapag may payo ng adviser o BFAR."
+    }
+  }[lang];
+
+  const guideCards = [
+    { title: guideText.dailyTitle, items: guideText.daily, tone: "border-teal-200 bg-teal-50/70 text-teal-900", icon: <Clock3 size={20} /> },
+    { title: guideText.warningTitle, items: guideText.warning, tone: "border-amber-200 bg-amber-50/80 text-amber-900", icon: <AlertTriangle size={20} /> },
+    { title: guideText.feedingTitle, items: guideText.feeding, tone: "border-emerald-200 bg-emerald-50/70 text-emerald-900", icon: <Fish size={20} /> },
+    { title: guideText.diseaseTitle, items: guideText.disease, tone: "border-sky-200 bg-sky-50/70 text-sky-900", icon: <Shield size={20} /> },
+    { title: guideText.emergencyTitle, items: guideText.emergency, tone: "border-red-200 bg-red-50/80 text-red-900", icon: <AlertTriangle size={20} /> },
+    { title: guideText.harvestTitle, items: guideText.harvest, tone: "border-slate-200 bg-white text-slate-800", icon: <BarChart3 size={20} /> }
+  ];
+
   return (
-    <main className="mx-auto grid max-w-[1500px] gap-5 px-4 pb-8 sm:px-6 lg:grid-cols-3">
-      <section className="card p-6">
-        <h2 className="text-xl font-black text-slate-950">{text.farmingTips}</h2>
-        <ul className="mt-4 space-y-3 text-sm font-medium leading-6 text-slate-700">
-          <li>Monitor pH, DO, turbidity, ammonia, and temperature every day.</li>
-          <li>Stop feeding when ammonia rises or oxygen drops below the safe range.</li>
-          <li>Keep net and cage areas clean to reduce organic waste buildup.</li>
-          <li>Use local expert guidance before applying any treatment in Laguna Lake conditions.</li>
-        </ul>
+    <main className="mx-auto max-w-[1500px] space-y-5 px-4 pb-8 sm:px-6">
+      <section className="card overflow-hidden">
+        <div className="grid gap-6 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-600 p-6 text-white lg:grid-cols-[1.6fr_1fr]">
+          <div>
+            <div className="flex items-center gap-3">
+              <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/15 ring-1 ring-white/25">
+                <BookOpen size={24} />
+              </span>
+              <div>
+                <p className="text-xs font-black uppercase tracking-[0.18em] text-teal-50">{text.guide}</p>
+                <h2 className="text-3xl font-black">{guideText.title}</h2>
+              </div>
+            </div>
+            <p className="mt-4 max-w-3xl text-base font-semibold leading-7 text-teal-50">{guideText.intro}</p>
+          </div>
+          <div className="rounded-2xl border border-white/20 bg-white/10 p-4">
+            <h3 className="text-sm font-black uppercase tracking-[0.12em] text-teal-50">{guideText.contactsTitle}</h3>
+            <ul className="mt-3 space-y-2 text-sm font-semibold leading-6 text-white">
+              {guideText.contacts.map((item) => (
+                <li key={item} className="flex gap-2">
+                  <Check className="mt-1 shrink-0" size={15} />
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ul>
+          </div>
+        </div>
       </section>
-      <section className="card p-6">
-        <h2 className="text-xl font-black text-slate-950">{text.seasonalTips}</h2>
-        <ul className="mt-4 space-y-3 text-sm font-medium leading-6 text-slate-700">
-          <li>Summer: watch heat stress and low dissolved oxygen in the afternoon.</li>
-          <li>Rainy season: recheck pH and turbidity after heavy rainfall.</li>
-          <li>Typhoon season: avoid handling fish and inspect cages after strong water movement.</li>
-          <li>Laguna de Bay: consult BFAR/LGU when unusual color, odor, or fish behavior appears.</li>
-        </ul>
+
+      <section className="grid gap-5 lg:grid-cols-3">
+        {guideCards.map((card) => (
+          <article key={card.title} className={`rounded-2xl border p-5 shadow-sm ${card.tone}`}>
+            <div className="flex items-center gap-3">
+              <span className="grid h-10 w-10 place-items-center rounded-xl bg-white/70 ring-1 ring-current/10">{card.icon}</span>
+              <h3 className="text-lg font-black">{card.title}</h3>
+            </div>
+            <ol className="mt-4 space-y-3">
+              {card.items.map((item, index) => (
+                <li key={item} className="grid grid-cols-[2rem_1fr] gap-3 text-sm font-semibold leading-6">
+                  <span className="grid h-8 w-8 place-items-center rounded-full bg-white text-xs font-black shadow-sm ring-1 ring-current/10">{index + 1}</span>
+                  <span>{item}</span>
+                </li>
+              ))}
+            </ol>
+          </article>
+        ))}
       </section>
-      <section className="card overflow-hidden p-6 lg:col-span-1">
-        <h2 className="text-xl font-black text-slate-950">{text.optimalRanges}</h2>
+
+      <section className="grid gap-5 lg:grid-cols-[1fr_1.5fr]">
+        <section className="card overflow-hidden p-6">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-teal-50 text-teal-700 ring-1 ring-teal-100">
+              <Droplets size={20} />
+            </span>
+            <div>
+              <h2 className="text-xl font-black text-slate-950">{text.optimalRanges}</h2>
+              <p className="text-sm font-semibold text-slate-500">{guideText.rangeNote}</p>
+            </div>
+          </div>
         <div className="mt-4 overflow-x-auto">
           <table className="min-w-full text-left text-sm">
             <thead>
@@ -1637,8 +1797,19 @@ function FarmerGuidePage({ lang, fishDb, text }: { lang: Lang; fishDb: FishSpeci
             </tbody>
           </table>
         </div>
-      </section>
-      <section className="grid gap-5 lg:col-span-3 lg:grid-cols-4">
+        </section>
+
+        <section className="card p-6">
+          <div className="flex items-center gap-3">
+            <span className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
+              <Fish size={20} />
+            </span>
+            <div>
+              <h2 className="text-xl font-black text-slate-950">{guideText.fishTitle}</h2>
+              <p className="text-sm font-semibold text-slate-500">Quick notes for the 8 supported species in PondSense.</p>
+            </div>
+          </div>
+          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         {fishDb.map((fish) => (
           <article key={fish.id} className="card p-5">
             <div className="h-28 overflow-hidden rounded-2xl bg-slate-100 ring-1 ring-slate-200">
@@ -1649,6 +1820,8 @@ function FarmerGuidePage({ lang, fishDb, text }: { lang: Lang; fishDb: FishSpeci
             <p className="mt-3 text-sm leading-6 text-slate-700">{fishDescription(fish, lang)}</p>
           </article>
         ))}
+          </div>
+        </section>
       </section>
     </main>
   );
