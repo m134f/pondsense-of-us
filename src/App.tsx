@@ -197,7 +197,7 @@ const fishImages: Record<string, string> = {
   "common-carp": "/fish/common-carp.jpg",
   bangus: "/fish/bangus.jpg",
   "grass-carp": "/fish/grass-carp.jpg",
-  "rainbow-trout": "/fish/rainbow-trout.jpg",
+  mamali: "/fish/mamali.jpg",
   snakehead: "/fish/snakehead.jpg",
   "red-tilapia": "/fish/red-tilapia.jpg"
 };
@@ -257,14 +257,14 @@ const fishGuideCopy: Record<string, Record<Lang, { description: string; guide: s
       guide: "Magbigay ng plant-based feed at panatilihing stable ang dissolved oxygen."
     }
   },
-  "rainbow-trout": {
+  mamali: {
     en: {
-      description: "Cold-water fish with strict oxygen and temperature requirements.",
-      guide: "Not ideal for warm Laguna Lake ponds. Requires cool, oxygen-rich water."
+      description: "Bighead carp that grows well in warm freshwater and feeds on natural plankton.",
+      guide: "Maintain good oxygen and avoid heavy organic waste. Best for ponds with stable green water."
     },
     tl: {
-      description: "Cold-water fish na nangangailangan ng mataas na oxygen at malamig na temperatura.",
-      guide: "Hindi ito ideal sa mainit na kondisyon ng Laguna Lake. Kailangan nito ng malamig at oxygen-rich na tubig."
+      description: "Bighead carp na tumutubo nang maayos sa mainit na freshwater at kumakain ng natural na plankton.",
+      guide: "Panatilihing maayos ang oxygen at iwasan ang sobrang organic waste. Mas bagay ito sa pond na stable ang berdeng tubig."
     }
   },
   snakehead: {
@@ -427,6 +427,16 @@ function recommendationClasses(score: number) {
   return "bg-red-50 text-red-700 ring-red-200";
 }
 
+function normalizeFishDatabase(fish: FishSpecies[]) {
+  const mamali = fishDatabase.find((species) => species.id === "mamali");
+  const withoutTrout = fish.filter((species) => species.id !== "rainbow-trout" && species.name !== "Rainbow Trout");
+  if (!mamali || withoutTrout.some((species) => species.id === "mamali")) return withoutTrout;
+  const grassCarpIndex = withoutTrout.findIndex((species) => species.id === "grass-carp");
+  const next = [...withoutTrout];
+  next.splice(grassCarpIndex >= 0 ? grassCarpIndex + 1 : next.length, 0, mamali);
+  return next;
+}
+
 function parameterMatchLevel(value: number): AlertLevel {
   if (value >= 85) return "safe";
   if (value >= 65) return "warning";
@@ -516,7 +526,7 @@ export default function App() {
   const [lang, setLangState] = useState<Lang>(storage.language());
   const [tab, setTab] = useState<AppTab>("analysis");
   const [params, setParams] = useState<WaterParams>(defaultParams);
-  const [fishDb, setFishDb] = useState<FishSpecies[]>(storage.fishOverrides() || fishDatabase);
+  const [fishDb, setFishDb] = useState<FishSpecies[]>(normalizeFishDatabase(storage.fishOverrides() || fishDatabase));
   const [selectedFishId, setSelectedFishId] = useState("tilapia");
   const [sessions, setSessions] = useState<SessionRecord[]>(storage.sessions(savedUser));
   const [currentUser, setCurrentUser] = useState<AppUser | null>(savedUser);

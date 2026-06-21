@@ -41,7 +41,7 @@ const fishProfiles: FishProfile[] = [
   { name: "Common Carp", scientificName: "Cyprinus carpio", ranges: { ph: [6.5, 9], temperature: [20, 30], dissolvedOxygen: [4, 8], turbidity: [25, 120], ammonia: [0, 0.06] } },
   { name: "Milkfish (Bangus)", scientificName: "Chanos chanos", ranges: { ph: [7, 8.5], temperature: [26, 32], dissolvedOxygen: [5, 8], turbidity: [20, 100], ammonia: [0, 0.04] } },
   { name: "Grass Carp", scientificName: "Ctenopharyngodon idella", ranges: { ph: [6.5, 8.5], temperature: [22, 30], dissolvedOxygen: [5, 8], turbidity: [20, 100], ammonia: [0, 0.05] } },
-  { name: "Rainbow Trout", scientificName: "Oncorhynchus mykiss", ranges: { ph: [6.5, 8], temperature: [10, 18], dissolvedOxygen: [7, 12], turbidity: [0, 40], ammonia: [0, 0.02] } },
+  { name: "Mamali", scientificName: "Hypophthalmichthys nobilis", ranges: { ph: [6.5, 8.5], temperature: [22, 30], dissolvedOxygen: [4, 8], turbidity: [20, 120], ammonia: [0, 0.05] } },
   { name: "Snakehead", scientificName: "Channa striata", ranges: { ph: [6, 8], temperature: [24, 32], dissolvedOxygen: [3, 8], turbidity: [20, 130], ammonia: [0, 0.08] } },
   { name: "Red Tilapia", scientificName: "Oreochromis sp. hybrid", ranges: { ph: [6.5, 8.5], temperature: [25, 32], dissolvedOxygen: [5, 8], turbidity: [25, 100], ammonia: [0, 0.05] } }
 ];

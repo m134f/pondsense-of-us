@@ -57,15 +57,15 @@ export const fishDatabase: FishSpecies[] = [
     ranges: { ph: [6.5, 8.5], temperature: [22, 30], dissolvedOxygen: [5, 8], turbidity: [20, 100], ammonia: [0, 0.05] }
   },
   {
-    id: "rainbow-trout",
-    name: "Rainbow Trout",
-    scientificName: "Oncorhynchus mykiss",
-    category: "Cold Freshwater",
-    marketValue: "High",
-    harvestTime: "10-14 months",
-    description: "Cold-water fish with strict oxygen and temperature requirements.",
-    guide: "Not ideal for warm Laguna Lake ponds. Requires cool, oxygen-rich water.",
-    ranges: { ph: [6.5, 8], temperature: [10, 18], dissolvedOxygen: [7, 12], turbidity: [0, 40], ammonia: [0, 0.02] }
+    id: "mamali",
+    name: "Mamali",
+    scientificName: "Hypophthalmichthys nobilis",
+    category: "Freshwater",
+    marketValue: "Medium",
+    harvestTime: "8-12 months",
+    description: "Bighead carp that grows well in warm freshwater and feeds on natural plankton.",
+    guide: "Maintain good oxygen and avoid heavy organic waste. Best for ponds with stable green water.",
+    ranges: { ph: [6.5, 8.5], temperature: [22, 30], dissolvedOxygen: [4, 8], turbidity: [20, 120], ammonia: [0, 0.05] }
   },
   {
     id: "snakehead",

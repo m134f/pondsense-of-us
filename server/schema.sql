@@ -101,6 +101,9 @@ CREATE TABLE IF NOT EXISTS sensor_devices (
   FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
+DELETE FROM fish_species
+WHERE name = 'Rainbow Trout' OR scientific_name = 'Oncorhynchus mykiss';
+
 INSERT INTO fish_species
   (name, scientific_name, optimal_ph_min, optimal_ph_max,
    optimal_temp_min, optimal_temp_max,
@@ -113,7 +116,7 @@ VALUES
   ('Common Carp','Cyprinus carpio',6.5,8.5,20,28,5,8,25,100,0.05,'Medium','8-12 months','Freshwater','Adaptable species; popular in Laguna de Bay farming.'),
   ('Milkfish (Bangus)','Chanos chanos',7.0,8.5,26,32,4,8,20,100,0.06,'High','6-8 months','Brackish','National fish of the Philippines; thrives near Laguna Lake.'),
   ('Grass Carp','Ctenopharyngodon idella',6.5,8.5,20,30,5,8,20,100,0.05,'High','10-14 months','Freshwater','Feeds on aquatic vegetation; good for lake conditions.'),
-  ('Rainbow Trout','Oncorhynchus mykiss',6.5,8.0,12,20,7,12,10,50,0.02,'Very High','10-14 months','Freshwater','Requires cold, well-oxygenated water.'),
+  ('Mamali','Hypophthalmichthys nobilis',6.5,8.5,22,30,4,8,20,120,0.05,'Medium','8-12 months','Freshwater','Bighead carp suited to warm freshwater ponds and natural plankton feeding.'),
   ('Snakehead','Channa striata',6.0,8.0,24,32,3,8,20,150,0.10,'High','8-12 months','Freshwater','Highly tolerant; popular in local markets.'),
   ('Red Tilapia','Oreochromis sp. hybrid',6.5,8.5,25,32,5,8,25,100,0.05,'High','5-7 months','Freshwater','Premium market variant of Tilapia; high demand.')
 ON DUPLICATE KEY UPDATE name = VALUES(name);
