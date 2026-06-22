@@ -2638,11 +2638,15 @@ function AdminThresholdsPage() {
     await apiJson(`/api/admin/thresholds/${row.id}`, { method: "PATCH", body: JSON.stringify(row) });
   };
   const fields = [
-    { key: "optimal_ph_min", label: "Minimum pH", help: "Lowest acceptable pH" },
-    { key: "optimal_ph_max", label: "Maximum pH", help: "Highest acceptable pH" },
-    { key: "optimal_temp_min", label: "Minimum Temp", help: "Lowest water temperature" },
-    { key: "optimal_temp_max", label: "Maximum Temp", help: "Highest water temperature" },
-    { key: "max_ammonia", label: "Max Ammonia", help: "Highest safe NH3 level" }
+    { key: "optimal_ph_min", label: "Minimum pH", help: "Lowest acceptable pH", step: "0.01" },
+    { key: "optimal_ph_max", label: "Maximum pH", help: "Highest acceptable pH", step: "0.01" },
+    { key: "optimal_temp_min", label: "Minimum Temp", help: "Lowest water temperature (C)", step: "0.01" },
+    { key: "optimal_temp_max", label: "Maximum Temp", help: "Highest water temperature (C)", step: "0.01" },
+    { key: "optimal_do_min", label: "Minimum DO", help: "Lowest dissolved oxygen (mg/L)", step: "0.01" },
+    { key: "optimal_do_max", label: "Maximum DO", help: "Highest dissolved oxygen (mg/L)", step: "0.01" },
+    { key: "optimal_turb_min", label: "Minimum Turbidity", help: "Lowest turbidity level (NTU)", step: "0.01" },
+    { key: "optimal_turb_max", label: "Maximum Turbidity", help: "Highest turbidity level (NTU)", step: "0.01" },
+    { key: "max_ammonia", label: "Max Ammonia", help: "Highest safe NH3 level (mg/L)", step: "0.0001" }
   ];
   return (
     <section className="card p-5">
@@ -2654,11 +2658,11 @@ function AdminThresholdsPage() {
         {fish.map((row, index) => (
           <div key={String(row.id)} className="rounded-2xl border border-slate-200 p-4">
             <h3 className="font-black text-slate-950">{String(row.name)}</h3>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
               {fields.map((field) => (
                 <label key={field.key} className="rounded-xl bg-slate-50 p-3 text-xs font-bold uppercase text-slate-500">
                   {field.label}
-                  <input className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-900" type="number" step="0.01" value={String(row[field.key] ?? "")} onChange={(event) => {
+                  <input className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-900" type="number" step={field.step} value={String(row[field.key] ?? "")} onChange={(event) => {
                     const next = [...fish];
                     next[index] = { ...row, [field.key]: Number(event.target.value) };
                     setFish(next);
