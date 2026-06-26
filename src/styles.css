@@ -3,13 +3,28 @@
 @tailwind utilities;
 
 @layer base {
+  html {
+    min-height: 100%;
+    background: #f1f5f9;
+  }
+
   body {
     @apply bg-slate-100 text-slate-900 antialiased;
+    min-height: 100%;
+    overscroll-behavior-y: none;
+    -webkit-tap-highlight-color: transparent;
   }
 
   button,
   input {
     font: inherit;
+  }
+}
+
+@supports (padding: max(0px)) {
+  body {
+    padding-left: env(safe-area-inset-left);
+    padding-right: env(safe-area-inset-right);
   }
 }
 
