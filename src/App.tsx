@@ -13,6 +13,7 @@ import {
   History,
   Lock,
   LogOut,
+  Menu,
   Printer,
   Settings,
   Shield,
@@ -781,6 +782,11 @@ export default function App() {
         setLang={setLang}
         clock={clock}
         currentUser={currentUser}
+        activeTab={tab}
+        onTabChange={(nextTab) => {
+          setTab(nextTab);
+          navigate(nextTab === "history" ? "/history" : nextTab === "guide" ? "/guide" : "/dashboard");
+        }}
         onHome={() => navigate("/dashboard")}
         onPrint={printReport}
         onAuth={() => navigate("/login")}
@@ -847,6 +853,8 @@ function Header({
   setLang,
   clock,
   currentUser,
+  activeTab,
+  onTabChange,
   onHome,
   onPrint,
   onAuth,
@@ -857,15 +865,29 @@ function Header({
   setLang: (lang: Lang) => void;
   clock: Date;
   currentUser: AppUser | null;
+  activeTab: AppTab;
+  onTabChange: (tab: AppTab) => void;
   onHome: () => void;
   onPrint: () => void;
   onAuth: () => void;
   onLogout: () => void;
   text: typeof ui.en;
 }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const mobileTabs: Array<{ id: AppTab; label: string; icon: typeof BarChart3 }> = [
+    { id: "analysis", label: text.analysis, icon: BarChart3 },
+    { id: "history", label: text.history, icon: History },
+    { id: "guide", label: text.guide, icon: BookOpen }
+  ];
+
+  const chooseTab = (nextTab: AppTab) => {
+    onTabChange(nextTab);
+    setMenuOpen(false);
+  };
+
   return (
     <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
-      <div className="mx-auto flex max-w-[1500px] flex-col gap-3 px-3 py-3 sm:px-6 sm:py-4 lg:flex-row lg:items-center lg:justify-between">
+      <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-3 px-3 py-3 sm:px-6 sm:py-4 lg:flex-row lg:items-center lg:justify-between">
         <button className="flex min-w-0 items-center gap-2 text-left sm:gap-3" onClick={onHome} title="PondSense dashboard">
           <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-white ring-1 ring-teal-100 sm:h-12 sm:w-12 sm:rounded-2xl">
             <img src="/logofishpond.png?v=logo-20260612" alt="PondSense of Us logo" className="h-full w-full object-cover" />
@@ -876,7 +898,16 @@ function Header({
           </span>
         </button>
 
-        <div className="grid grid-cols-2 items-center gap-2 sm:flex sm:flex-wrap">
+        <button
+          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50 md:hidden"
+          onClick={() => setMenuOpen((open) => !open)}
+          aria-label="Open menu"
+          aria-expanded={menuOpen}
+        >
+          {menuOpen ? <X size={20} /> : <Menu size={20} />}
+        </button>
+
+        <div className="hidden items-center gap-2 md:flex md:flex-wrap">
           <div className="flex rounded-xl bg-slate-100 p-1">
             {(["en", "tl"] as const).map((item) => (
               <button
@@ -908,6 +939,58 @@ function Header({
           )}
         </div>
       </div>
+      {menuOpen && (
+        <div className="border-t border-slate-100 bg-white px-3 pb-4 shadow-lg md:hidden">
+          <div className="mx-auto max-w-[1500px] space-y-3 pt-3">
+            <div className="grid gap-2">
+              {mobileTabs.map(({ id, label, icon: Icon }) => (
+                <button
+                  key={id}
+                  className={`flex min-h-12 items-center gap-3 rounded-xl px-4 text-left text-sm font-black transition ${
+                    activeTab === id ? "bg-teal-50 text-teal-800 ring-1 ring-teal-200" : "bg-slate-50 text-slate-600 hover:bg-slate-100"
+                  }`}
+                  onClick={() => chooseTab(id)}
+                >
+                  <Icon size={18} className={activeTab === id ? "text-teal-600" : "text-slate-400"} />
+                  {label}
+                </button>
+              ))}
+            </div>
+
+            <div className="grid grid-cols-2 gap-2">
+              <div className="flex rounded-xl bg-slate-100 p-1">
+                {(["en", "tl"] as const).map((item) => (
+                  <button
+                    key={item}
+                    className={`flex-1 rounded-lg px-3 py-2 text-xs font-black transition ${lang === item ? "bg-teal-600 text-white shadow-sm" : "text-slate-500 hover:text-teal-700"}`}
+                    onClick={() => setLang(item)}
+                  >
+                    {item.toUpperCase()}
+                  </button>
+                ))}
+              </div>
+              <span className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">
+                <Clock3 size={16} /> {formattedClock(clock)}
+              </span>
+              <span className="col-span-2 inline-flex min-w-0 items-center justify-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-700 ring-1 ring-amber-100">
+                <User size={16} className="shrink-0" /> <span className="truncate">{currentUser ? currentUser.fullName : text.guest}</span>
+              </span>
+              <button className="soft-button min-h-11" onClick={() => { onPrint(); setMenuOpen(false); }}>
+                <Printer size={16} /> {text.print}
+              </button>
+              {currentUser ? (
+                <button className="soft-button min-h-11" onClick={() => { onLogout(); setMenuOpen(false); }}>
+                  <LogOut size={16} /> {text.logout}
+                </button>
+              ) : (
+                <button className="primary-button min-h-11 py-2" onClick={() => { onAuth(); setMenuOpen(false); }}>
+                  <Lock size={16} /> {text.loginRegister}
+                </button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </header>
   );
 }
@@ -920,7 +1003,7 @@ function Tabs({ active, onChange, text }: { active: AppTab; onChange: (tab: AppT
   ];
 
   return (
-    <nav className="mx-auto flex max-w-[1500px] gap-2 overflow-x-auto px-3 py-3 sm:px-6 sm:py-4">
+    <nav className="mx-auto hidden max-w-[1500px] gap-2 overflow-x-auto px-3 py-3 sm:px-6 sm:py-4 md:flex">
       <div className="grid min-w-full grid-cols-3 gap-1 rounded-2xl bg-slate-200/70 p-1 shadow-inner sm:inline-flex sm:min-w-0 sm:flex-wrap">
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
