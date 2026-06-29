@@ -628,9 +628,9 @@ export default function App() {
       if (savedReading.data?.sms?.ok) {
         setSms(`Real iProgSMS water warning queued for ${currentUser?.phone || "guest user"}.`);
       } else if (savedReading.data?.sms?.configured === false) {
-        setSms("Water warning detected. Add IPROG_SMS_API_TOKEN in .env to send real SMS.");
+        setSms("Water warning saved. SMS notification is temporarily unavailable.");
       } else {
-        setSms(savedReading.data?.sms?.message || "Water warning detected, but SMS was not sent.");
+        setSms(savedReading.data?.sms?.message || "Water warning saved. SMS notification is temporarily unavailable.");
       }
     }
   };
