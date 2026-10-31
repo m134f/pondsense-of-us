@@ -46,6 +46,13 @@ type SmsResult = {
   message: string;
   messageId?: string;
 };
+type SensorTelemetry = {
+  deviceName: string;
+  rawValue: number;
+  voltage: number;
+  turbidityNtu: number | null;
+  recordedAt: string;
+};
 type AdminUser = {
   id: number;
   fullName: string;
@@ -537,6 +544,7 @@ export default function App() {
   const [sms, setSms] = useState("");
   const [clock, setClock] = useState(new Date());
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
+  const [sensorTelemetry, setSensorTelemetry] = useState<SensorTelemetry | null>(null);
   const text = ui[lang];
 
   useEffect(() => {
@@ -561,6 +569,30 @@ export default function App() {
 
     return () => {
       active = false;
+    };
+  }, [currentUser?.id, currentUser?.phone]);
+
+  useEffect(() => {
+    let active = true;
+
+    if (!currentUser) {
+      setSensorTelemetry(null);
+      return () => {
+        active = false;
+      };
+    }
+
+    const loadSensorTelemetry = async () => {
+      const result = await apiJson<{ telemetry: SensorTelemetry | null }>("/api/sensors/latest");
+      if (active && result.data) setSensorTelemetry(result.data.telemetry);
+    };
+
+    void loadSensorTelemetry();
+    const interval = window.setInterval(() => void loadSensorTelemetry(), 10_000);
+
+    return () => {
+      active = false;
+      window.clearInterval(interval);
     };
   }, [currentUser?.id, currentUser?.phone]);
 
@@ -811,6 +843,7 @@ export default function App() {
           lang={lang}
           params={params}
           setParams={setParams}
+          sensorTelemetry={sensorTelemetry}
           sessions={sessions}
           scores={scores}
           alerts={alerts}
@@ -1072,6 +1105,7 @@ function AnalysisPage({
   lang,
   params,
   setParams,
+  sensorTelemetry,
   sessions,
   scores,
   alerts,
@@ -1088,6 +1122,7 @@ function AnalysisPage({
   lang: Lang;
   params: WaterParams;
   setParams: (params: WaterParams) => void;
+  sensorTelemetry: SensorTelemetry | null;
   sessions: SessionRecord[];
   scores: FishScore[];
   alerts: AlertItem[];
@@ -1107,7 +1142,14 @@ function AnalysisPage({
   return (
     <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-4 px-3 pb-6 sm:gap-5 sm:px-6 sm:pb-8 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
       <aside className="space-y-5">
-        <WaterParametersPanel lang={lang} params={params} setParams={setParams} onAnalyze={onAnalyze} text={text} />
+        <WaterParametersPanel
+          lang={lang}
+          params={params}
+          setParams={setParams}
+          sensorTelemetry={sensorTelemetry}
+          onAnalyze={onAnalyze}
+          text={text}
+        />
         {hasAnalyzed && (
           <>
             <FeedingCard params={params} lang={lang} text={text} />
@@ -1227,12 +1269,14 @@ function WaterParametersPanel({
   lang,
   params,
   setParams,
+  sensorTelemetry,
   onAnalyze,
   text
 }: {
   lang: Lang;
   params: WaterParams;
   setParams: (params: WaterParams) => void;
+  sensorTelemetry: SensorTelemetry | null;
   onAnalyze: () => void;
   text: typeof ui.en;
 }) {
@@ -1241,6 +1285,52 @@ function WaterParametersPanel({
       <h2 className="mb-5 flex items-center gap-2 text-lg font-black text-slate-950">
         <Droplets className="text-teal-600" size={21} /> {text.waterParameters}
       </h2>
+      <section className="mb-5 rounded-xl border border-teal-100 bg-teal-50 p-3">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-teal-800">
+              <Activity size={14} /> {lang === "tl" ? "Live ESP32 Sensor" : "Live ESP32 Sensor"}
+            </p>
+            {sensorTelemetry ? (
+              <>
+                <p className="mt-1 text-sm font-black text-slate-900">{sensorTelemetry.deviceName}</p>
+                <p className="mt-1 text-xs font-semibold text-slate-600">
+                  {lang === "tl" ? "Huling update" : "Last update"}: {new Date(sensorTelemetry.recordedAt).toLocaleString("en-PH")}
+                </p>
+              </>
+            ) : (
+              <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">
+                {lang === "tl"
+                  ? "Naghihintay ng unang turbidity reading mula sa ESP32."
+                  : "Waiting for the first turbidity reading from the ESP32."}
+              </p>
+            )}
+          </div>
+          <span className={`mt-0.5 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-black ${sensorTelemetry ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>
+            <span className={`h-1.5 w-1.5 rounded-full ${sensorTelemetry ? "bg-emerald-500" : "bg-slate-400"}`} />
+            {sensorTelemetry ? (lang === "tl" ? "Live" : "Live") : (lang === "tl" ? "Wala pa" : "Waiting")}
+          </span>
+        </div>
+        {sensorTelemetry && (
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="rounded-lg bg-white px-2.5 py-2 ring-1 ring-teal-100">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Raw ADC</p>
+              <p className="mt-0.5 text-base font-black text-slate-900">{sensorTelemetry.rawValue}</p>
+            </div>
+            <div className="rounded-lg bg-white px-2.5 py-2 ring-1 ring-teal-100">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Signal</p>
+              <p className="mt-0.5 text-base font-black text-slate-900">{sensorTelemetry.voltage.toFixed(2)} V</p>
+            </div>
+          </div>
+        )}
+        {sensorTelemetry?.turbidityNtu === null && (
+          <p className="mt-2 text-[11px] font-semibold leading-4 text-slate-500">
+            {lang === "tl"
+              ? "Raw sensor value ito. I-calibrate muna bago gamitin bilang NTU sa analysis."
+              : "This is a raw sensor value. Calibrate it before using it as NTU in the analysis."}
+          </p>
+        )}
+      </section>
       <div className="space-y-5 sm:space-y-6">
         {parameterMeta.map((meta) => {
           const status = statusFor(meta.key, params[meta.key]);

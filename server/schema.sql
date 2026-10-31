@@ -101,6 +101,17 @@ CREATE TABLE IF NOT EXISTS sensor_devices (
   FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL
 );
 
+CREATE TABLE IF NOT EXISTS sensor_telemetry (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  device_id INT NOT NULL,
+  turbidity_raw INT NOT NULL,
+  turbidity_voltage DECIMAL(5,3) NOT NULL,
+  turbidity_ntu DECIMAL(8,2) NULL,
+  recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  INDEX sensor_telemetry_device_recorded_index (device_id, recorded_at),
+  FOREIGN KEY (device_id) REFERENCES sensor_devices(id) ON DELETE CASCADE
+);
+
 DELETE FROM fish_species
 WHERE name = 'Rainbow Trout' OR scientific_name = 'Oncorhynchus mykiss';
 

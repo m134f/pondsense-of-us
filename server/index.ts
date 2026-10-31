@@ -126,6 +126,30 @@ function validateReadingPayload(reading: Record<string, unknown>) {
   return { values: { ph, temperature, turbidity, ammonia, dissolvedOxygen }, error: null };
 }
 
+function validateTurbidityTelemetry(payload: Record<string, unknown>) {
+  const rawValue = numberFromBody(payload.rawValue ?? payload.raw_value);
+  const voltage = numberFromBody(payload.voltage);
+  const turbidityNtu = payload.turbidityNtu ?? payload.turbidity_ntu ?? payload.ntu;
+  const ntu = turbidityNtu === undefined || turbidityNtu === null || turbidityNtu === ""
+    ? null
+    : numberFromBody(turbidityNtu);
+
+  if (rawValue === null || rawValue < 0 || rawValue > 4095) {
+    return { error: "Raw turbidity value must be between 0 and 4095.", values: null };
+  }
+  if (voltage === null || voltage < 0 || voltage > 3.3) {
+    return { error: "Turbidity signal voltage must be between 0 and 3.3V.", values: null };
+  }
+  if (ntu === null && turbidityNtu !== undefined && turbidityNtu !== null && turbidityNtu !== "") {
+    return { error: "Invalid turbidity NTU value.", values: null };
+  }
+  if (ntu !== null && (ntu < 0 || ntu > 1000)) {
+    return { error: "Turbidity NTU value must be between 0 and 1000.", values: null };
+  }
+
+  return { values: { rawValue: Math.round(rawValue), voltage, ntu }, error: null };
+}
+
 function adminPublicUser(row: RowDataPacket) {
   return {
     id: row.id,
@@ -186,6 +210,18 @@ async function ensureAdminStorage() {
       last_seen_at DATETIME,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL
+    )
+  `);
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS sensor_telemetry (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      device_id INT NOT NULL,
+      turbidity_raw INT NOT NULL,
+      turbidity_voltage DECIMAL(5,3) NOT NULL,
+      turbidity_ntu DECIMAL(8,2) NULL,
+      recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      INDEX sensor_telemetry_device_recorded_index (device_id, recorded_at),
+      FOREIGN KEY (device_id) REFERENCES sensor_devices(id) ON DELETE CASCADE
     )
   `);
   await safeExecute("ALTER TABLE alerts ADD COLUMN sms_status ENUM('sent','failed','skipped') DEFAULT 'skipped'");
@@ -500,6 +536,71 @@ app.post("/api/readings", async (req, res) => {
   } catch (error) {
     console.error("Reading database error:", error);
     res.status(503).json({ message: "Database is not ready. Check XAMPP MySQL and schema import." });
+  }
+});
+
+app.get("/api/sensors/latest", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth || !pool) return res.status(401).json({ message: "Login required." });
+
+  try {
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
+              telemetry.recorded_at, device.device_name
+       FROM sensor_telemetry AS telemetry
+       INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
+       LEFT JOIN users AS owner ON owner.id = device.owner_user_id
+       WHERE device.owner_user_id = ? OR device.owner_user_id IS NULL OR owner.phone = ?
+       ORDER BY telemetry.recorded_at DESC
+       LIMIT 1`,
+      [auth.sub, guestPhone]
+    );
+
+    const latest = rows[0];
+    if (!latest) return res.json({ telemetry: null });
+
+    res.json({
+      telemetry: {
+        deviceName: String(latest.device_name),
+        rawValue: Number(latest.turbidity_raw),
+        voltage: Number(latest.turbidity_voltage),
+        turbidityNtu: latest.turbidity_ntu === null ? null : Number(latest.turbidity_ntu),
+        recordedAt: latest.recorded_at
+      }
+    });
+  } catch (error) {
+    console.error("Latest sensor telemetry error:", error);
+    res.status(503).json({ message: "Unable to load the latest sensor reading." });
+  }
+});
+
+app.post("/api/v1/sensors/turbidity", async (req, res) => {
+  const providedKey = String(req.headers["x-api-key"] || req.headers["x-sensor-key"] || req.body?.deviceKey || "");
+  if (!providedKey) return res.status(401).json({ message: "Sensor API key is required." });
+  if (!pool) return res.status(503).json({ message: "Database is required for sensor readings." });
+
+  const telemetry = validateTurbidityTelemetry(req.body ?? {});
+  if (telemetry.error || !telemetry.values) return res.status(400).json({ message: telemetry.error });
+
+  try {
+    const device = await authenticateSensorDevice(providedKey);
+    if (!device) return res.status(401).json({ message: "Invalid or inactive sensor device." });
+
+    const [result] = await pool.execute<ResultSetHeader>(
+      `INSERT INTO sensor_telemetry (device_id, turbidity_raw, turbidity_voltage, turbidity_ntu)
+       VALUES (?, ?, ?, ?)`,
+      [device.id, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu]
+    );
+
+    res.status(201).json({
+      saved: true,
+      telemetryId: result.insertId,
+      device: { id: device.id, name: device.deviceName },
+      telemetry: telemetry.values
+    });
+  } catch (error) {
+    console.error("Turbidity telemetry database error:", error);
+    res.status(503).json({ message: "Unable to save the turbidity sensor reading." });
   }
 });
 
