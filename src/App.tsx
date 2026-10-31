@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useState } from "react";
+import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Activity,
@@ -60,6 +60,13 @@ type SensorDeviceSetup = {
   deviceName: string;
   apiKey: string;
 };
+type SensorAnalysisState = {
+  status: "waiting" | "complete";
+  secondsRemaining: number;
+  turbidity: number;
+  isEstimated: boolean;
+  recordedAt: string;
+};
 type AdminUser = {
   id: number;
   fullName: string;
@@ -77,6 +84,13 @@ const defaultParams: WaterParams = {
   turbidity: 30,
   ammonia: 0.02
 };
+
+function sensorTurbidityValue(telemetry: SensorTelemetry) {
+  if (telemetry.turbidityNtu !== null) return Math.max(0, Math.min(500, telemetry.turbidityNtu));
+
+  // Prototype-only estimate. A calibrated NTU value from the sensor takes precedence.
+  return Math.round(Math.max(0, Math.min(250, (3.3 - telemetry.voltage) * (250 / 3.3))));
+}
 
 const parameterMeta = [
   { key: "ph", label: { en: "pH Level", tl: "Antas ng pH" }, min: 4, max: 11, step: 0.1, unit: "", safe: "6.5-8.5" },
@@ -552,12 +566,21 @@ export default function App() {
   const [clock, setClock] = useState(new Date());
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
   const [sensorTelemetry, setSensorTelemetry] = useState<SensorTelemetry | null>(null);
+  const [sensorAnalysis, setSensorAnalysis] = useState<SensorAnalysisState | null>(null);
+  const paramsRef = useRef(params);
+  const sensorAutoTimerRef = useRef<number | null>(null);
+  const sensorCountdownTimerRef = useRef<number | null>(null);
+  const lastAutoReadingRef = useRef<string | null>(null);
   const text = ui[lang];
 
   useEffect(() => {
     const timer = window.setInterval(() => setClock(new Date()), 30_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    paramsRef.current = params;
+  }, [params]);
 
   useEffect(() => {
     let active = true;
@@ -632,39 +655,53 @@ export default function App() {
   const best = scores[0];
   const currentStatus = overallStatus(params);
 
-  const runAnalysis = async () => {
+  const runAnalysis = async (
+    analysisParams: WaterParams = params,
+    options: { save?: boolean; source?: "manual" | "sensor" } = {}
+  ) => {
+    const shouldSave = options.save ?? true;
+    const analysisScores = analyzeWaterQuality(analysisParams, fishDb);
+    const analysisAlerts = detectRisks(analysisParams);
+    const analysisBest = analysisScores[0];
+    const analysisStatus = overallStatus(analysisParams);
+
     setHasAnalyzed(true);
+    setSelectedFishId(analysisBest.fish.id);
+
+    // Sensor-only previews are deliberately not saved or sent by SMS. They still need
+    // the remaining parameters to be verified before becoming a farmer record.
+    if (!shouldSave) return;
+
     const record: SessionRecord = {
       id: crypto.randomUUID(),
       timestamp: new Date().toLocaleString("en-PH"),
-      ...params,
-      bestFish: best.fish.name,
-      score: best.score
+      ...analysisParams,
+      bestFish: analysisBest.fish.name,
+      score: analysisBest.score
     };
     const next = [record, ...sessions].slice(0, 10);
     setSessions(next);
     storage.saveSessions(next, currentUser);
-    setSelectedFishId(best.fish.id);
     const savedReading = await postJson<{ saved: boolean; readingId?: number; sms?: SmsResult }>("/api/readings", {
       userId: currentUser?.id,
-      inputMode: "manual",
-      ph: params.ph,
-      temperature: params.temperature,
-      dissolvedOxygen: params.dissolvedOxygen,
-      turbidity: params.turbidity,
-      ammonia: params.ammonia,
-      bestFish: best.fish.name,
-      score: best.score,
-      confidence: best.confidence,
-      status: currentStatus,
-      alerts: alerts.map((alert) => ({
+      inputMode: options.source || "manual",
+      ph: analysisParams.ph,
+      temperature: analysisParams.temperature,
+      dissolvedOxygen: analysisParams.dissolvedOxygen,
+      turbidity: analysisParams.turbidity,
+      ammonia: analysisParams.ammonia,
+      bestFish: analysisBest.fish.name,
+      score: analysisBest.score,
+      confidence: analysisBest.confidence,
+      status: analysisStatus,
+      alerts: analysisAlerts.map((alert) => ({
         level: alert.level,
         title: alert.title,
         message: alert.message
       })),
       smsSent: false
     });
-    if (currentUser?.phone && alerts.some((alert) => alert.level === "warning" || alert.level === "critical")) {
+    if (currentUser?.phone && analysisAlerts.some((alert) => alert.level === "warning" || alert.level === "critical")) {
       if (savedReading.data?.sms?.ok) {
         setSms(`Real iProgSMS water warning queued for ${currentUser?.phone || "guest user"}.`);
       } else if (savedReading.data?.sms?.configured === false) {
@@ -674,6 +711,60 @@ export default function App() {
       }
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (sensorAutoTimerRef.current !== null) window.clearTimeout(sensorAutoTimerRef.current);
+      if (sensorCountdownTimerRef.current !== null) window.clearInterval(sensorCountdownTimerRef.current);
+      sensorAutoTimerRef.current = null;
+      sensorCountdownTimerRef.current = null;
+    };
+  }, [currentUser?.id]);
+
+  useEffect(() => {
+    if (!currentUser || !sensorTelemetry) {
+      if (!currentUser) setSensorAnalysis(null);
+      return;
+    }
+
+    const readingKey = `${sensorTelemetry.deviceName}:${sensorTelemetry.recordedAt}`;
+    if (sensorAutoTimerRef.current !== null || lastAutoReadingRef.current === readingKey) return;
+
+    const turbidity = sensorTurbidityValue(sensorTelemetry);
+    const isEstimated = sensorTelemetry.turbidityNtu === null;
+    const deadline = Date.now() + 20_000;
+
+    setParams((current) => ({ ...current, turbidity }));
+    setSensorAnalysis({
+      status: "waiting",
+      secondsRemaining: 20,
+      turbidity,
+      isEstimated,
+      recordedAt: sensorTelemetry.recordedAt
+    });
+
+    sensorCountdownTimerRef.current = window.setInterval(() => {
+      const secondsRemaining = Math.max(0, Math.ceil((deadline - Date.now()) / 1000));
+      setSensorAnalysis((current) => current?.status === "waiting" ? { ...current, secondsRemaining } : current);
+    }, 500);
+
+    sensorAutoTimerRef.current = window.setTimeout(() => {
+      const sensorParams = { ...paramsRef.current, turbidity };
+      setParams(sensorParams);
+      void runAnalysis(sensorParams, { save: false, source: "sensor" });
+      lastAutoReadingRef.current = readingKey;
+      if (sensorCountdownTimerRef.current !== null) window.clearInterval(sensorCountdownTimerRef.current);
+      sensorCountdownTimerRef.current = null;
+      sensorAutoTimerRef.current = null;
+      setSensorAnalysis({
+        status: "complete",
+        secondsRemaining: 0,
+        turbidity,
+        isEstimated,
+        recordedAt: sensorTelemetry.recordedAt
+      });
+    }, 20_000);
+  }, [currentUser?.id, sensorTelemetry?.deviceName, sensorTelemetry?.recordedAt]);
 
   const testSms = async () => {
     if (!currentUser?.phone) {
@@ -851,6 +942,7 @@ export default function App() {
           params={params}
           setParams={setParams}
           sensorTelemetry={sensorTelemetry}
+          sensorAnalysis={sensorAnalysis}
           sessions={sessions}
           scores={scores}
           alerts={alerts}
@@ -1113,6 +1205,7 @@ function AnalysisPage({
   params,
   setParams,
   sensorTelemetry,
+  sensorAnalysis,
   sessions,
   scores,
   alerts,
@@ -1130,6 +1223,7 @@ function AnalysisPage({
   params: WaterParams;
   setParams: (params: WaterParams) => void;
   sensorTelemetry: SensorTelemetry | null;
+  sensorAnalysis: SensorAnalysisState | null;
   sessions: SessionRecord[];
   scores: FishScore[];
   alerts: AlertItem[];
@@ -1154,6 +1248,7 @@ function AnalysisPage({
           params={params}
           setParams={setParams}
           sensorTelemetry={sensorTelemetry}
+          sensorAnalysis={sensorAnalysis}
           onAnalyze={onAnalyze}
           text={text}
         />
@@ -1173,6 +1268,7 @@ function AnalysisPage({
       <section className="space-y-5">
         {hasAnalyzed ? (
           <>
+            {sensorAnalysis?.status === "complete" && <SensorAnalysisNotice analysis={sensorAnalysis} lang={lang} />}
             <AlertBanner alert={alerts[0]} lang={lang} />
             <SummaryBanner status={currentStatus} lang={lang} />
             <WhatToDoNow alerts={alerts} status={currentStatus} lang={lang} />
@@ -1206,7 +1302,7 @@ function AnalysisPage({
             </CollapsiblePanel>
           </>
         ) : (
-          <AnalysisEmptyState />
+          <AnalysisEmptyState sensorAnalysis={sensorAnalysis} />
         )}
       </section>
 
@@ -1228,17 +1324,47 @@ function AnalysisPage({
   );
 }
 
-function AnalysisEmptyState() {
+function AnalysisEmptyState({ sensorAnalysis }: { sensorAnalysis: SensorAnalysisState | null }) {
   return (
     <section className="card flex min-h-[360px] flex-col items-center justify-center p-6 text-center sm:min-h-[420px] sm:p-8">
       <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-50 text-teal-700 ring-1 ring-teal-100">
         <BarChart3 size={30} />
       </div>
-      <h2 className="mt-5 text-2xl font-black text-slate-950">No water quality analysis yet</h2>
-      <p className="mt-3 max-w-xl text-sm font-medium leading-6 text-slate-600">
-        Set the current pH, temperature, dissolved oxygen, turbidity, and ammonia values on the left. Results, alerts,
-        corrective actions, fish ranking, and trends will appear after you click Analyze Water Quality.
-      </p>
+      <h2 className="mt-5 text-2xl font-black text-slate-950">
+        {sensorAnalysis?.status === "waiting" ? "Preparing sensor analysis" : "No water quality analysis yet"}
+      </h2>
+      {sensorAnalysis?.status === "waiting" ? (
+        <p className="mt-3 max-w-xl text-sm font-medium leading-6 text-slate-600">
+          Turbidity from the ESP32 is ready. PondSense will show the preliminary result in {sensorAnalysis.secondsRemaining} seconds.
+        </p>
+      ) : (
+        <p className="mt-3 max-w-xl text-sm font-medium leading-6 text-slate-600">
+          Set the current pH, temperature, dissolved oxygen, turbidity, and ammonia values on the left. Results, alerts,
+          corrective actions, fish ranking, and trends will appear after you click Analyze Water Quality.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function SensorAnalysisNotice({ analysis, lang }: { analysis: SensorAnalysisState; lang: Lang }) {
+  const measuredLabel = analysis.isEstimated
+    ? (lang === "tl" ? "tinatayang turbidity" : "estimated turbidity")
+    : (lang === "tl" ? "na-calibrate na turbidity" : "calibrated turbidity");
+
+  return (
+    <section className="rounded-2xl border border-amber-200 bg-amber-50 p-4 text-amber-950 shadow-sm">
+      <div className="flex items-start gap-3">
+        <Activity className="mt-0.5 shrink-0 text-amber-700" size={21} />
+        <div>
+          <p className="font-black">{lang === "tl" ? "Paunang analysis mula sa ESP32" : "ESP32-assisted preliminary analysis"}</p>
+          <p className="mt-1 text-sm font-semibold leading-5 text-amber-900">
+            {lang === "tl"
+              ? `Ginamit ang ${measuredLabel} na ${analysis.turbidity} NTU. Ang pH, temperatura, DO, at ammonia ay kasalukuyang dashboard values pa rin; i-verify muna bago magdesisyon o magpadala ng alert.`
+              : `This used ${measuredLabel} of ${analysis.turbidity} NTU. pH, temperature, DO, and ammonia still use the current dashboard values; verify them before making a decision or sending an alert.`}
+          </p>
+        </div>
+      </div>
     </section>
   );
 }
@@ -1277,6 +1403,7 @@ function WaterParametersPanel({
   params,
   setParams,
   sensorTelemetry,
+  sensorAnalysis,
   onAnalyze,
   text
 }: {
@@ -1284,6 +1411,7 @@ function WaterParametersPanel({
   params: WaterParams;
   setParams: (params: WaterParams) => void;
   sensorTelemetry: SensorTelemetry | null;
+  sensorAnalysis: SensorAnalysisState | null;
   onAnalyze: () => void;
   text: typeof ui.en;
 }) {
@@ -1292,7 +1420,7 @@ function WaterParametersPanel({
       <h2 className="mb-5 flex items-center gap-2 text-lg font-black text-slate-950">
         <Droplets className="text-teal-600" size={21} /> {text.waterParameters}
       </h2>
-      <SensorTelemetryCard lang={lang} telemetry={sensorTelemetry} />
+      <SensorTelemetryCard lang={lang} telemetry={sensorTelemetry} sensorAnalysis={sensorAnalysis} />
       <div className="space-y-5 sm:space-y-6">
         {parameterMeta.map((meta) => {
           const status = statusFor(meta.key, params[meta.key]);
@@ -1331,7 +1459,15 @@ function WaterParametersPanel({
   );
 }
 
-function SensorTelemetryCard({ lang, telemetry }: { lang: Lang; telemetry: SensorTelemetry | null }) {
+function SensorTelemetryCard({
+  lang,
+  telemetry,
+  sensorAnalysis
+}: {
+  lang: Lang;
+  telemetry: SensorTelemetry | null;
+  sensorAnalysis: SensorAnalysisState | null;
+}) {
   const [deviceName, setDeviceName] = useState("My PondSense ESP32");
   const [setup, setSetup] = useState<SensorDeviceSetup | null>(null);
   const [message, setMessage] = useState("");
@@ -1405,6 +1541,23 @@ function SensorTelemetryCard({ lang, telemetry }: { lang: Lang; telemetry: Senso
               {lang === "tl"
                 ? "Raw sensor value ito. I-calibrate muna bago gamitin bilang NTU sa analysis."
                 : "This is a raw sensor value. Calibrate it before using it as NTU in the analysis."}
+            </p>
+          )}
+          {sensorAnalysis?.status === "waiting" && (
+            <div className="mt-3 rounded-lg border border-teal-200 bg-white px-3 py-2 text-xs font-bold text-teal-800">
+              <p className="flex items-center gap-1.5"><Clock3 size={14} /> {lang === "tl" ? "Auto-analysis na paparating" : "Automatic analysis queued"}</p>
+              <p className="mt-1 text-[11px] font-semibold text-teal-700">
+                {lang === "tl"
+                  ? `Lalabas ang preliminary result sa loob ng ${sensorAnalysis.secondsRemaining} segundo.`
+                  : `The preliminary result will appear in ${sensorAnalysis.secondsRemaining} seconds.`}
+              </p>
+            </div>
+          )}
+          {sensorAnalysis?.status === "complete" && (
+            <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-bold leading-4 text-emerald-800">
+              {lang === "tl"
+                ? `Na-update ang preliminary result gamit ang ${sensorAnalysis.turbidity} NTU mula sa ESP32.`
+                : `Preliminary results updated using ${sensorAnalysis.turbidity} NTU from the ESP32.`}
             </p>
           )}
         </>
