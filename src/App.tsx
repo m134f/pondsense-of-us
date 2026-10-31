@@ -618,7 +618,7 @@ export default function App() {
     };
 
     void loadSensorTelemetry();
-    const interval = window.setInterval(() => void loadSensorTelemetry(), 10_000);
+    const interval = window.setInterval(() => void loadSensorTelemetry(), 5_000);
 
     return () => {
       active = false;
@@ -728,13 +728,16 @@ export default function App() {
     }
 
     const readingKey = `${sensorTelemetry.deviceName}:${sensorTelemetry.recordedAt}`;
-    if (sensorAutoTimerRef.current !== null || lastAutoReadingRef.current === readingKey) return;
-
     const turbidity = sensorTurbidityValue(sensorTelemetry);
     const isEstimated = sensorTelemetry.turbidityNtu === null;
+
+    // Keep the visible turbidity value and calculated recommendations live for every new ESP32 upload.
+    setParams((current) => current.turbidity === turbidity ? current : { ...current, turbidity });
+
+    if (sensorAutoTimerRef.current !== null || lastAutoReadingRef.current === readingKey) return;
+
     const deadline = Date.now() + 20_000;
 
-    setParams((current) => ({ ...current, turbidity }));
     setSensorAnalysis({
       status: "waiting",
       secondsRemaining: 20,
@@ -1357,11 +1360,11 @@ function SensorAnalysisNotice({ analysis, lang }: { analysis: SensorAnalysisStat
       <div className="flex items-start gap-3">
         <Activity className="mt-0.5 shrink-0 text-amber-700" size={21} />
         <div>
-          <p className="font-black">{lang === "tl" ? "Paunang analysis mula sa ESP32" : "ESP32-assisted preliminary analysis"}</p>
+          <p className="font-black">{lang === "tl" ? "Live turbidity analysis" : "Live turbidity analysis"}</p>
           <p className="mt-1 text-sm font-semibold leading-5 text-amber-900">
             {lang === "tl"
-              ? `Ginamit ang ${measuredLabel} na ${analysis.turbidity} NTU. Ang pH, temperatura, DO, at ammonia ay kasalukuyang dashboard values pa rin; i-verify muna bago magdesisyon o magpadala ng alert.`
-              : `This used ${measuredLabel} of ${analysis.turbidity} NTU. pH, temperature, DO, and ammonia still use the current dashboard values; verify them before making a decision or sending an alert.`}
+              ? `Gamit ang ${measuredLabel} na ${analysis.turbidity} NTU. Patuloy itong nagre-refresh kapag may bagong sensor reading. Ang pH, temperatura, DO, at ammonia ay current dashboard values pa rin.`
+              : `Using ${measuredLabel} of ${analysis.turbidity} NTU. This refreshes when a new sensor reading arrives. pH, temperature, DO, and ammonia still use the current dashboard values.`}
           </p>
         </div>
       </div>
@@ -1473,6 +1476,8 @@ function SensorTelemetryCard({
   const [message, setMessage] = useState("");
   const [isSettingUp, setIsSettingUp] = useState(false);
   const endpoint = apiUrl("/api/v1/sensors/turbidity");
+  const turbidity = telemetry ? sensorTurbidityValue(telemetry) : null;
+  const isEstimated = telemetry?.turbidityNtu === null;
 
   const copyValue = async (value: string, label: string) => {
     try {
@@ -1526,23 +1531,27 @@ function SensorTelemetryCard({
 
       {telemetry && (
         <>
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div className="rounded-lg bg-white px-2.5 py-2 ring-1 ring-teal-100">
-              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Raw ADC</p>
-              <p className="mt-0.5 text-base font-black text-slate-900">{telemetry.rawValue}</p>
+          <div className="mt-3 rounded-xl border border-teal-200 bg-white px-3 py-3 shadow-sm">
+            <div className="flex items-end justify-between gap-3">
+              <div>
+                <p className="text-[10px] font-black uppercase tracking-wide text-slate-500">
+                  {lang === "tl" ? "Kasalukuyang Labo ng Tubig" : "Current Water Turbidity"}
+                </p>
+                <p className="mt-1 text-2xl font-black leading-none text-slate-950">{turbidity} <span className="text-sm text-slate-600">NTU</span></p>
+              </div>
+              <span className={`rounded-full px-2.5 py-1 text-[10px] font-black ${isEstimated ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-800"}`}>
+                {isEstimated ? (lang === "tl" ? "Tinatayang NTU" : "Estimated NTU") : (lang === "tl" ? "Calibrated" : "Calibrated")}
+              </span>
             </div>
-            <div className="rounded-lg bg-white px-2.5 py-2 ring-1 ring-teal-100">
-              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Signal</p>
-              <p className="mt-0.5 text-base font-black text-slate-900">{telemetry.voltage.toFixed(2)} V</p>
-            </div>
-          </div>
-          {telemetry.turbidityNtu === null && (
-            <p className="mt-2 text-[11px] font-semibold leading-4 text-slate-500">
-              {lang === "tl"
-                ? "Raw sensor value ito. I-calibrate muna bago gamitin bilang NTU sa analysis."
-                : "This is a raw sensor value. Calibrate it before using it as NTU in the analysis."}
+            <p className="mt-2 text-[11px] font-semibold leading-4 text-slate-600">
+              {isEstimated
+                ? (lang === "tl" ? "Awto itong pagtataya mula sa sensor signal. I-calibrate ang sensor para maging eksaktong NTU." : "This is an automatic estimate from the sensor signal. Calibrate the sensor for an exact NTU value.")
+                : (lang === "tl" ? "Ito ang calibrated NTU value mula sa iyong sensor." : "This is the calibrated NTU value from your sensor.")}
             </p>
-          )}
+          </div>
+          <p className="mt-2 text-[11px] font-semibold text-slate-500">
+            {lang === "tl" ? "Patuloy ang live monitoring at nagre-refresh ang analysis sa bawat bagong reading." : "Live monitoring continues and the analysis refreshes with each new reading."}
+          </p>
           {sensorAnalysis?.status === "waiting" && (
             <div className="mt-3 rounded-lg border border-teal-200 bg-white px-3 py-2 text-xs font-bold text-teal-800">
               <p className="flex items-center gap-1.5"><Clock3 size={14} /> {lang === "tl" ? "Auto-analysis na paparating" : "Automatic analysis queued"}</p>
@@ -1556,14 +1565,14 @@ function SensorTelemetryCard({
           {sensorAnalysis?.status === "complete" && (
             <p className="mt-3 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-bold leading-4 text-emerald-800">
               {lang === "tl"
-                ? `Na-update ang preliminary result gamit ang ${sensorAnalysis.turbidity} NTU mula sa ESP32.`
-                : `Preliminary results updated using ${sensorAnalysis.turbidity} NTU from the ESP32.`}
+                ? `Aktibo ang live analysis gamit ang ${sensorAnalysis.turbidity} NTU mula sa ESP32.`
+                : `Live analysis is active using ${sensorAnalysis.turbidity} NTU from the ESP32.`}
             </p>
           )}
         </>
       )}
 
-      {!setup ? (
+      {!telemetry && !setup ? (
         <div className="mt-3 border-t border-teal-100 pt-3">
           <label className="block text-[11px] font-black uppercase tracking-wide text-slate-600">
             {lang === "tl" ? "Pangalan ng ESP32" : "ESP32 device name"}
@@ -1579,7 +1588,7 @@ function SensorTelemetryCard({
             {isSettingUp ? "Creating device key..." : (lang === "tl" ? "I-set up ang aking ESP32" : "Set up my ESP32")}
           </button>
         </div>
-      ) : (
+      ) : !telemetry && setup ? (
         <div className="mt-3 space-y-2 border-t border-teal-100 pt-3">
           <p className="text-[11px] font-bold leading-4 text-slate-600">
             {lang === "tl"
@@ -1592,7 +1601,7 @@ function SensorTelemetryCard({
             {lang === "tl" ? "Gumawa ng bagong key" : "Generate a new key"}
           </button>
         </div>
-      )}
+      ) : null}
 
       {message && <p className="mt-2 text-[11px] font-bold leading-4 text-teal-800">{message}</p>}
     </section>
