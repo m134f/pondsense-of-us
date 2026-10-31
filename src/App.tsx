@@ -85,6 +85,8 @@ const defaultParams: WaterParams = {
   ammonia: 0.02
 };
 
+const SENSOR_ANALYSIS_DELAY_MS = 5_000;
+
 function sensorTurbidityValue(telemetry: SensorTelemetry) {
   if (telemetry.turbidityNtu !== null) return Math.max(0, Math.min(500, telemetry.turbidityNtu));
 
@@ -736,11 +738,11 @@ export default function App() {
 
     if (sensorAutoTimerRef.current !== null || lastAutoReadingRef.current === readingKey) return;
 
-    const deadline = Date.now() + 20_000;
+    const deadline = Date.now() + SENSOR_ANALYSIS_DELAY_MS;
 
     setSensorAnalysis({
       status: "waiting",
-      secondsRemaining: 20,
+      secondsRemaining: Math.ceil(SENSOR_ANALYSIS_DELAY_MS / 1_000),
       turbidity,
       isEstimated,
       recordedAt: sensorTelemetry.recordedAt
@@ -766,7 +768,7 @@ export default function App() {
         isEstimated,
         recordedAt: sensorTelemetry.recordedAt
       });
-    }, 20_000);
+    }, SENSOR_ANALYSIS_DELAY_MS);
   }, [currentUser?.id, sensorTelemetry?.deviceName, sensorTelemetry?.recordedAt]);
 
   const testSms = async () => {
@@ -1475,6 +1477,7 @@ function SensorTelemetryCard({
   const [setup, setSetup] = useState<SensorDeviceSetup | null>(null);
   const [message, setMessage] = useState("");
   const [isSettingUp, setIsSettingUp] = useState(false);
+  const [showDeviceSetup, setShowDeviceSetup] = useState(false);
   const endpoint = apiUrl("/api/v1/sensors/turbidity");
   const turbidity = telemetry ? sensorTurbidityValue(telemetry) : null;
   const isEstimated = telemetry?.turbidityNtu === null;
@@ -1489,6 +1492,9 @@ function SensorTelemetryCard({
   };
 
   const setUpDevice = async () => {
+    if (telemetry && !window.confirm("This creates a replacement key and will stop the old ESP32 key. Update the Arduino sketch immediately after copying the new key.")) {
+      return;
+    }
     setIsSettingUp(true);
     setMessage("");
     const result = await postJson<SensorDeviceSetup>("/api/sensors/device/setup", { deviceName });
@@ -1498,7 +1504,7 @@ function SensorTelemetryCard({
       return;
     }
     setSetup(result.data);
-    setMessage("Your personal ESP32 key is ready. Copy it into the Arduino sketch.");
+    setMessage("Your personal ESP32 key is ready. Copy it into the Arduino sketch, then upload the sketch.");
   };
 
   return (
@@ -1552,6 +1558,16 @@ function SensorTelemetryCard({
           <p className="mt-2 text-[11px] font-semibold text-slate-500">
             {lang === "tl" ? "Patuloy ang live monitoring at nagre-refresh ang analysis sa bawat bagong reading." : "Live monitoring continues and the analysis refreshes with each new reading."}
           </p>
+          <button
+            className="soft-button mt-2 w-full justify-center text-xs"
+            onClick={() => {
+              setSetup(null);
+              setMessage("");
+              setShowDeviceSetup(true);
+            }}
+          >
+            <Settings size={14} /> {lang === "tl" ? "Pamahalaan ang koneksyon ng ESP32" : "Manage ESP32 connection"}
+          </button>
           {sensorAnalysis?.status === "waiting" && (
             <div className="mt-3 rounded-lg border border-teal-200 bg-white px-3 py-2 text-xs font-bold text-teal-800">
               <p className="flex items-center gap-1.5"><Clock3 size={14} /> {lang === "tl" ? "Auto-analysis na paparating" : "Automatic analysis queued"}</p>
@@ -1572,7 +1588,7 @@ function SensorTelemetryCard({
         </>
       )}
 
-      {!telemetry && !setup ? (
+      {(!telemetry || showDeviceSetup) && !setup ? (
         <div className="mt-3 border-t border-teal-100 pt-3">
           <label className="block text-[11px] font-black uppercase tracking-wide text-slate-600">
             {lang === "tl" ? "Pangalan ng ESP32" : "ESP32 device name"}
@@ -1585,10 +1601,21 @@ function SensorTelemetryCard({
           </label>
           <button className="soft-button mt-2 w-full justify-center" onClick={setUpDevice} disabled={isSettingUp}>
             <RefreshCw size={15} className={isSettingUp ? "animate-spin" : ""} />
-            {isSettingUp ? "Creating device key..." : (lang === "tl" ? "I-set up ang aking ESP32" : "Set up my ESP32")}
+            {isSettingUp
+              ? "Creating device key..."
+              : telemetry
+                ? (lang === "tl" ? "Gumawa ng kapalit na ESP32 key" : "Create replacement ESP32 key")
+                : (lang === "tl" ? "I-set up ang aking ESP32" : "Set up my ESP32")}
           </button>
+          {telemetry && (
+            <p className="mt-2 text-[11px] font-semibold leading-4 text-amber-800">
+              {lang === "tl"
+                ? "Gumawa lamang ng bagong key kung may 401 error. Hihinto ang lumang key kapag napalitan ito."
+                : "Create a new key only for a 401 error. The previous key stops working when replaced."}
+            </p>
+          )}
         </div>
-      ) : !telemetry && setup ? (
+      ) : (!telemetry || showDeviceSetup) && setup ? (
         <div className="mt-3 space-y-2 border-t border-teal-100 pt-3">
           <p className="text-[11px] font-bold leading-4 text-slate-600">
             {lang === "tl"
@@ -1597,8 +1624,15 @@ function SensorTelemetryCard({
           </p>
           <CopyField label="API URL" value={endpoint} onCopy={() => void copyValue(endpoint, "API URL")} />
           <CopyField label="SENSOR_API_KEY" value={setup.apiKey} onCopy={() => void copyValue(setup.apiKey, "sensor key")} />
-          <button className="text-xs font-black text-teal-700 underline underline-offset-2" onClick={() => setSetup(null)}>
-            {lang === "tl" ? "Gumawa ng bagong key" : "Generate a new key"}
+          <button
+            className="text-xs font-black text-teal-700 underline underline-offset-2"
+            onClick={() => {
+              setSetup(null);
+              setShowDeviceSetup(false);
+              setMessage("");
+            }}
+          >
+            {lang === "tl" ? "Tapos na - itago ang key" : "Done - hide key"}
           </button>
         </div>
       ) : null}
