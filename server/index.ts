@@ -1,4 +1,5 @@
 import "dotenv/config";
+import crypto from "node:crypto";
 import express from "express";
 import cors from "cors";
 import bcrypt from "bcryptjs";
@@ -262,21 +263,6 @@ async function ensureAdminStorage() {
     );
   }
 
-  if (process.env.SENSOR_API_KEY) {
-    const sensorOwnerPhone = process.env.SENSOR_OWNER_PHONE || guestPhone;
-    const [owners] = await pool.execute<RowDataPacket[]>("SELECT id FROM users WHERE phone = ? LIMIT 1", [sensorOwnerPhone]);
-    const ownerUserId = Number(owners[0]?.id) || await getGuestUserId();
-    const [devices] = await pool.execute<RowDataPacket[]>("SELECT id FROM sensor_devices WHERE device_name = ? LIMIT 1", [
-      process.env.SENSOR_DEVICE_NAME || "ESP32 PondSense Device"
-    ]);
-    if (!devices.length) {
-      const apiKeyHash = await bcrypt.hash(process.env.SENSOR_API_KEY, 10);
-      await pool.execute(
-        "INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)",
-        [process.env.SENSOR_DEVICE_NAME || "ESP32 PondSense Device", apiKeyHash, ownerUserId || null]
-      );
-    }
-  }
 }
 
 function formatAlertSms(reading: Record<string, unknown>, alerts: AlertPayload[]) {
@@ -539,6 +525,51 @@ app.post("/api/readings", async (req, res) => {
   }
 });
 
+app.post("/api/sensors/device/setup", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth || !pool) return res.status(401).json({ message: "Login required." });
+
+  const deviceName = String(req.body?.deviceName || "PondSense ESP32").trim().slice(0, 100) || "PondSense ESP32";
+  const apiKey = `ps_${crypto.randomBytes(24).toString("base64url")}`;
+  const apiKeyHash = await bcrypt.hash(apiKey, 10);
+
+  try {
+    const [devices] = await pool.execute<RowDataPacket[]>(
+      `SELECT id FROM sensor_devices
+       WHERE owner_user_id = ? AND is_active = 1
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [auth.sub]
+    );
+
+    const existingDevice = devices[0];
+    const deviceId = existingDevice?.id
+      ? Number(existingDevice.id)
+      : null;
+
+    if (deviceId) {
+      await pool.execute(
+        `UPDATE sensor_devices
+         SET device_name = ?, api_key_hash = ?, last_seen_at = NULL
+         WHERE id = ?`,
+        [deviceName, apiKeyHash, deviceId]
+      );
+    } else {
+      const [result] = await pool.execute<ResultSetHeader>(
+        "INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)",
+        [deviceName, apiKeyHash, auth.sub]
+      );
+      res.status(201).json({ deviceId: result.insertId, deviceName, apiKey });
+      return;
+    }
+
+    res.json({ deviceId, deviceName, apiKey });
+  } catch (error) {
+    console.error("Sensor device setup error:", error);
+    res.status(503).json({ message: "Unable to set up the ESP32 device." });
+  }
+});
+
 app.get("/api/sensors/latest", async (req, res) => {
   const auth = verifyAuthToken(req);
   if (!auth || !pool) return res.status(401).json({ message: "Login required." });
@@ -549,11 +580,10 @@ app.get("/api/sensors/latest", async (req, res) => {
               telemetry.recorded_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       LEFT JOIN users AS owner ON owner.id = device.owner_user_id
-       WHERE device.owner_user_id = ? OR device.owner_user_id IS NULL OR owner.phone = ?
+       WHERE device.owner_user_id = ? AND device.is_active = 1
        ORDER BY telemetry.recorded_at DESC
        LIMIT 1`,
-      [auth.sub, guestPhone]
+      [auth.sub]
     );
 
     const latest = rows[0];

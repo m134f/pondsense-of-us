@@ -7,6 +7,7 @@ import {
   BookOpen,
   Check,
   Clock3,
+  Copy,
   Database,
   Download,
   Droplets,
@@ -16,6 +17,7 @@ import {
   LogOut,
   Menu,
   Printer,
+  RefreshCw,
   Settings,
   Shield,
   User,
@@ -52,6 +54,11 @@ type SensorTelemetry = {
   voltage: number;
   turbidityNtu: number | null;
   recordedAt: string;
+};
+type SensorDeviceSetup = {
+  deviceId: number;
+  deviceName: string;
+  apiKey: string;
 };
 type AdminUser = {
   id: number;
@@ -1285,52 +1292,7 @@ function WaterParametersPanel({
       <h2 className="mb-5 flex items-center gap-2 text-lg font-black text-slate-950">
         <Droplets className="text-teal-600" size={21} /> {text.waterParameters}
       </h2>
-      <section className="mb-5 rounded-xl border border-teal-100 bg-teal-50 p-3">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <p className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-teal-800">
-              <Activity size={14} /> {lang === "tl" ? "Live ESP32 Sensor" : "Live ESP32 Sensor"}
-            </p>
-            {sensorTelemetry ? (
-              <>
-                <p className="mt-1 text-sm font-black text-slate-900">{sensorTelemetry.deviceName}</p>
-                <p className="mt-1 text-xs font-semibold text-slate-600">
-                  {lang === "tl" ? "Huling update" : "Last update"}: {new Date(sensorTelemetry.recordedAt).toLocaleString("en-PH")}
-                </p>
-              </>
-            ) : (
-              <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">
-                {lang === "tl"
-                  ? "Naghihintay ng unang turbidity reading mula sa ESP32."
-                  : "Waiting for the first turbidity reading from the ESP32."}
-              </p>
-            )}
-          </div>
-          <span className={`mt-0.5 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-black ${sensorTelemetry ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>
-            <span className={`h-1.5 w-1.5 rounded-full ${sensorTelemetry ? "bg-emerald-500" : "bg-slate-400"}`} />
-            {sensorTelemetry ? (lang === "tl" ? "Live" : "Live") : (lang === "tl" ? "Wala pa" : "Waiting")}
-          </span>
-        </div>
-        {sensorTelemetry && (
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <div className="rounded-lg bg-white px-2.5 py-2 ring-1 ring-teal-100">
-              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Raw ADC</p>
-              <p className="mt-0.5 text-base font-black text-slate-900">{sensorTelemetry.rawValue}</p>
-            </div>
-            <div className="rounded-lg bg-white px-2.5 py-2 ring-1 ring-teal-100">
-              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Signal</p>
-              <p className="mt-0.5 text-base font-black text-slate-900">{sensorTelemetry.voltage.toFixed(2)} V</p>
-            </div>
-          </div>
-        )}
-        {sensorTelemetry?.turbidityNtu === null && (
-          <p className="mt-2 text-[11px] font-semibold leading-4 text-slate-500">
-            {lang === "tl"
-              ? "Raw sensor value ito. I-calibrate muna bago gamitin bilang NTU sa analysis."
-              : "This is a raw sensor value. Calibrate it before using it as NTU in the analysis."}
-          </p>
-        )}
-      </section>
+      <SensorTelemetryCard lang={lang} telemetry={sensorTelemetry} />
       <div className="space-y-5 sm:space-y-6">
         {parameterMeta.map((meta) => {
           const status = statusFor(meta.key, params[meta.key]);
@@ -1366,6 +1328,135 @@ function WaterParametersPanel({
         <Fish size={18} /> {text.analyze}
       </button>
     </section>
+  );
+}
+
+function SensorTelemetryCard({ lang, telemetry }: { lang: Lang; telemetry: SensorTelemetry | null }) {
+  const [deviceName, setDeviceName] = useState("My PondSense ESP32");
+  const [setup, setSetup] = useState<SensorDeviceSetup | null>(null);
+  const [message, setMessage] = useState("");
+  const [isSettingUp, setIsSettingUp] = useState(false);
+  const endpoint = apiUrl("/api/v1/sensors/turbidity");
+
+  const copyValue = async (value: string, label: string) => {
+    try {
+      await navigator.clipboard.writeText(value);
+      setMessage(`${label} copied.`);
+    } catch {
+      setMessage(`Select and copy the ${label.toLowerCase()} manually.`);
+    }
+  };
+
+  const setUpDevice = async () => {
+    setIsSettingUp(true);
+    setMessage("");
+    const result = await postJson<SensorDeviceSetup>("/api/sensors/device/setup", { deviceName });
+    setIsSettingUp(false);
+    if (result.error || !result.data) {
+      setMessage(result.error || "Unable to create the ESP32 device key.");
+      return;
+    }
+    setSetup(result.data);
+    setMessage("Your personal ESP32 key is ready. Copy it into the Arduino sketch.");
+  };
+
+  return (
+    <section className="mb-5 rounded-xl border border-teal-100 bg-teal-50 p-3">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <p className="flex items-center gap-1.5 text-xs font-black uppercase tracking-wide text-teal-800">
+            <Activity size={14} /> Live ESP32 Sensor
+          </p>
+          {telemetry ? (
+            <>
+              <p className="mt-1 text-sm font-black text-slate-900">{telemetry.deviceName}</p>
+              <p className="mt-1 text-xs font-semibold text-slate-600">
+                {lang === "tl" ? "Huling update" : "Last update"}: {new Date(telemetry.recordedAt).toLocaleString("en-PH")}
+              </p>
+            </>
+          ) : (
+            <p className="mt-1 text-xs font-semibold leading-5 text-slate-600">
+              {lang === "tl"
+                ? "I-set up ang ESP32 para makita ang sariling sensor reading."
+                : "Set up the ESP32 to see this account's sensor reading."}
+            </p>
+          )}
+        </div>
+        <span className={`mt-0.5 inline-flex items-center gap-1 rounded-full px-2 py-1 text-[10px] font-black ${telemetry ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-600"}`}>
+          <span className={`h-1.5 w-1.5 rounded-full ${telemetry ? "bg-emerald-500" : "bg-slate-400"}`} />
+          {telemetry ? "Live" : (lang === "tl" ? "Setup" : "Setup")}
+        </span>
+      </div>
+
+      {telemetry && (
+        <>
+          <div className="mt-3 grid grid-cols-2 gap-2">
+            <div className="rounded-lg bg-white px-2.5 py-2 ring-1 ring-teal-100">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Raw ADC</p>
+              <p className="mt-0.5 text-base font-black text-slate-900">{telemetry.rawValue}</p>
+            </div>
+            <div className="rounded-lg bg-white px-2.5 py-2 ring-1 ring-teal-100">
+              <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500">Signal</p>
+              <p className="mt-0.5 text-base font-black text-slate-900">{telemetry.voltage.toFixed(2)} V</p>
+            </div>
+          </div>
+          {telemetry.turbidityNtu === null && (
+            <p className="mt-2 text-[11px] font-semibold leading-4 text-slate-500">
+              {lang === "tl"
+                ? "Raw sensor value ito. I-calibrate muna bago gamitin bilang NTU sa analysis."
+                : "This is a raw sensor value. Calibrate it before using it as NTU in the analysis."}
+            </p>
+          )}
+        </>
+      )}
+
+      {!setup ? (
+        <div className="mt-3 border-t border-teal-100 pt-3">
+          <label className="block text-[11px] font-black uppercase tracking-wide text-slate-600">
+            {lang === "tl" ? "Pangalan ng ESP32" : "ESP32 device name"}
+            <input
+              className="mt-1.5 w-full rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-semibold text-slate-800 outline-none transition focus:border-teal-500 focus:ring-2 focus:ring-teal-100"
+              value={deviceName}
+              maxLength={100}
+              onChange={(event) => setDeviceName(event.target.value)}
+            />
+          </label>
+          <button className="soft-button mt-2 w-full justify-center" onClick={setUpDevice} disabled={isSettingUp}>
+            <RefreshCw size={15} className={isSettingUp ? "animate-spin" : ""} />
+            {isSettingUp ? "Creating device key..." : (lang === "tl" ? "I-set up ang aking ESP32" : "Set up my ESP32")}
+          </button>
+        </div>
+      ) : (
+        <div className="mt-3 space-y-2 border-t border-teal-100 pt-3">
+          <p className="text-[11px] font-bold leading-4 text-slate-600">
+            {lang === "tl"
+              ? "I-copy ang dalawang value na ito sa Arduino sketch. Pribadong key ito para sa account na ito lamang."
+              : "Copy these two values into the Arduino sketch. This private key belongs only to this account."}
+          </p>
+          <CopyField label="API URL" value={endpoint} onCopy={() => void copyValue(endpoint, "API URL")} />
+          <CopyField label="SENSOR_API_KEY" value={setup.apiKey} onCopy={() => void copyValue(setup.apiKey, "sensor key")} />
+          <button className="text-xs font-black text-teal-700 underline underline-offset-2" onClick={() => setSetup(null)}>
+            {lang === "tl" ? "Gumawa ng bagong key" : "Generate a new key"}
+          </button>
+        </div>
+      )}
+
+      {message && <p className="mt-2 text-[11px] font-bold leading-4 text-teal-800">{message}</p>}
+    </section>
+  );
+}
+
+function CopyField({ label, value, onCopy }: { label: string; value: string; onCopy: () => void }) {
+  return (
+    <div>
+      <p className="mb-1 text-[10px] font-black uppercase tracking-wide text-slate-500">{label}</p>
+      <div className="flex gap-2">
+        <input className="min-w-0 flex-1 rounded-lg border border-slate-200 bg-white px-2 py-2 font-mono text-[10px] text-slate-700" value={value} readOnly />
+        <button className="soft-button px-2" onClick={onCopy} title={`Copy ${label}`} aria-label={`Copy ${label}`}>
+          <Copy size={15} />
+        </button>
+      </div>
+    </div>
   );
 }
 

@@ -4,11 +4,12 @@
 #include <Wire.h>
 #include <LiquidCrystal_I2C.h>
 
-// Replace these three values before uploading. Do not commit your real API key.
+// Paste your own values here after you sign in and select "Set up my ESP32".
+// Never commit your Wi-Fi password or sensor API key to GitHub.
 const char* WIFI_SSID = "YOUR_WIFI_NAME";
 const char* WIFI_PASSWORD = "YOUR_WIFI_PASSWORD";
-const char* API_URL = "https://YOUR_RENDER_SERVICE.onrender.com/api/v1/sensors/turbidity";
-const char* SENSOR_API_KEY = "YOUR_SENSOR_API_KEY";
+const char* API_URL = "https://pondsense-of-us.onrender.com/api/v1/sensors/turbidity";
+const char* SENSOR_API_KEY = "make_a_secret_device_key";
 
 constexpr int TURBIDITY_PIN = 34;
 constexpr unsigned long SEND_INTERVAL_MS = 15000;
