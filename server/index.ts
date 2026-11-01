@@ -570,6 +570,45 @@ app.post("/api/sensors/device/setup", async (req, res) => {
   }
 });
 
+app.post("/api/sensors/device/claim", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth || !pool) return res.status(401).json({ message: "Farmer login required." });
+
+  const apiKey = String(req.body?.apiKey || "").trim();
+  if (!/^ps_[A-Za-z0-9_-]{20,100}$/.test(apiKey)) {
+    return res.status(400).json({ message: "Enter the ESP32 device key from your Arduino sketch." });
+  }
+
+  try {
+    const device = await authenticateSensorDevice(apiKey);
+    if (!device) return res.status(401).json({ message: "Device key not found. Check the key in your Arduino sketch." });
+    if (device.ownerUserId === auth.sub) {
+      return res.json({ deviceId: device.id, deviceName: device.deviceName, paired: true });
+    }
+
+    const connection = await pool.getConnection();
+    try {
+      await connection.beginTransaction();
+      await connection.execute("UPDATE sensor_devices SET is_active = 0 WHERE id = ? AND is_active = 1", [device.id]);
+      const apiKeyHash = await bcrypt.hash(apiKey, 10);
+      const [created] = await connection.execute<ResultSetHeader>(
+        "INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)",
+        [device.deviceName, apiKeyHash, auth.sub]
+      );
+      await connection.commit();
+      res.json({ deviceId: created.insertId, deviceName: device.deviceName, paired: true });
+    } catch (error) {
+      await connection.rollback();
+      throw error;
+    } finally {
+      connection.release();
+    }
+  } catch (error) {
+    console.error("Sensor device pairing error:", error);
+    res.status(503).json({ message: "Unable to pair the ESP32 right now." });
+  }
+});
+
 app.get("/api/sensors/latest", async (req, res) => {
   const auth = verifyAuthToken(req);
   if (!auth || !pool) return res.status(401).json({ message: "Login required." });
@@ -580,7 +619,7 @@ app.get("/api/sensors/latest", async (req, res) => {
               telemetry.recorded_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE device.owner_user_id = ? AND device.is_active = 1
+       WHERE device.owner_user_id = ?
        ORDER BY telemetry.recorded_at DESC
        LIMIT 1`,
       [auth.sub]
@@ -613,7 +652,7 @@ app.get("/api/sensors/trend", async (req, res) => {
               telemetry.recorded_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE device.owner_user_id = ? AND device.is_active = 1
+       WHERE device.owner_user_id = ?
        ORDER BY telemetry.recorded_at DESC, telemetry.id DESC LIMIT 30`,
       [auth.sub]
     );

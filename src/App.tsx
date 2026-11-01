@@ -887,6 +887,11 @@ export default function App() {
         navigate={navigate}
         onLogin={(user, message) => {
           setCurrentUser(user);
+          setParams(defaultParams);
+          setHasAnalyzed(false);
+          setSensorTelemetry(null);
+          setSensorTrend([]);
+          setSensorAnalysis(null);
           setSessions(storage.sessions(user));
           setSms(message);
           navigate(user.role === "admin" ? "/admin/dashboard" : "/dashboard");
@@ -921,12 +926,18 @@ export default function App() {
           navigate(nextTab === "history" ? "/history" : nextTab === "guide" ? "/guide" : "/dashboard");
         }}
         onHome={() => navigate("/dashboard")}
+        onProfile={() => navigate("/profile")}
         onPrint={printReport}
         onAuth={() => navigate("/login")}
         onLogout={async () => {
           await apiJson("/api/logout", { method: "POST", body: "{}" });
           storage.saveCurrentUser(null);
           setCurrentUser(null);
+          setParams(defaultParams);
+          setHasAnalyzed(false);
+          setSensorTelemetry(null);
+          setSensorTrend([]);
+          setSensorAnalysis(null);
           setSessions(storage.sessions(null));
           navigate("/login");
         }}
@@ -948,6 +959,7 @@ export default function App() {
           sensorAnalysis={sensorAnalysis}
           now={clock.getTime()}
           sessions={sessions}
+          fishDb={fishDb}
           scores={scores}
           alerts={alerts}
           selectedScore={selectedScore}
@@ -976,6 +988,11 @@ export default function App() {
           onClose={() => setAuthOpen(false)}
           onLogin={(user, message) => {
             setCurrentUser(user);
+            setParams(defaultParams);
+            setHasAnalyzed(false);
+            setSensorTelemetry(null);
+            setSensorTrend([]);
+            setSensorAnalysis(null);
             setSms(message);
           }}
         />
@@ -993,6 +1010,7 @@ function Header({
   activeTab,
   onTabChange,
   onHome,
+  onProfile,
   onPrint,
   onAuth,
   onLogout,
@@ -1005,6 +1023,7 @@ function Header({
   activeTab: AppTab;
   onTabChange: (tab: AppTab) => void;
   onHome: () => void;
+  onProfile: () => void;
   onPrint: () => void;
   onAuth: () => void;
   onLogout: () => void;
@@ -1068,9 +1087,9 @@ function Header({
           <span className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">
             <Clock3 size={16} /> {formattedClock(clock)}
           </span>
-          <span className="inline-flex min-w-0 items-center justify-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-700 ring-1 ring-amber-100">
+          <button className="inline-flex min-w-0 items-center justify-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-700 ring-1 ring-amber-100 hover:bg-amber-100" onClick={currentUser ? onProfile : onAuth} title={currentUser ? "Profile and ESP32 pairing" : "Login"}>
             <User size={16} className="shrink-0" /> <span className="truncate">{currentUser ? currentUser.fullName : text.guest}</span>
-          </span>
+          </button>
           <button className="soft-button" onClick={onPrint}>
             <Printer size={16} /> {text.print}
           </button>
@@ -1149,9 +1168,9 @@ function Header({
                   <Clock3 size={16} /> {formattedClock(clock)}
                 </span>
               </div>
-              <div className="mt-2 inline-flex w-full min-w-0 items-center justify-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-700 ring-1 ring-amber-100">
+              <button className="mt-2 inline-flex w-full min-w-0 items-center justify-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-700 ring-1 ring-amber-100" onClick={() => { currentUser ? onProfile() : onAuth(); setMenuOpen(false); }}>
                 <User size={16} className="shrink-0" /> <span className="truncate">{currentUser ? currentUser.fullName : text.guest}</span>
-              </div>
+              </button>
             </div>
 
             <div className="mt-3 grid grid-cols-2 gap-2">
@@ -1213,6 +1232,7 @@ function AnalysisPage({
   sensorAnalysis,
   now,
   sessions,
+  fishDb,
   scores,
   alerts,
   selectedScore,
@@ -1233,6 +1253,7 @@ function AnalysisPage({
   sensorAnalysis: SensorAnalysisState | null;
   now: number;
   sessions: SessionRecord[];
+  fishDb: FishSpecies[];
   scores: FishScore[];
   alerts: AlertItem[];
   selectedScore: FishScore;
@@ -1248,7 +1269,8 @@ function AnalysisPage({
   const [showParameterDetails, setShowParameterDetails] = useState(false);
   const [showAllActions, setShowAllActions] = useState(false);
   const sensorFresh = Boolean(sensorTelemetry && now - new Date(sensorTelemetry.recordedAt).getTime() < 20_000);
-  const showManual = !sensorFresh;
+  const showManual = !sensorTelemetry;
+  const showManualResults = hasAnalyzed && showManual;
 
   return (
     <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-4 px-3 pb-6 sm:gap-5 sm:px-6 sm:pb-8 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
@@ -1263,7 +1285,7 @@ function AnalysisPage({
           onAnalyze={onAnalyze}
           text={text}
         />
-        {hasAnalyzed && showManual && (
+        {showManualResults && (
           <>
             <FeedingCard params={params} lang={lang} text={text} />
             <button
@@ -1279,13 +1301,10 @@ function AnalysisPage({
       <section className="space-y-5">
         {sensorTelemetry && <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} />}
         {sensorFresh ? (
-          <section className="card p-5">
-            <h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Awtomatikong pagsusuri ng turbidity" : "Automatic turbidity analysis"}</h2>
-            <p className="mt-2 text-sm text-slate-600">{lang === "tl" ? "Nagbabago ang resulta sa bawat bagong sensor reading. Hindi kailangan pindutin ang Analyze." : "The result changes with every new sensor reading. No Analyze button is needed."}</p>
-            <p className="mt-3 text-sm font-semibold text-amber-800">{lang === "tl" ? "Wala pang sensor reading ang pH, temperatura, DO, at ammonia. Hindi pa makakagawa ng ligtas na full-water o fish recommendation." : "No sensor readings yet for pH, temperature, DO, or ammonia. A full-water safety or fish recommendation is not available yet."}</p>
-          </section>
-        ) : hasAnalyzed ? (
+          <TurbidityAssessment telemetry={sensorTelemetry!} fish={fishDb} lang={lang} />
+        ) : showManualResults ? (
           <>
+            <p className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm font-semibold text-sky-900">{lang === "tl" ? "Manu-manong analysis ito, hindi galing sa ESP32." : "Manual analysis only. These values did not come from the ESP32."}</p>
             <AlertBanner alert={alerts[0]} lang={lang} />
             <SummaryBanner status={currentStatus} lang={lang} />
             <WhatToDoNow alerts={alerts} status={currentStatus} lang={lang} />
@@ -1318,12 +1337,20 @@ function AnalysisPage({
               <CorrectiveActions alerts={alerts} status={currentStatus} lang={lang} text={text} />
             </CollapsiblePanel>
           </>
+        ) : sensorTelemetry ? (
+          <section className="card p-6">
+            <h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Naghihintay ng bagong sensor reading" : "Waiting for a new sensor reading"}</h2>
+            <p className="mt-2 text-sm text-slate-600">{lang === "tl" ? "Luma na ang reading sa itaas. Kung 'Website updated' ang LCD, maaaring naka-pair ang ESP32 sa ibang account." : "The reading above is old. If the LCD says 'Website updated', the ESP32 may be paired to another account."}</p>
+            <a className="mt-3 inline-block text-sm font-bold text-teal-700 underline" href="/profile">{lang === "tl" ? "I-pair ang ESP32 sa account na ito" : "Pair the ESP32 with this account"}</a>
+          </section>
         ) : (
-          <AnalysisEmptyState sensorAnalysis={sensorAnalysis} hasSensor={Boolean(sensorTelemetry)} />
+          <AnalysisEmptyState sensorAnalysis={sensorAnalysis} hasSensor={false} />
         )}
       </section>
 
-      {hasAnalyzed && showManual ? (
+      {sensorFresh ? (
+        <TurbidityFishRanking value={sensorTurbidityValue(sensorTelemetry!)} fish={fishDb} lang={lang} />
+      ) : showManualResults ? (
         <>
           <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} lang={lang} text={text} />
         </>
@@ -1361,6 +1388,7 @@ function AnalysisEmptyState({ sensorAnalysis, hasSensor }: { sensorAnalysis: Sen
           {hasSensor ? "Only turbidity is connected. The live trend above shows that sensor; pH, temperature, oxygen, and ammonia have no sensor readings yet. For a full decision-support analysis, enter measured values for all five parameters and press Analyze." : "Enter measured pH, temperature, dissolved oxygen, turbidity, and ammonia values, then press Analyze Water Quality."}
         </p>
       )}
+      {!hasSensor && <a href="/profile" className="mt-4 text-sm font-bold text-teal-700 underline">ESP32 says “Website updated” but nothing appears? Pair it with this account.</a>}
     </section>
   );
 }
@@ -1389,7 +1417,7 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
         <span className={`rounded-full px-3 py-1 text-xs font-black ${badgeClasses(level)}`}>{label}</span>
         {telemetry.turbidityNtu === null && <span className="text-xs font-semibold text-amber-800">Estimated, calibration needed</span>}
       </div>
-      {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Walang bagong upload mula sa ESP32. Tingnan ang LCD: kung 401, hindi valid ang device key. Lumang reading ito, hindi live." : "No recent ESP32 upload. Check the LCD: 401 means the device key is invalid. This is an old reading, not live."}</p>}
+      {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Lumang reading ito. Kung 'Website updated' ang LCD, i-pair ang ESP32 sa account na ito sa Profile." : "This is an old reading. If the LCD says 'Website updated', pair the ESP32 with this account in Profile."}</p>}
       <div className="mt-4 h-44 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chart}>
@@ -1403,6 +1431,52 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
       </div>
       <p className="mt-2 text-xs font-semibold text-slate-600">{lang === "tl" ? "Walang live reading ang pH, temperatura, DO, at ammonia. Huwag ituring na ligtas ang buong tubig batay sa turbidity lamang." : "pH, temperature, DO, and ammonia have no live readings. Turbidity alone cannot confirm overall water safety."}</p>
     </section>
+  );
+}
+
+function turbidityMatches(value: number, fish: FishSpecies[]) {
+  return fish.map((species) => {
+    const [minimum, maximum] = species.ranges.turbidity;
+    const distance = value < minimum ? minimum - value : value > maximum ? value - maximum : 0;
+    return { fish: species, distance };
+  }).sort((a, b) => a.distance - b.distance || a.fish.name.localeCompare(b.fish.name));
+}
+
+function TurbidityAssessment({ telemetry, fish, lang }: { telemetry: SensorTelemetry; fish: FishSpecies[]; lang: Lang }) {
+  const value = sensorTurbidityValue(telemetry);
+  const level = statusFor("turbidity", value);
+  const closest = turbidityMatches(value, fish)[0];
+  return (
+    <section className={`card border p-5 ${level === "critical" ? "border-red-200" : level === "warning" ? "border-amber-200" : "border-emerald-200"}`} aria-live="polite">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Awtomatikong pagsusuri ng labo ng tubig" : "Automatic turbidity assessment"}</h2>
+        <span className={`rounded-full px-3 py-1 text-xs font-black ${badgeClasses(level)}`}>{level === "safe" ? (lang === "tl" ? "Katanggap-tanggap na labo" : "Acceptable turbidity") : level === "warning" ? (lang === "tl" ? "Maulap ang tubig" : "Cloudy water") : (lang === "tl" ? "Napakalabo ng tubig" : "Very cloudy water")}</span>
+      </div>
+      <p className="mt-3 text-2xl font-black text-teal-800">{value} NTU</p>
+      <p className="mt-2 text-sm text-slate-700">{lang === "tl" ? "Awtomatikong nagbabago sa bawat bagong ESP32 reading; hindi kailangan pindutin ang Analyze." : "Updates automatically with each ESP32 reading; no Analyze click is needed."}</p>
+      {closest && <p className="mt-3 text-sm font-bold text-slate-800">{lang === "tl" ? "Pinakamalapit na tugma batay sa labo lamang" : "Closest match by turbidity only"}: {closest.fish.name}</p>}
+      <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-900">{lang === "tl" ? "Paunang resulta lamang. Walang sukat ang pH, temperatura, oxygen at ammonia, kaya hindi pa matitiyak ang kaligtasan ng tubig o ang pinakamainam na isda. Tinatayang NTU ito hangga't hindi na-calibrate ang sensor." : "Preliminary result only. pH, temperature, oxygen, and ammonia are not measured, so overall water safety and the best fish cannot be confirmed. NTU is estimated until the sensor is calibrated."}</p>
+    </section>
+  );
+}
+
+function TurbidityFishRanking({ value, fish, lang }: { value: number; fish: FishSpecies[]; lang: Lang }) {
+  const matches = turbidityMatches(value, fish);
+  return (
+    <aside className="card h-fit p-5">
+      <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Fish size={21} className="text-teal-600" />{lang === "tl" ? "Tugma sa Labo ng Tubig" : "Turbidity-Only Fish Match"}</h2>
+      <p className="mt-2 text-xs font-semibold leading-5 text-amber-900">{lang === "tl" ? "Paunang paghahambing lamang. Hindi pa ito buong fish recommendation." : "Preliminary comparison, not a full fish recommendation."}</p>
+      <ol className="mt-4 space-y-2">
+        {matches.map(({ fish: species, distance }, index) => (
+          <li key={species.id} className={`flex items-center gap-3 rounded-lg border p-3 ${index === 0 ? "border-teal-300 bg-teal-50" : "border-slate-200"}`}>
+            <span className="w-7 shrink-0 text-sm font-black text-slate-500">#{index + 1}</span>
+            <img src={`/fish/${species.id}.jpg`} alt="" className="h-10 w-10 shrink-0 rounded-md object-cover" />
+            <div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-900">{species.name}</p><p className="text-xs text-slate-500">{species.ranges.turbidity[0]}-{species.ranges.turbidity[1]} NTU</p></div>
+            <span className={`text-xs font-black ${distance === 0 ? "text-emerald-700" : "text-amber-700"}`}>{distance === 0 ? (lang === "tl" ? "Sakop" : "In range") : (lang === "tl" ? "Labas" : "Outside")}</span>
+          </li>
+        ))}
+      </ol>
+    </aside>
   );
 }
 
@@ -1481,9 +1555,9 @@ function WaterParametersPanel({
       <h2 className="mb-5 flex items-center gap-2 text-lg font-black text-slate-950">
         <Droplets className="text-teal-600" size={21} /> {text.waterParameters}
       </h2>
-      {sensorFresh && !showManual && (
+      {sensorTelemetry && !showManual && (
         <div className="space-y-3 text-sm">
-          <p className="rounded-lg bg-teal-50 p-3 font-bold text-teal-800">{lang === "tl" ? "Awtomatikong gumagana ang turbidity sensor." : "Turbidity sensor is analyzing automatically."}</p>
+          <p className={`rounded-lg p-3 font-bold ${sensorFresh ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-900"}`}>{sensorFresh ? (lang === "tl" ? "Awtomatikong gumagana ang turbidity sensor." : "Turbidity sensor is analyzing automatically.") : (lang === "tl" ? "Walang bagong reading. Ang value sa ibaba ay huling natanggap lamang." : "No recent reading. The value below is the last received, not live.")}</p>
           {parameterMeta.map((meta) => (
             <div key={meta.key} className="flex items-center justify-between border-b border-slate-100 py-2">
               <span className="font-semibold text-slate-700">{meta.label[lang]}</span>
@@ -1493,7 +1567,7 @@ function WaterParametersPanel({
           <p className="text-xs text-slate-600">{lang === "tl" ? "Ang dash ay hindi zero. Wala pang nakakabit na sensor para sa ibang parameter." : "Missing is not zero. No connected sensor has measured the other parameters."}</p>
         </div>
       )}
-      {sensorFresh && !showManual ? null : <>
+      {sensorTelemetry && !showManual ? null : <>
       <p className="mb-4 text-xs font-semibold leading-5 text-slate-600">{lang === "tl" ? "Manu-manong input ang mga slider sa ibaba. Halimbawa lamang ang panimulang value; hindi ito galing sa sensor. Ipasok ang aktuwal na sukat bago mag-full analysis." : "The sliders below are manual inputs. Starting values are examples, not sensor measurements. Enter actual measurements before a full analysis."}</p>
       <div className="space-y-5 sm:space-y-6">
         {parameterMeta.map((meta) => {
@@ -2664,10 +2738,24 @@ function AuthPage({
 }
 
 function ProfilePage({ currentUser, navigate }: { currentUser: AppUser | null; navigate: (path: string) => void }) {
+  const [deviceKey, setDeviceKey] = useState("");
+  const [pairing, setPairing] = useState(false);
+  const [pairMessage, setPairMessage] = useState("");
   if (!currentUser) {
     navigate("/login");
     return null;
   }
+
+  const pairDevice = async () => {
+    if (!deviceKey.trim()) return setPairMessage("Enter the SENSOR_API_KEY from your Arduino sketch.");
+    setPairing(true);
+    setPairMessage("");
+    const result = await postJson<{ paired: boolean; deviceName: string }>("/api/sensors/device/claim", { apiKey: deviceKey.trim() });
+    setPairing(false);
+    setDeviceKey("");
+    setPairMessage(result.error || (result.data ? `${result.data.deviceName} is now paired with this account. Return to the dashboard; the next ESP32 upload will appear there.` : "Pairing failed."));
+  };
+
   return (
     <div className="min-h-screen bg-slate-100 p-4 sm:p-6">
       <section className="mx-auto max-w-xl rounded-2xl bg-white p-6 shadow">
@@ -2676,6 +2764,14 @@ function ProfilePage({ currentUser, navigate }: { currentUser: AppUser | null; n
           <p><span className="font-black text-slate-500">Name:</span> {currentUser.fullName}</p>
           <p><span className="font-black text-slate-500">Phone:</span> {currentUser.phone}</p>
           <p><span className="font-black text-slate-500">Role:</span> {currentUser.role || "user"}</p>
+        </div>
+        <div className="mt-6 border-t border-slate-200 pt-5">
+          <h2 className="flex items-center gap-2 text-base font-black text-slate-950"><Activity size={18} className="text-teal-700" /> Pair existing ESP32</h2>
+          <p className="mt-2 text-sm leading-6 text-slate-600">If the LCD says “Website updated” but this account shows an old reading, the ESP32 may belong to another account. Enter the device key from your Arduino sketch to move its live readings to this account. Keep this key private.</p>
+          <label className="mt-4 block text-sm font-bold text-slate-800" htmlFor="device-key">ESP32 device key</label>
+          <input id="device-key" type="password" autoComplete="off" spellCheck={false} value={deviceKey} onChange={(event) => setDeviceKey(event.target.value)} className="mt-2 w-full rounded-lg border border-slate-300 px-3 py-3 text-sm outline-none focus:border-teal-600 focus:ring-2 focus:ring-teal-100" placeholder="ps_..." />
+          <button className="primary-button mt-3" onClick={pairDevice} disabled={pairing}>{pairing ? "Pairing..." : "Pair ESP32 with this account"}</button>
+          {pairMessage && <p className="mt-3 text-sm font-semibold text-slate-700" role="status">{pairMessage}</p>}
         </div>
         <button className="primary-button mt-6" onClick={() => navigate("/dashboard")}>Back to Dashboard</button>
       </section>
