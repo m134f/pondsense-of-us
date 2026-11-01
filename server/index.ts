@@ -604,6 +604,32 @@ app.get("/api/sensors/latest", async (req, res) => {
   }
 });
 
+app.get("/api/sensors/trend", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth || !pool) return res.status(401).json({ message: "Login required." });
+  try {
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
+              telemetry.recorded_at, device.device_name
+       FROM sensor_telemetry AS telemetry
+       INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
+       WHERE device.owner_user_id = ? AND device.is_active = 1
+       ORDER BY telemetry.recorded_at DESC, telemetry.id DESC LIMIT 30`,
+      [auth.sub]
+    );
+    res.json({ readings: rows.reverse().map((row) => ({
+      deviceName: String(row.device_name),
+      rawValue: Number(row.turbidity_raw),
+      voltage: Number(row.turbidity_voltage),
+      turbidityNtu: row.turbidity_ntu === null ? null : Number(row.turbidity_ntu),
+      recordedAt: row.recorded_at
+    })) });
+  } catch (error) {
+    console.error("Sensor trend error:", error);
+    res.status(503).json({ message: "Unable to load sensor trend." });
+  }
+});
+
 app.post("/api/v1/sensors/turbidity", async (req, res) => {
   const providedKey = String(req.headers["x-api-key"] || req.headers["x-sensor-key"] || req.body?.deviceKey || "");
   if (!providedKey) return res.status(401).json({ message: "Sensor API key is required." });

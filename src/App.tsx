@@ -568,6 +568,7 @@ export default function App() {
   const [clock, setClock] = useState(new Date());
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
   const [sensorTelemetry, setSensorTelemetry] = useState<SensorTelemetry | null>(null);
+  const [sensorTrend, setSensorTrend] = useState<SensorTelemetry[]>([]);
   const [sensorAnalysis, setSensorAnalysis] = useState<SensorAnalysisState | null>(null);
   const paramsRef = useRef(params);
   const sensorAutoTimerRef = useRef<number | null>(null);
@@ -609,14 +610,18 @@ export default function App() {
 
     if (!currentUser) {
       setSensorTelemetry(null);
+      setSensorTrend([]);
       return () => {
         active = false;
       };
     }
 
     const loadSensorTelemetry = async () => {
-      const result = await apiJson<{ telemetry: SensorTelemetry | null }>("/api/sensors/latest");
-      if (active && result.data) setSensorTelemetry(result.data.telemetry);
+      const result = await apiJson<{ readings: SensorTelemetry[] }>("/api/sensors/trend");
+      if (active && result.data) {
+        setSensorTrend(result.data.readings);
+        setSensorTelemetry(result.data.readings.at(-1) || null);
+      }
     };
 
     void loadSensorTelemetry();
@@ -670,8 +675,6 @@ export default function App() {
     setHasAnalyzed(true);
     setSelectedFishId(analysisBest.fish.id);
 
-    // Sensor-only previews are deliberately not saved or sent by SMS. They still need
-    // the remaining parameters to be verified before becoming a farmer record.
     if (!shouldSave) return;
 
     const record: SessionRecord = {
@@ -733,9 +736,6 @@ export default function App() {
     const turbidity = sensorTurbidityValue(sensorTelemetry);
     const isEstimated = sensorTelemetry.turbidityNtu === null;
 
-    // Keep the visible turbidity value and calculated recommendations live for every new ESP32 upload.
-    setParams((current) => current.turbidity === turbidity ? current : { ...current, turbidity });
-
     if (sensorAutoTimerRef.current !== null || lastAutoReadingRef.current === readingKey) return;
 
     const deadline = Date.now() + SENSOR_ANALYSIS_DELAY_MS;
@@ -754,9 +754,6 @@ export default function App() {
     }, 500);
 
     sensorAutoTimerRef.current = window.setTimeout(() => {
-      const sensorParams = { ...paramsRef.current, turbidity };
-      setParams(sensorParams);
-      void runAnalysis(sensorParams, { save: false, source: "sensor" });
       lastAutoReadingRef.current = readingKey;
       if (sensorCountdownTimerRef.current !== null) window.clearInterval(sensorCountdownTimerRef.current);
       sensorCountdownTimerRef.current = null;
@@ -947,6 +944,7 @@ export default function App() {
           params={params}
           setParams={setParams}
           sensorTelemetry={sensorTelemetry}
+          sensorTrend={sensorTrend}
           sensorAnalysis={sensorAnalysis}
           sessions={sessions}
           scores={scores}
@@ -1210,6 +1208,7 @@ function AnalysisPage({
   params,
   setParams,
   sensorTelemetry,
+  sensorTrend,
   sensorAnalysis,
   sessions,
   scores,
@@ -1228,6 +1227,7 @@ function AnalysisPage({
   params: WaterParams;
   setParams: (params: WaterParams) => void;
   sensorTelemetry: SensorTelemetry | null;
+  sensorTrend: SensorTelemetry[];
   sensorAnalysis: SensorAnalysisState | null;
   sessions: SessionRecord[];
   scores: FishScore[];
@@ -1253,7 +1253,6 @@ function AnalysisPage({
           params={params}
           setParams={setParams}
           sensorTelemetry={sensorTelemetry}
-          sensorAnalysis={sensorAnalysis}
           onAnalyze={onAnalyze}
           text={text}
         />
@@ -1271,14 +1270,14 @@ function AnalysisPage({
       </aside>
 
       <section className="space-y-5">
+        {sensorTelemetry && <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} />}
         {hasAnalyzed ? (
           <>
-            {sensorAnalysis?.status === "complete" && <SensorAnalysisNotice analysis={sensorAnalysis} lang={lang} />}
             <AlertBanner alert={alerts[0]} lang={lang} />
             <SummaryBanner status={currentStatus} lang={lang} />
             <WhatToDoNow alerts={alerts} status={currentStatus} lang={lang} />
             <QuickStatusCards lang={lang} params={params} />
-            <DashboardTrends params={params} sessions={sessions} text={text} />
+            {sessions.length > 0 && <DashboardTrends params={params} sessions={sessions} text={text} />}
             <BestMatchCard selectedScore={selectedScore} selectedRank={selectedRank} best={best} lang={lang} text={text} />
             <FarmerGuideCard selectedScore={selectedScore} lang={lang} text={text} />
             <CollapsiblePanel
@@ -1307,7 +1306,7 @@ function AnalysisPage({
             </CollapsiblePanel>
           </>
         ) : (
-          <AnalysisEmptyState sensorAnalysis={sensorAnalysis} />
+          <AnalysisEmptyState sensorAnalysis={sensorAnalysis} hasSensor={Boolean(sensorTelemetry)} />
         )}
       </section>
 
@@ -1329,25 +1328,64 @@ function AnalysisPage({
   );
 }
 
-function AnalysisEmptyState({ sensorAnalysis }: { sensorAnalysis: SensorAnalysisState | null }) {
+function AnalysisEmptyState({ sensorAnalysis, hasSensor }: { sensorAnalysis: SensorAnalysisState | null; hasSensor: boolean }) {
   return (
     <section className="card flex min-h-[360px] flex-col items-center justify-center p-6 text-center sm:min-h-[420px] sm:p-8">
       <div className="flex h-16 w-16 items-center justify-center rounded-2xl bg-teal-50 text-teal-700 ring-1 ring-teal-100">
         <BarChart3 size={30} />
       </div>
       <h2 className="mt-5 text-2xl font-black text-slate-950">
-        {sensorAnalysis?.status === "waiting" ? "Preparing sensor analysis" : "No water quality analysis yet"}
+        {hasSensor ? "Full water analysis not yet available" : "No water quality analysis yet"}
       </h2>
       {sensorAnalysis?.status === "waiting" ? (
         <p className="mt-3 max-w-xl text-sm font-medium leading-6 text-slate-600">
-          Turbidity from the ESP32 is ready. PondSense will show the preliminary result in {sensorAnalysis.secondsRemaining} seconds.
+          Turbidity is being read live. Waiting {sensorAnalysis.secondsRemaining} seconds for the first sensor-only result. The other four parameters are not measured by this ESP32.
         </p>
       ) : (
         <p className="mt-3 max-w-xl text-sm font-medium leading-6 text-slate-600">
-          Set the current pH, temperature, dissolved oxygen, turbidity, and ammonia values on the left. Results, alerts,
-          corrective actions, fish ranking, and trends will appear after you click Analyze Water Quality.
+          {hasSensor ? "Only turbidity is connected. The live trend above shows that sensor; pH, temperature, oxygen, and ammonia have no sensor readings yet. For a full decision-support analysis, enter measured values for all five parameters and press Analyze." : "Enter measured pH, temperature, dissolved oxygen, turbidity, and ammonia values, then press Analyze Water Quality."}
         </p>
       )}
+    </section>
+  );
+}
+
+function LiveSensorTrends({ telemetry, readings, lang }: { telemetry: SensorTelemetry; readings: SensorTelemetry[]; lang: Lang }) {
+  const value = sensorTurbidityValue(telemetry);
+  const level = statusFor("turbidity", value);
+  const label = level === "critical" ? "Very cloudy" : level === "warning" ? "Cloudy" : "Clear range";
+  const chart = readings.map((reading) => ({
+    time: new Date(reading.recordedAt).toLocaleTimeString("en-PH"),
+    turbidity: sensorTurbidityValue(reading)
+  }));
+  const lastSeen = Date.now() - new Date(telemetry.recordedAt).getTime();
+  const live = lastSeen >= 0 && lastSeen < 90_000;
+  return (
+    <section className="card p-4 sm:p-5" aria-live="polite">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Activity size={20} className="text-teal-600" /> {lang === "tl" ? "Live na Trend ng Kalidad ng Tubig" : "Live Water Quality Trends"}</h2>
+          <p className="mt-1 text-xs font-semibold text-slate-500">{lang === "tl" ? "Turbidity lamang ang may aktibong sensor" : "Turbidity is the only active sensor"} · {new Date(telemetry.recordedAt).toLocaleString("en-PH")}</p>
+        </div>
+        <span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{live ? "Live" : "Last reading"}</span>
+      </div>
+      <div className="mt-4 flex flex-wrap items-baseline gap-3">
+        <strong className="text-3xl text-slate-950">{value} <span className="text-base">NTU</span></strong>
+        <span className={`rounded-full px-3 py-1 text-xs font-black ${badgeClasses(level)}`}>{label}</span>
+        {telemetry.turbidityNtu === null && <span className="text-xs font-semibold text-amber-800">Estimated, calibration needed</span>}
+      </div>
+      <div className="mt-4 h-44 w-full">
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={chart}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
+            <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={25} />
+            <YAxis domain={[0, 500]} tick={{ fontSize: 10 }} width={34} />
+            <Tooltip />
+            <Line type="monotone" dataKey="turbidity" stroke="#0d9488" strokeWidth={3} dot={false} isAnimationActive={false} />
+          </LineChart>
+        </ResponsiveContainer>
+      </div>
+      <p className="mt-2 text-xs font-semibold text-slate-600">{lang === "tl" ? "Walang live reading ang pH, temperatura, DO, at ammonia. Huwag ituring na ligtas ang buong tubig batay sa turbidity lamang." : "pH, temperature, DO, and ammonia have no live readings. Turbidity alone cannot confirm overall water safety."}</p>
     </section>
   );
 }
@@ -1408,7 +1446,6 @@ function WaterParametersPanel({
   params,
   setParams,
   sensorTelemetry,
-  sensorAnalysis,
   onAnalyze,
   text
 }: {
@@ -1416,7 +1453,6 @@ function WaterParametersPanel({
   params: WaterParams;
   setParams: (params: WaterParams) => void;
   sensorTelemetry: SensorTelemetry | null;
-  sensorAnalysis: SensorAnalysisState | null;
   onAnalyze: () => void;
   text: typeof ui.en;
 }) {
@@ -1425,7 +1461,8 @@ function WaterParametersPanel({
       <h2 className="mb-5 flex items-center gap-2 text-lg font-black text-slate-950">
         <Droplets className="text-teal-600" size={21} /> {text.waterParameters}
       </h2>
-      <SensorTelemetryCard lang={lang} telemetry={sensorTelemetry} sensorAnalysis={sensorAnalysis} />
+      {sensorTelemetry && <p className="mb-4 rounded-lg bg-teal-50 px-3 py-2 text-xs font-bold text-teal-800">{lang === "tl" ? "Turbidity sensor lang ang nakakonekta. Nasa Water Quality Trends ang live reading." : "Only the turbidity sensor is connected. See its live reading in Water Quality Trends."}</p>}
+      <p className="mb-4 text-xs font-semibold leading-5 text-slate-600">{lang === "tl" ? "Manu-manong input ang mga slider sa ibaba. Halimbawa lamang ang panimulang value; hindi ito galing sa sensor. Ipasok ang aktuwal na sukat bago mag-full analysis." : "The sliders below are manual inputs. Starting values are examples, not sensor measurements. Enter actual measurements before a full analysis."}</p>
       <div className="space-y-5 sm:space-y-6">
         {parameterMeta.map((meta) => {
           const status = statusFor(meta.key, params[meta.key]);
