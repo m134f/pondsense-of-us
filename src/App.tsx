@@ -91,7 +91,7 @@ function sensorTurbidityValue(telemetry: SensorTelemetry) {
   if (telemetry.turbidityNtu !== null) return Math.max(0, Math.min(500, telemetry.turbidityNtu));
 
   // Prototype-only estimate. A calibrated NTU value from the sensor takes precedence.
-  return Math.round(Math.max(0, Math.min(250, (3.3 - telemetry.voltage) * (250 / 3.3))));
+  return Math.round(Math.max(0, Math.min(250, (1 - telemetry.rawValue / 4095) * 250)));
 }
 
 const parameterMeta = [
@@ -577,7 +577,7 @@ export default function App() {
   const text = ui[lang];
 
   useEffect(() => {
-    const timer = window.setInterval(() => setClock(new Date()), 30_000);
+    const timer = window.setInterval(() => setClock(new Date()), 3_000);
     return () => window.clearInterval(timer);
   }, []);
 
@@ -625,7 +625,7 @@ export default function App() {
     };
 
     void loadSensorTelemetry();
-    const interval = window.setInterval(() => void loadSensorTelemetry(), 5_000);
+    const interval = window.setInterval(() => void loadSensorTelemetry(), 3_000);
 
     return () => {
       active = false;
@@ -946,6 +946,7 @@ export default function App() {
           sensorTelemetry={sensorTelemetry}
           sensorTrend={sensorTrend}
           sensorAnalysis={sensorAnalysis}
+          now={clock.getTime()}
           sessions={sessions}
           scores={scores}
           alerts={alerts}
@@ -1210,6 +1211,7 @@ function AnalysisPage({
   sensorTelemetry,
   sensorTrend,
   sensorAnalysis,
+  now,
   sessions,
   scores,
   alerts,
@@ -1229,6 +1231,7 @@ function AnalysisPage({
   sensorTelemetry: SensorTelemetry | null;
   sensorTrend: SensorTelemetry[];
   sensorAnalysis: SensorAnalysisState | null;
+  now: number;
   sessions: SessionRecord[];
   scores: FishScore[];
   alerts: AlertItem[];
@@ -1244,6 +1247,8 @@ function AnalysisPage({
 }) {
   const [showParameterDetails, setShowParameterDetails] = useState(false);
   const [showAllActions, setShowAllActions] = useState(false);
+  const sensorFresh = Boolean(sensorTelemetry && now - new Date(sensorTelemetry.recordedAt).getTime() < 20_000);
+  const showManual = !sensorFresh;
 
   return (
     <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-4 px-3 pb-6 sm:gap-5 sm:px-6 sm:pb-8 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
@@ -1253,10 +1258,12 @@ function AnalysisPage({
           params={params}
           setParams={setParams}
           sensorTelemetry={sensorTelemetry}
+          sensorFresh={sensorFresh}
+          showManual={showManual}
           onAnalyze={onAnalyze}
           text={text}
         />
-        {hasAnalyzed && (
+        {hasAnalyzed && showManual && (
           <>
             <FeedingCard params={params} lang={lang} text={text} />
             <button
@@ -1270,8 +1277,14 @@ function AnalysisPage({
       </aside>
 
       <section className="space-y-5">
-        {sensorTelemetry && <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} />}
-        {hasAnalyzed ? (
+        {sensorTelemetry && <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} />}
+        {sensorFresh ? (
+          <section className="card p-5">
+            <h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Awtomatikong pagsusuri ng turbidity" : "Automatic turbidity analysis"}</h2>
+            <p className="mt-2 text-sm text-slate-600">{lang === "tl" ? "Nagbabago ang resulta sa bawat bagong sensor reading. Hindi kailangan pindutin ang Analyze." : "The result changes with every new sensor reading. No Analyze button is needed."}</p>
+            <p className="mt-3 text-sm font-semibold text-amber-800">{lang === "tl" ? "Wala pang sensor reading ang pH, temperatura, DO, at ammonia. Hindi pa makakagawa ng ligtas na full-water o fish recommendation." : "No sensor readings yet for pH, temperature, DO, or ammonia. A full-water safety or fish recommendation is not available yet."}</p>
+          </section>
+        ) : hasAnalyzed ? (
           <>
             <AlertBanner alert={alerts[0]} lang={lang} />
             <SummaryBanner status={currentStatus} lang={lang} />
@@ -1310,7 +1323,7 @@ function AnalysisPage({
         )}
       </section>
 
-      {hasAnalyzed ? (
+      {hasAnalyzed && showManual ? (
         <>
           <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} lang={lang} text={text} />
         </>
@@ -1320,7 +1333,9 @@ function AnalysisPage({
             <Fish className="text-teal-600" size={21} /> Fish Suitability Ranking
           </h2>
           <p className="mt-3 text-sm font-medium leading-6 text-slate-600">
-            No fish ranking yet. Adjust the water parameters, then click Analyze Water Quality to generate recommendations.
+            {sensorFresh
+              ? "Turbidity is updating automatically. Fish ranking needs measured pH, temperature, dissolved oxygen, and ammonia too; no full recommendation from one sensor."
+              : "No fish ranking yet. Enter measured values for all five parameters and run a manual analysis."}
           </p>
         </aside>
       )}
@@ -1350,7 +1365,7 @@ function AnalysisEmptyState({ sensorAnalysis, hasSensor }: { sensorAnalysis: Sen
   );
 }
 
-function LiveSensorTrends({ telemetry, readings, lang }: { telemetry: SensorTelemetry; readings: SensorTelemetry[]; lang: Lang }) {
+function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: SensorTelemetry; readings: SensorTelemetry[]; lang: Lang; now: number }) {
   const value = sensorTurbidityValue(telemetry);
   const level = statusFor("turbidity", value);
   const label = level === "critical" ? "Very cloudy" : level === "warning" ? "Cloudy" : "Clear range";
@@ -1358,8 +1373,8 @@ function LiveSensorTrends({ telemetry, readings, lang }: { telemetry: SensorTele
     time: new Date(reading.recordedAt).toLocaleTimeString("en-PH"),
     turbidity: sensorTurbidityValue(reading)
   }));
-  const lastSeen = Date.now() - new Date(telemetry.recordedAt).getTime();
-  const live = lastSeen >= 0 && lastSeen < 90_000;
+  const lastSeen = now - new Date(telemetry.recordedAt).getTime();
+  const live = lastSeen >= 0 && lastSeen < 20_000;
   return (
     <section className="card p-4 sm:p-5" aria-live="polite">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1367,13 +1382,14 @@ function LiveSensorTrends({ telemetry, readings, lang }: { telemetry: SensorTele
           <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Activity size={20} className="text-teal-600" /> {lang === "tl" ? "Live na Trend ng Kalidad ng Tubig" : "Live Water Quality Trends"}</h2>
           <p className="mt-1 text-xs font-semibold text-slate-500">{lang === "tl" ? "Turbidity lamang ang may aktibong sensor" : "Turbidity is the only active sensor"} · {new Date(telemetry.recordedAt).toLocaleString("en-PH")}</p>
         </div>
-        <span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{live ? "Live" : "Last reading"}</span>
+        <span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{live ? "Live" : "Offline / last reading"}</span>
       </div>
       <div className="mt-4 flex flex-wrap items-baseline gap-3">
         <strong className="text-3xl text-slate-950">{value} <span className="text-base">NTU</span></strong>
         <span className={`rounded-full px-3 py-1 text-xs font-black ${badgeClasses(level)}`}>{label}</span>
         {telemetry.turbidityNtu === null && <span className="text-xs font-semibold text-amber-800">Estimated, calibration needed</span>}
       </div>
+      {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Walang bagong upload mula sa ESP32. Tingnan ang LCD: kung 401, hindi valid ang device key. Lumang reading ito, hindi live." : "No recent ESP32 upload. Check the LCD: 401 means the device key is invalid. This is an old reading, not live."}</p>}
       <div className="mt-4 h-44 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chart}>
@@ -1446,6 +1462,8 @@ function WaterParametersPanel({
   params,
   setParams,
   sensorTelemetry,
+  sensorFresh,
+  showManual,
   onAnalyze,
   text
 }: {
@@ -1453,6 +1471,8 @@ function WaterParametersPanel({
   params: WaterParams;
   setParams: (params: WaterParams) => void;
   sensorTelemetry: SensorTelemetry | null;
+  sensorFresh: boolean;
+  showManual: boolean;
   onAnalyze: () => void;
   text: typeof ui.en;
 }) {
@@ -1461,7 +1481,19 @@ function WaterParametersPanel({
       <h2 className="mb-5 flex items-center gap-2 text-lg font-black text-slate-950">
         <Droplets className="text-teal-600" size={21} /> {text.waterParameters}
       </h2>
-      {sensorTelemetry && <p className="mb-4 rounded-lg bg-teal-50 px-3 py-2 text-xs font-bold text-teal-800">{lang === "tl" ? "Turbidity sensor lang ang nakakonekta. Nasa Water Quality Trends ang live reading." : "Only the turbidity sensor is connected. See its live reading in Water Quality Trends."}</p>}
+      {sensorFresh && !showManual && (
+        <div className="space-y-3 text-sm">
+          <p className="rounded-lg bg-teal-50 p-3 font-bold text-teal-800">{lang === "tl" ? "Awtomatikong gumagana ang turbidity sensor." : "Turbidity sensor is analyzing automatically."}</p>
+          {parameterMeta.map((meta) => (
+            <div key={meta.key} className="flex items-center justify-between border-b border-slate-100 py-2">
+              <span className="font-semibold text-slate-700">{meta.label[lang]}</span>
+              <span className={meta.key === "turbidity" ? "font-black text-teal-700" : "font-semibold text-slate-500"}>{meta.key === "turbidity" && sensorTelemetry ? `${sensorTurbidityValue(sensorTelemetry)} NTU` : (lang === "tl" ? "Walang sensor reading" : "No sensor reading")}</span>
+            </div>
+          ))}
+          <p className="text-xs text-slate-600">{lang === "tl" ? "Ang dash ay hindi zero. Wala pang nakakabit na sensor para sa ibang parameter." : "Missing is not zero. No connected sensor has measured the other parameters."}</p>
+        </div>
+      )}
+      {sensorFresh && !showManual ? null : <>
       <p className="mb-4 text-xs font-semibold leading-5 text-slate-600">{lang === "tl" ? "Manu-manong input ang mga slider sa ibaba. Halimbawa lamang ang panimulang value; hindi ito galing sa sensor. Ipasok ang aktuwal na sukat bago mag-full analysis." : "The sliders below are manual inputs. Starting values are examples, not sensor measurements. Enter actual measurements before a full analysis."}</p>
       <div className="space-y-5 sm:space-y-6">
         {parameterMeta.map((meta) => {
@@ -1497,6 +1529,7 @@ function WaterParametersPanel({
       <button className="primary-button mt-5 w-full py-3.5 sm:mt-6 sm:py-4" onClick={onAnalyze}>
         <Fish size={18} /> {text.analyze}
       </button>
+      </>}
     </section>
   );
 }
