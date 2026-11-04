@@ -1281,7 +1281,9 @@ function AnalysisPage({
 }) {
   const [showParameterDetails, setShowParameterDetails] = useState(false);
   const [showAllActions, setShowAllActions] = useState(false);
-  const sensorFresh = Boolean(sensorTelemetry && now - new Date(sensorTelemetry.recordedAt).getTime() < 30_000);
+  const sensorAge = sensorTelemetry ? now - new Date(sensorTelemetry.recordedAt).getTime() : Infinity;
+  const sensorFresh = sensorAge >= 0 && sensorAge < 30_000;
+  const calibratedTurbidity = sensorTelemetry?.turbidityNtu !== null && sensorTelemetry?.turbidityNtu !== undefined;
   const showManual = !sensorFresh;
   const showManualResults = hasAnalyzed && showManual;
 
@@ -1313,8 +1315,13 @@ function AnalysisPage({
 
       <section className="space-y-5">
         {sensorTelemetry && <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} />}
-        {sensorFresh ? (
+        {sensorFresh && calibratedTurbidity ? (
           <TurbidityAssessment telemetry={sensorTelemetry!} fish={fishDb} lang={lang} />
+        ) : sensorFresh ? (
+          <section className="card border border-amber-200 p-5">
+            <h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "May signal, pero hindi pa nasusukat ang NTU" : "Sensor signal received, NTU not verified"}</h2>
+            <p className="mt-2 text-sm leading-6 text-slate-700">{lang === "tl" ? "Nagbibigay ng signal ang turbidity probe kahit nasa hangin. Ilubog ang probe at i-calibrate muna bago gamitin ang NTU para sa water-quality o fish recommendation." : "The turbidity probe gives a signal even in air. Submerge and calibrate it before using NTU for water-quality or fish recommendations."}</p>
+          </section>
         ) : showManualResults ? (
           <>
             <p className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm font-semibold text-sky-900">{lang === "tl" ? "Manu-manong analysis ito, hindi galing sa ESP32." : "Manual analysis only. These values did not come from the ESP32."}</p>
@@ -1360,7 +1367,7 @@ function AnalysisPage({
         )}
       </section>
 
-      {sensorFresh ? (
+      {sensorFresh && calibratedTurbidity ? (
         <TurbidityFishRanking value={sensorTurbidityValue(sensorTelemetry!)} fish={fishDb} lang={lang} />
       ) : showManualResults ? (
         <>
@@ -1373,7 +1380,7 @@ function AnalysisPage({
           </h2>
           <p className="mt-3 text-sm font-medium leading-6 text-slate-600">
             {sensorFresh
-              ? "Turbidity is updating automatically. Fish ranking needs measured pH, temperature, dissolved oxygen, and ammonia too; no full recommendation from one sensor."
+              ? "Fish comparison is paused until the turbidity sensor is submerged and calibrated. A signal in air is not a valid water measurement."
               : "No fish ranking yet. Enter measured values for all five parameters and run a manual analysis."}
           </p>
         </aside>
@@ -1407,6 +1414,7 @@ function AnalysisEmptyState({ sensorAnalysis, hasSensor }: { sensorAnalysis: Sen
 function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: SensorTelemetry; readings: SensorTelemetry[]; lang: Lang; now: number }) {
   const value = sensorTurbidityValue(telemetry);
   const level = statusFor("turbidity", value);
+  const calibrated = telemetry.turbidityNtu !== null;
   const label = level === "critical" ? "Very cloudy" : level === "warning" ? "Cloudy" : "Clear range";
   const chart = readings.map((reading) => ({
     time: new Date(reading.recordedAt).toLocaleTimeString("en-PH"),
@@ -1428,13 +1436,13 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Temperatura" : "Temperature"}</p>
           <strong className="mt-1 block text-2xl text-slate-950">{telemetry.temperatureC === null ? "--" : `${telemetry.temperatureC.toFixed(1)} °C`}</strong>
-          <p className="mt-1 text-xs text-slate-500">{telemetry.temperatureC === null ? (lang === "tl" ? "Walang sukat" : "No measurement") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p>
+          <p className="mt-1 text-xs text-slate-500">{telemetry.temperatureC === null ? (lang === "tl" ? "Walang natanggap na temperatura. Suriin ang DS18B20 at GPIO 4." : "No temperature received. Check DS18B20 wiring on GPIO 4 and upload the current sketch.") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p>
         </div>
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Labo ng tubig" : "Turbidity"}</p>
-          <strong className="mt-1 block text-2xl text-slate-950">{value} <span className="text-base">NTU</span></strong>
-          <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span>
-          {telemetry.turbidityNtu === null && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "Tinataya; kailangan ng calibration" : "Estimated; calibration needed"}</p>}
+          <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? value : `~${value}`} <span className="text-base">NTU</span></strong>
+          {calibrated && live ? <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span> : <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-900">{calibrated ? "Last reading" : "Unverified estimate"}</span>}
+          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "May signal kahit nasa hangin. Hindi pa ito wastong NTU hangga't hindi naka-calibrate." : "The probe reads in air too. This is not a valid water NTU until calibrated."}</p>}
         </div>
       </div>
       {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Lumang sukat ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This is a stale reading. Check device connectivity or contact the administrator."}</p>}

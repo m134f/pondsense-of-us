@@ -119,7 +119,7 @@ void loop() {
 
   showLine(0, "PondSense of Us");
   showLine(1, isnan(temperatureC) ? "Temp: sensor error" : "Temp: " + String(temperatureC, 1) + " C");
-  showLine(2, "Turb: ~" + String(estimatedNtu) + " NTU");
+  showLine(2, "Turb: ~" + String(estimatedNtu) + " NTU est");
 
   if (lastSentAt == 0 || millis() - lastSentAt >= SEND_INTERVAL_MS) {
     sendTelemetry(rawValue, voltage, temperatureC);
