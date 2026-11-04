@@ -1,3 +1,4 @@
 node_modules
 dist
 .env
+hardware/**/device_secrets.h

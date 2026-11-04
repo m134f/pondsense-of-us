@@ -104,12 +104,30 @@ CREATE TABLE IF NOT EXISTS sensor_devices (
 CREATE TABLE IF NOT EXISTS sensor_telemetry (
   id INT AUTO_INCREMENT PRIMARY KEY,
   device_id INT NOT NULL,
+  owner_user_id INT NULL,
   turbidity_raw INT NOT NULL,
   turbidity_voltage DECIMAL(5,3) NOT NULL,
   turbidity_ntu DECIMAL(8,2) NULL,
+  temperature_c DECIMAL(5,2) NULL,
   recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX sensor_telemetry_device_recorded_index (device_id, recorded_at),
+  INDEX sensor_owner_recorded_index (owner_user_id, recorded_at),
   FOREIGN KEY (device_id) REFERENCES sensor_devices(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS harvest_batches (
+  id INT AUTO_INCREMENT PRIMARY KEY,
+  owner_user_id INT NOT NULL,
+  species VARCHAR(100) NOT NULL,
+  stocking_date DATE NOT NULL,
+  stocked_count INT NOT NULL,
+  target_harvest_date DATE NOT NULL,
+  actual_harvest_date DATE NULL,
+  harvested_kg DECIMAL(10,2) NULL,
+  selling_price DECIMAL(10,2) NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+  INDEX harvest_owner_date_index (owner_user_id, target_harvest_date)
 );
 
 DELETE FROM fish_species

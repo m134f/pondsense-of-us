@@ -105,6 +105,7 @@ function normalizeRole(role: unknown) {
 }
 
 function numberFromBody(value: unknown) {
+  if (value === null || value === undefined || value === "") return null;
   const numeric = Number(value);
   return Number.isFinite(numeric) ? numeric : null;
 }
@@ -134,6 +135,9 @@ function validateTurbidityTelemetry(payload: Record<string, unknown>) {
   const ntu = turbidityNtu === undefined || turbidityNtu === null || turbidityNtu === ""
     ? null
     : numberFromBody(turbidityNtu);
+  const suppliedTemperature = payload.temperatureC ?? payload.temperature_c ?? payload.temperature;
+  const temperatureC = suppliedTemperature === undefined || suppliedTemperature === null || suppliedTemperature === ""
+    ? null : numberFromBody(suppliedTemperature);
 
   if (rawValue === null || rawValue < 0 || rawValue > 4095) {
     return { error: "Raw turbidity value must be between 0 and 4095.", values: null };
@@ -147,8 +151,14 @@ function validateTurbidityTelemetry(payload: Record<string, unknown>) {
   if (ntu !== null && (ntu < 0 || ntu > 1000)) {
     return { error: "Turbidity NTU value must be between 0 and 1000.", values: null };
   }
+  if (suppliedTemperature !== undefined && suppliedTemperature !== null && temperatureC === null) {
+    return { error: "Invalid temperature value.", values: null };
+  }
+  if (temperatureC !== null && (temperatureC < -10 || temperatureC > 60)) {
+    return { error: "Temperature must be between -10 and 60 C.", values: null };
+  }
 
-  return { values: { rawValue: Math.round(rawValue), voltage, ntu }, error: null };
+  return { values: { rawValue: Math.round(rawValue), voltage, ntu, temperatureC }, error: null };
 }
 
 function adminPublicUser(row: RowDataPacket) {
@@ -217,12 +227,40 @@ async function ensureAdminStorage() {
     CREATE TABLE IF NOT EXISTS sensor_telemetry (
       id INT AUTO_INCREMENT PRIMARY KEY,
       device_id INT NOT NULL,
+      owner_user_id INT NULL,
       turbidity_raw INT NOT NULL,
       turbidity_voltage DECIMAL(5,3) NOT NULL,
       turbidity_ntu DECIMAL(8,2) NULL,
+      temperature_c DECIMAL(5,2) NULL,
       recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX sensor_telemetry_device_recorded_index (device_id, recorded_at),
       FOREIGN KEY (device_id) REFERENCES sensor_devices(id) ON DELETE CASCADE
+    )
+  `);
+  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN temperature_c DECIMAL(5,2) NULL");
+  const [ownerColumns] = await pool.execute<RowDataPacket[]>(
+    "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sensor_telemetry' AND COLUMN_NAME = 'owner_user_id' LIMIT 1"
+  );
+  if (!ownerColumns.length) {
+    await pool.execute("ALTER TABLE sensor_telemetry ADD COLUMN owner_user_id INT NULL");
+    await pool.execute(`UPDATE sensor_telemetry t INNER JOIN sensor_devices d ON d.id = t.device_id
+      SET t.owner_user_id = d.owner_user_id WHERE t.owner_user_id IS NULL`);
+  }
+  await safeExecute("ALTER TABLE sensor_telemetry ADD INDEX sensor_owner_recorded_index (owner_user_id, recorded_at)");
+  await pool.execute(`
+    CREATE TABLE IF NOT EXISTS harvest_batches (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      owner_user_id INT NOT NULL,
+      species VARCHAR(100) NOT NULL,
+      stocking_date DATE NOT NULL,
+      stocked_count INT NOT NULL,
+      target_harvest_date DATE NOT NULL,
+      actual_harvest_date DATE NULL,
+      harvested_kg DECIMAL(10,2) NULL,
+      selling_price DECIMAL(10,2) NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
+      INDEX harvest_owner_date_index (owner_user_id, target_harvest_date)
     )
   `);
   await safeExecute("ALTER TABLE alerts ADD COLUMN sms_status ENUM('sent','failed','skipped') DEFAULT 'skipped'");
@@ -525,88 +563,44 @@ app.post("/api/readings", async (req, res) => {
   }
 });
 
-app.post("/api/sensors/device/setup", async (req, res) => {
-  const auth = verifyAuthToken(req);
-  if (!auth || !pool) return res.status(401).json({ message: "Login required." });
-
-  const deviceName = String(req.body?.deviceName || "PondSense ESP32").trim().slice(0, 100) || "PondSense ESP32";
-  const apiKey = `ps_${crypto.randomBytes(24).toString("base64url")}`;
-  const apiKeyHash = await bcrypt.hash(apiKey, 10);
-
-  try {
-    const [devices] = await pool.execute<RowDataPacket[]>(
-      `SELECT id FROM sensor_devices
-       WHERE owner_user_id = ? AND is_active = 1
-       ORDER BY created_at DESC
-       LIMIT 1`,
-      [auth.sub]
-    );
-
-    const existingDevice = devices[0];
-    const deviceId = existingDevice?.id
-      ? Number(existingDevice.id)
-      : null;
-
-    if (deviceId) {
-      await pool.execute(
-        `UPDATE sensor_devices
-         SET device_name = ?, api_key_hash = ?, last_seen_at = NULL
-         WHERE id = ?`,
-        [deviceName, apiKeyHash, deviceId]
-      );
-    } else {
-      const [result] = await pool.execute<ResultSetHeader>(
-        "INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)",
-        [deviceName, apiKeyHash, auth.sub]
-      );
-      res.status(201).json({ deviceId: result.insertId, deviceName, apiKey });
-      return;
-    }
-
-    res.json({ deviceId, deviceName, apiKey });
-  } catch (error) {
-    console.error("Sensor device setup error:", error);
-    res.status(503).json({ message: "Unable to set up the ESP32 device." });
-  }
+app.get("/api/admin/devices", requireAdmin, async (_req, res) => {
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT d.id, d.device_name, d.owner_user_id, d.is_active, d.last_seen_at,
+            u.full_name AS owner_name,
+            (SELECT MAX(t.recorded_at) FROM sensor_telemetry t WHERE t.device_id = d.id) AS last_reading_at
+     FROM sensor_devices d LEFT JOIN users u ON u.id = d.owner_user_id ORDER BY d.id DESC`
+  );
+  res.json({ devices: rows });
 });
 
-app.post("/api/sensors/device/claim", async (req, res) => {
-  const auth = verifyAuthToken(req);
-  if (!auth || !pool) return res.status(401).json({ message: "Farmer login required." });
+app.post("/api/admin/devices", requireAdmin, async (req: AuthRequest, res) => {
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const ownerUserId = Number(req.body?.ownerUserId);
+  const deviceName = String(req.body?.deviceName || "PondSense ESP32").trim().slice(0, 100);
+  if (!Number.isSafeInteger(ownerUserId) || ownerUserId < 1 || !deviceName) return res.status(400).json({ message: "Select a farmer and enter a device name." });
+  const [owners] = await pool.execute<RowDataPacket[]>("SELECT id FROM users WHERE id = ? AND role = 'farmer' LIMIT 1", [ownerUserId]);
+  if (!owners.length) return res.status(404).json({ message: "Farmer account not found." });
+  const apiKey = `ps_${crypto.randomBytes(24).toString("base64url")}`;
+  const [result] = await pool.execute<ResultSetHeader>(
+    "INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)",
+    [deviceName, await bcrypt.hash(apiKey, 10), ownerUserId]
+  );
+  await logAdminAction(req, "device_created", `Device ${result.insertId} assigned to user ${ownerUserId}`);
+  res.status(201).json({ deviceId: result.insertId, apiKey });
+});
 
-  const apiKey = String(req.body?.apiKey || "").trim();
-  if (!/^ps_[A-Za-z0-9_-]{20,100}$/.test(apiKey)) {
-    return res.status(400).json({ message: "Enter the ESP32 device key from your Arduino sketch." });
-  }
-
-  try {
-    const device = await authenticateSensorDevice(apiKey);
-    if (!device) return res.status(401).json({ message: "Device key not found. Check the key in your Arduino sketch." });
-    if (device.ownerUserId === auth.sub) {
-      return res.json({ deviceId: device.id, deviceName: device.deviceName, paired: true });
-    }
-
-    const connection = await pool.getConnection();
-    try {
-      await connection.beginTransaction();
-      await connection.execute("UPDATE sensor_devices SET is_active = 0 WHERE id = ? AND is_active = 1", [device.id]);
-      const apiKeyHash = await bcrypt.hash(apiKey, 10);
-      const [created] = await connection.execute<ResultSetHeader>(
-        "INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)",
-        [device.deviceName, apiKeyHash, auth.sub]
-      );
-      await connection.commit();
-      res.json({ deviceId: created.insertId, deviceName: device.deviceName, paired: true });
-    } catch (error) {
-      await connection.rollback();
-      throw error;
-    } finally {
-      connection.release();
-    }
-  } catch (error) {
-    console.error("Sensor device pairing error:", error);
-    res.status(503).json({ message: "Unable to pair the ESP32 right now." });
-  }
+app.patch("/api/admin/devices/:id", requireAdmin, async (req: AuthRequest, res) => {
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const deviceId = Number(req.params.id);
+  const ownerUserId = Number(req.body?.ownerUserId);
+  if (!Number.isSafeInteger(deviceId) || !Number.isSafeInteger(ownerUserId) || ownerUserId < 1) return res.status(400).json({ message: "Invalid device or farmer." });
+  const [owners] = await pool.execute<RowDataPacket[]>("SELECT id FROM users WHERE id = ? AND role = 'farmer' LIMIT 1", [ownerUserId]);
+  if (!owners.length) return res.status(404).json({ message: "Farmer account not found." });
+  const [updated] = await pool.execute<ResultSetHeader>("UPDATE sensor_devices SET owner_user_id = ? WHERE id = ?", [ownerUserId, deviceId]);
+  if (!updated.affectedRows) return res.status(404).json({ message: "Device not found." });
+  await logAdminAction(req, "device_assigned", `Device ${deviceId} assigned to user ${ownerUserId}`);
+  res.json({ assigned: true });
 });
 
 app.get("/api/sensors/latest", async (req, res) => {
@@ -615,12 +609,12 @@ app.get("/api/sensors/latest", async (req, res) => {
 
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
-              telemetry.recorded_at, device.device_name
+      `SELECT telemetry.id, telemetry.device_id, telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
+              telemetry.temperature_c, telemetry.recorded_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE device.owner_user_id = ?
-       ORDER BY telemetry.recorded_at DESC
+       WHERE telemetry.owner_user_id = ?
+       ORDER BY telemetry.id DESC
        LIMIT 1`,
       [auth.sub]
     );
@@ -631,9 +625,12 @@ app.get("/api/sensors/latest", async (req, res) => {
     res.json({
       telemetry: {
         deviceName: String(latest.device_name),
+        id: Number(latest.id),
+        deviceId: Number(latest.device_id),
         rawValue: Number(latest.turbidity_raw),
         voltage: Number(latest.turbidity_voltage),
         turbidityNtu: latest.turbidity_ntu === null ? null : Number(latest.turbidity_ntu),
+        temperatureC: latest.temperature_c === null ? null : Number(latest.temperature_c),
         recordedAt: latest.recorded_at
       }
     });
@@ -648,19 +645,22 @@ app.get("/api/sensors/trend", async (req, res) => {
   if (!auth || !pool) return res.status(401).json({ message: "Login required." });
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
-              telemetry.recorded_at, device.device_name
+      `SELECT telemetry.id, telemetry.device_id, telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
+              telemetry.temperature_c, telemetry.recorded_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE device.owner_user_id = ?
-       ORDER BY telemetry.recorded_at DESC, telemetry.id DESC LIMIT 30`,
+       WHERE telemetry.owner_user_id = ?
+       ORDER BY telemetry.id DESC LIMIT 60`,
       [auth.sub]
     );
     res.json({ readings: rows.reverse().map((row) => ({
       deviceName: String(row.device_name),
+      id: Number(row.id),
+      deviceId: Number(row.device_id),
       rawValue: Number(row.turbidity_raw),
       voltage: Number(row.turbidity_voltage),
       turbidityNtu: row.turbidity_ntu === null ? null : Number(row.turbidity_ntu),
+      temperatureC: row.temperature_c === null ? null : Number(row.temperature_c),
       recordedAt: row.recorded_at
     })) });
   } catch (error) {
@@ -669,8 +669,8 @@ app.get("/api/sensors/trend", async (req, res) => {
   }
 });
 
-app.post("/api/v1/sensors/turbidity", async (req, res) => {
-  const providedKey = String(req.headers["x-api-key"] || req.headers["x-sensor-key"] || req.body?.deviceKey || "");
+app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (req, res) => {
+  const providedKey = String(req.headers["x-api-key"] || req.headers["x-sensor-key"] || "");
   if (!providedKey) return res.status(401).json({ message: "Sensor API key is required." });
   if (!pool) return res.status(503).json({ message: "Database is required for sensor readings." });
 
@@ -680,23 +680,102 @@ app.post("/api/v1/sensors/turbidity", async (req, res) => {
   try {
     const device = await authenticateSensorDevice(providedKey);
     if (!device) return res.status(401).json({ message: "Invalid or inactive sensor device." });
+    if (!device.ownerUserId) return res.status(409).json({ message: "Device has no assigned farmer. Contact the administrator." });
 
     const [result] = await pool.execute<ResultSetHeader>(
-      `INSERT INTO sensor_telemetry (device_id, turbidity_raw, turbidity_voltage, turbidity_ntu)
-       VALUES (?, ?, ?, ?)`,
-      [device.id, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu]
+      `INSERT INTO sensor_telemetry (device_id, owner_user_id, turbidity_raw, turbidity_voltage, turbidity_ntu, temperature_c)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC]
     );
 
     res.status(201).json({
       saved: true,
       telemetryId: result.insertId,
-      device: { id: device.id, name: device.deviceName },
-      telemetry: telemetry.values
+      deviceId: device.id,
+      assigned: true,
+      recordedAt: new Date().toISOString()
     });
   } catch (error) {
     console.error("Turbidity telemetry database error:", error);
     res.status(503).json({ message: "Unable to save the turbidity sensor reading." });
   }
+});
+
+function validateHarvest(body: Record<string, unknown>) {
+  const species = String(body.species || "").trim().slice(0, 100);
+  const stockingDate = String(body.stockingDate || "");
+  const targetHarvestDate = String(body.targetHarvestDate || "");
+  const actualHarvestDate = body.actualHarvestDate ? String(body.actualHarvestDate) : null;
+  const stockedCount = Number(body.stockedCount);
+  const harvestedKg = body.harvestedKg === null || body.harvestedKg === undefined || body.harvestedKg === "" ? null : Number(body.harvestedKg);
+  const sellingPrice = body.sellingPrice === null || body.sellingPrice === undefined || body.sellingPrice === "" ? null : Number(body.sellingPrice);
+  const dateValid = (value: string) => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const parsed = new Date(`${value}T00:00:00Z`);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+  };
+  if (!species || !dateValid(stockingDate) || !dateValid(targetHarvestDate) || targetHarvestDate < stockingDate) return null;
+  if (actualHarvestDate && (!dateValid(actualHarvestDate) || actualHarvestDate < stockingDate)) return null;
+  if (!Number.isSafeInteger(stockedCount) || stockedCount < 1 || stockedCount > 1_000_000_000) return null;
+  if (harvestedKg !== null && (!Number.isFinite(harvestedKg) || harvestedKg < 0 || harvestedKg > 1_000_000_000)) return null;
+  if (sellingPrice !== null && (!Number.isFinite(sellingPrice) || sellingPrice < 0 || sellingPrice > 1_000_000_000)) return null;
+  if (!actualHarvestDate && (harvestedKg !== null || sellingPrice !== null)) return null;
+  if (actualHarvestDate && harvestedKg === null) return null;
+  return { species, stockingDate, stockedCount, targetHarvestDate, actualHarvestDate, harvestedKg, sellingPrice };
+}
+
+app.get("/api/harvests", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT id, species, stocking_date AS stockingDate, stocked_count AS stockedCount,
+            target_harvest_date AS targetHarvestDate, actual_harvest_date AS actualHarvestDate,
+            harvested_kg AS harvestedKg, selling_price AS sellingPrice
+     FROM harvest_batches WHERE owner_user_id = ? ORDER BY target_harvest_date ASC, id DESC`, [auth.sub]
+  );
+  res.json({ harvests: rows });
+});
+
+app.post("/api/harvests", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const harvest = validateHarvest(req.body || {});
+  if (!harvest) return res.status(400).json({ message: "Check species, dates, stocking count, and harvest values." });
+  const [result] = await pool.execute<ResultSetHeader>(
+    `INSERT INTO harvest_batches (owner_user_id, species, stocking_date, stocked_count, target_harvest_date, actual_harvest_date, harvested_kg, selling_price)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+    [auth.sub, harvest.species, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice]
+  );
+  res.status(201).json({ id: result.insertId });
+});
+
+app.put("/api/harvests/:id", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const id = Number(req.params.id);
+  const harvest = validateHarvest(req.body || {});
+  if (!Number.isSafeInteger(id) || !harvest) return res.status(400).json({ message: "Check the harvest record values." });
+  const [result] = await pool.execute<ResultSetHeader>(
+    `UPDATE harvest_batches SET species = ?, stocking_date = ?, stocked_count = ?, target_harvest_date = ?,
+       actual_harvest_date = ?, harvested_kg = ?, selling_price = ? WHERE id = ? AND owner_user_id = ?`,
+    [harvest.species, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice, id, auth.sub]
+  );
+  if (!result.affectedRows) return res.status(404).json({ message: "Harvest record not found." });
+  res.json({ saved: true });
+});
+
+app.delete("/api/harvests/:id", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const id = Number(req.params.id);
+  if (!Number.isSafeInteger(id)) return res.status(400).json({ message: "Invalid harvest record." });
+  const [result] = await pool.execute<ResultSetHeader>("DELETE FROM harvest_batches WHERE id = ? AND owner_user_id = ?", [id, auth.sub]);
+  if (!result.affectedRows) return res.status(404).json({ message: "Harvest record not found." });
+  res.json({ deleted: true });
 });
 
 app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
@@ -712,9 +791,8 @@ app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
     const device = await authenticateSensorDevice(providedKey);
     if (!device) return res.status(401).json({ message: "Invalid or inactive sensor device." });
 
-    const fallbackGuestId = await getGuestUserId();
-    const userId = device.ownerUserId || fallbackGuestId;
-    if (!userId) return res.status(500).json({ message: "Unable to resolve sensor owner." });
+    if (!device.ownerUserId) return res.status(409).json({ message: "Device has no assigned farmer. Contact the administrator." });
+    const userId = device.ownerUserId;
 
     const analysis = decisionSupport.analyze(validation.values);
 
@@ -724,7 +802,7 @@ app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
          best_fish, best_score, confidence, status)
        VALUES (?, 'sensor', ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        fallbackGuestId,
+        userId,
         validation.values.ph,
         validation.values.temperature,
         validation.values.turbidity,
