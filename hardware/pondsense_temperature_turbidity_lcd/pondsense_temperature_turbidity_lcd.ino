@@ -75,7 +75,7 @@ void sendTelemetry(int rawValue, float voltage, float temperatureC) {
   JsonDocument payload;
   payload["rawValue"] = rawValue;
   payload["voltage"] = voltage;
-  // Estimated NTU is not sent as calibrated NTU; the dashboard labels it as estimated.
+  // Keep NTU absent until the probe has been calibrated against reference water samples.
   if (isnan(temperatureC)) payload["temperatureC"] = nullptr;
   else payload["temperatureC"] = temperatureC;
   String body;
@@ -114,12 +114,11 @@ void loop() {
   connectWifi();
   int rawValue = readTurbidityRaw();
   float voltage = rawValue * (3.3f / 4095.0f);
-  int estimatedNtu = constrain((int)roundf((3.3f - voltage) * (250.0f / 3.3f)), 0, 250);
   float temperatureC = readTemperatureC();
 
   showLine(0, "PondSense of Us");
   showLine(1, isnan(temperatureC) ? "Temp: sensor error" : "Temp: " + String(temperatureC, 1) + " C");
-  showLine(2, "Turb: ~" + String(estimatedNtu) + " NTU est");
+  showLine(2, "Turb signal: " + String(rawValue) + " ADC");
 
   if (lastSentAt == 0 || millis() - lastSentAt >= SEND_INTERVAL_MS) {
     sendTelemetry(rawValue, voltage, temperatureC);

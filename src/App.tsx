@@ -741,6 +741,7 @@ export default function App() {
       if (!currentUser) setSensorAnalysis(null);
       return;
     }
+    if (sensorTelemetry.turbidityNtu === null) return;
 
     const readingKey = `${sensorTelemetry.deviceName}:${sensorTelemetry.recordedAt}`;
     const turbidity = sensorTurbidityValue(sensorTelemetry);
@@ -1418,7 +1419,7 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
   const label = level === "critical" ? "Very cloudy" : level === "warning" ? "Cloudy" : "Clear range";
   const chart = readings.map((reading) => ({
     time: new Date(reading.recordedAt).toLocaleTimeString("en-PH"),
-    turbidity: sensorTurbidityValue(reading),
+    turbidity: calibrated ? reading.turbidityNtu : reading.rawValue,
     temperature: reading.temperatureC
   }));
   const lastSeen = now - new Date(telemetry.recordedAt).getTime();
@@ -1439,10 +1440,10 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
           <p className="mt-1 text-xs text-slate-500">{telemetry.temperatureC === null ? (lang === "tl" ? "Walang natanggap na temperatura. Suriin ang DS18B20 at GPIO 4." : "No temperature received. Check DS18B20 wiring on GPIO 4 and upload the current sketch.") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p>
         </div>
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-          <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Labo ng tubig" : "Turbidity"}</p>
-          <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? value : `~${value}`} <span className="text-base">NTU</span></strong>
+          <p className="text-xs font-bold text-slate-500">{calibrated ? (lang === "tl" ? "Labo ng tubig" : "Turbidity") : (lang === "tl" ? "Signal ng turbidity sensor" : "Turbidity sensor signal")}</p>
+          <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? value : telemetry.rawValue} <span className="text-base">{calibrated ? "NTU" : "ADC"}</span></strong>
           {calibrated && live ? <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span> : <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-900">{calibrated ? "Last reading" : "Unverified estimate"}</span>}
-          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "May signal kahit nasa hangin. Hindi pa ito wastong NTU hangga't hindi naka-calibrate." : "The probe reads in air too. This is not a valid water NTU until calibrated."}</p>}
+          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "May signal kahit nasa hangin. Hindi ito NTU hangga't hindi naka-calibrate." : "The probe reads in air too. This is not NTU until calibrated."}</p>}
         </div>
       </div>
       {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Lumang sukat ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This is a stale reading. Check device connectivity or contact the administrator."}</p>}
@@ -1451,9 +1452,9 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
           <LineChart data={chart}>
             <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
             <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={25} />
-            <YAxis domain={[0, 500]} tick={{ fontSize: 10 }} width={34} />
+            <YAxis domain={calibrated ? [0, 500] : [0, 4095]} tick={{ fontSize: 10 }} width={34} />
             <Tooltip />
-            <Line type="monotone" dataKey="turbidity" stroke="#0d9488" strokeWidth={3} dot={false} isAnimationActive={false} />
+            <Line type="monotone" dataKey="turbidity" name={calibrated ? "Turbidity (NTU)" : "Sensor signal (ADC)"} stroke="#0d9488" strokeWidth={3} dot={false} isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
@@ -1600,7 +1601,7 @@ function WaterParametersPanel({
           {parameterMeta.map((meta) => (
             <div key={meta.key} className="flex items-center justify-between border-b border-slate-100 py-2">
               <span className="font-semibold text-slate-700">{meta.label[lang]}</span>
-              <span className={meta.key === "turbidity" || meta.key === "temperature" ? "font-black text-teal-700" : "font-semibold text-slate-500"}>{meta.key === "turbidity" ? `${sensorTurbidityValue(sensorTelemetry)} NTU` : meta.key === "temperature" && sensorTelemetry.temperatureC !== null ? `${sensorTelemetry.temperatureC.toFixed(1)} °C` : (lang === "tl" ? "Walang sensor reading" : "No sensor reading")}</span>
+              <span className={meta.key === "turbidity" || meta.key === "temperature" ? "font-black text-teal-700" : "font-semibold text-slate-500"}>{meta.key === "turbidity" ? sensorTelemetry.turbidityNtu === null ? `${sensorTelemetry.rawValue} ADC (uncalibrated)` : `${sensorTurbidityValue(sensorTelemetry)} NTU` : meta.key === "temperature" && sensorTelemetry.temperatureC !== null ? `${sensorTelemetry.temperatureC.toFixed(1)} °C` : (lang === "tl" ? "Walang sensor reading" : "No sensor reading")}</span>
             </div>
           ))}
           <p className="text-xs text-slate-600">{lang === "tl" ? "Ang dash ay hindi zero. Wala pang nakakabit na sensor para sa ibang parameter." : "Missing is not zero. No connected sensor has measured the other parameters."}</p>
