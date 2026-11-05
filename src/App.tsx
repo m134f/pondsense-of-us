@@ -529,14 +529,15 @@ function formattedClock(date: Date) {
   return date.toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" });
 }
 
-const apiBaseUrl = (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
+// Keep browser authentication first-party on the public Vercel site.
+const apiBaseUrl = import.meta.env.PROD ? "" : (import.meta.env.VITE_API_URL || "").replace(/\/$/, "");
 
 function apiUrl(path: string) {
   if (!apiBaseUrl || /^https?:\/\//.test(path)) return path;
   return `${apiBaseUrl}${path.startsWith("/") ? path : `/${path}`}`;
 }
 
-async function postJson<T>(url: string, body: unknown): Promise<{ data: T | null; error: string | null }> {
+async function postJson<T>(url: string, body: unknown): Promise<{ data: T | null; error: string | null; status: number }> {
   try {
     const response = await fetch(apiUrl(url), {
       method: "POST",
@@ -545,14 +546,14 @@ async function postJson<T>(url: string, body: unknown): Promise<{ data: T | null
       body: JSON.stringify(body)
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) return { data: null, error: payload.message || "Request failed. Please try again." };
-    return { data: payload as T, error: null };
+    if (!response.ok) return { data: null, error: payload.message || "Request failed. Please try again.", status: response.status };
+    return { data: payload as T, error: null, status: response.status };
   } catch {
-    return { data: null, error: "Cannot reach the server. Make sure the dev server and XAMPP are running." };
+    return { data: null, error: "Cannot reach the server. Please check your connection and try again.", status: 0 };
   }
 }
 
-async function apiJson<T>(url: string, options: RequestInit = {}): Promise<{ data: T | null; error: string | null }> {
+async function apiJson<T>(url: string, options: RequestInit = {}): Promise<{ data: T | null; error: string | null; status: number }> {
   try {
     const response = await fetch(apiUrl(url), {
       ...options,
@@ -563,10 +564,10 @@ async function apiJson<T>(url: string, options: RequestInit = {}): Promise<{ dat
       }
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) return { data: null, error: payload.message || "Request failed. Please try again." };
-    return { data: payload as T, error: null };
+    if (!response.ok) return { data: null, error: payload.message || "Request failed. Please try again.", status: response.status };
+    return { data: payload as T, error: null, status: response.status };
   } catch {
-    return { data: null, error: "Cannot reach the server. Make sure the dev server and XAMPP are running." };
+    return { data: null, error: "Cannot reach the server. Please check your connection and try again.", status: 0 };
   }
 }
 
@@ -597,6 +598,21 @@ export default function App() {
     const timer = window.setInterval(() => setClock(new Date()), 3_000);
     return () => window.clearInterval(timer);
   }, []);
+
+  useEffect(() => {
+    if (!currentUser || path.startsWith("/admin")) return;
+    let active = true;
+    void apiJson<{ user: { id: number; role: "farmer" | "admin" } }>("/api/session").then((result) => {
+      if (!active) return;
+      const isWrongAccount = result.data?.user && (String(result.data.user.id) !== currentUser.id || result.data.user.role !== "farmer");
+      if (result.status === 401 || isWrongAccount) {
+        storage.saveCurrentUser(null);
+        setCurrentUser(null);
+        setSms("Your farmer session is no longer active. Please log in again to connect your ESP32.");
+      }
+    });
+    return () => { active = false; };
+  }, [currentUser?.id, path]);
 
   useEffect(() => {
     paramsRef.current = params;
@@ -1262,7 +1278,7 @@ function ConnectEsp32({ lang, telemetry, now }: { lang: Lang; telemetry: SensorT
   return <section className="card p-4 sm:p-5">
     <div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-black text-slate-950">ESP32</h2><p className="text-xs text-slate-600">{lang === "tl" ? "Mga sensor ng account mo" : "Your account's sensors"}</p></div><button className="soft-button" onClick={() => void connect()} disabled={busy}>{busy ? (lang === "tl" ? "Hinahanap..." : "Checking...") : (lang === "tl" ? "Ikonekta ang ESP32" : "Connect ESP32")}</button></div>
     {checked && <div className="mt-3 border-t border-slate-100 pt-3">
-      {devices.length > 0 && <ul className="space-y-2 text-sm text-slate-700">{devices.map((device) => <li key={device.id} className="flex items-center justify-between gap-2"><span className="font-semibold">{device.deviceName}</span><span className={`rounded-full px-2 py-1 text-xs font-bold ${live && telemetry?.deviceId === device.id ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{live && telemetry?.deviceId === device.id ? (lang === "tl" ? "Live" : "Live") : (lang === "tl" ? "Naghihintay ng reading" : "Waiting for readings")}</span></li>)}</ul>}
+      {devices.length > 0 && <><p className="mb-2 text-xs font-semibold text-slate-500">{devices.length} {lang === "tl" ? "naka-assign na ESP32" : "assigned ESP32 device(s)"}</p><ul className="space-y-2 text-sm text-slate-700">{devices.map((device) => <li key={device.id} className="flex items-center justify-between gap-2"><span className="font-semibold">{device.deviceName} <span className="text-slate-500">#{device.id}</span></span><span className={`rounded-full px-2 py-1 text-xs font-bold ${live && telemetry?.deviceId === device.id ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{live && telemetry?.deviceId === device.id ? "Live" : (lang === "tl" ? "Walang bagong reading" : "No recent reading")}</span></li>)}</ul></>}
       {message && <p className="text-sm font-semibold text-slate-700" role="status">{message}</p>}
     </div>}
   </section>;
@@ -2561,8 +2577,15 @@ function AuthPage({
       phone: cleanPhone,
       password
     });
+    if (result.error || !result.data) {
+      setIsSubmitting(false);
+      return setMessage({ type: "error", text: result.error || "Login failed." });
+    }
+    const session = await apiJson<{ user: { id: number; role: "farmer" | "admin" } }>("/api/session");
     setIsSubmitting(false);
-    if (result.error || !result.data) return setMessage({ type: "error", text: result.error || "Login failed." });
+    if (session.error || String(session.data?.user.id) !== String(result.data.id) || session.data?.user.role !== "farmer") {
+      return setMessage({ type: "error", text: "Login was not saved in this browser. Please refresh and try again." });
+    }
 
     const user: AppUser = {
       id: String(result.data.id),
