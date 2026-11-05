@@ -1243,34 +1243,26 @@ function Tabs({ active, onChange, text }: { active: AppTab; onChange: (tab: AppT
   );
 }
 
-function ConnectEsp32({ lang }: { lang: Lang }) {
-  const [open, setOpen] = useState(false);
-  const [code, setCode] = useState("");
+function ConnectEsp32({ lang, telemetry, now }: { lang: Lang; telemetry: SensorTelemetry | null; now: number }) {
+  const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState("");
   const [devices, setDevices] = useState<Array<{ id: number; deviceName: string; lastReadingAt: string | null }>>([]);
-  const refresh = async () => {
-    const result = await apiJson<{ devices: typeof devices }>("/api/sensors/devices");
-    if (result.data) setDevices(result.data.devices);
-    else if (result.error) setMessage(result.error);
-  };
-  useEffect(() => { if (open) void refresh(); }, [open]);
   const connect = async () => {
     setBusy(true);
     setMessage("");
-    const result = await postJson<{ connected: boolean }>("/api/sensors/connect", { code: code.trim().toUpperCase() });
+    const result = await apiJson<{ devices: typeof devices }>("/api/sensors/devices");
     setBusy(false);
+    setChecked(true);
     if (result.error) return setMessage(result.error);
-    setCode("");
-    setMessage(lang === "tl" ? "Nakonekta na ang ESP32. Lalabas ang reading sa susunod nitong upload." : "ESP32 connected. Its reading will appear after the next upload.");
-    void refresh();
+    setDevices(result.data?.devices || []);
+    if (!result.data?.devices.length) setMessage(lang === "tl" ? "Wala pang ESP32 na naka-assign sa account mo. Ipa-assign ito sa administrator." : "No ESP32 is assigned to your account yet. Ask your administrator to assign it.");
   };
+  const live = telemetry && now - new Date(telemetry.recordedAt).getTime() < 30_000;
   return <section className="card p-4 sm:p-5">
-    <div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-black text-slate-950">ESP32</h2><p className="text-xs text-slate-600">{lang === "tl" ? "Ikonekta sa iyong account" : "Connect to your account"}</p></div><button className="soft-button" onClick={() => setOpen((value) => !value)}>{open ? (lang === "tl" ? "Isara" : "Close") : (lang === "tl" ? "Ikonekta" : "Connect ESP32")}</button></div>
-    {open && <div className="mt-4 space-y-3 border-t border-slate-100 pt-4">
-      {devices.length > 0 && <ul className="space-y-1 text-sm text-slate-700">{devices.map((device) => <li key={device.id}>{device.deviceName} · {device.lastReadingAt ? new Date(device.lastReadingAt).toLocaleString("en-PH") : (lang === "tl" ? "Wala pang reading" : "No reading yet")}</li>)}</ul>}
-      <label className="block text-sm font-bold text-slate-700" htmlFor="sensor-pairing-code">{lang === "tl" ? "Code mula sa administrator" : "Code from administrator"}</label>
-      <div className="flex flex-wrap gap-2"><input id="sensor-pairing-code" className="min-h-11 min-w-0 flex-1 rounded-lg border border-slate-300 px-3 uppercase tracking-wider" value={code} onChange={(event) => setCode(event.target.value.toUpperCase())} maxLength={12} autoComplete="off" placeholder="12-character code" /><button className="primary-button" onClick={() => void connect()} disabled={busy || code.trim().length !== 12}>{busy ? "Connecting..." : (lang === "tl" ? "Ikonekta" : "Connect")}</button></div>
+    <div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-black text-slate-950">ESP32</h2><p className="text-xs text-slate-600">{lang === "tl" ? "Mga sensor ng account mo" : "Your account's sensors"}</p></div><button className="soft-button" onClick={() => void connect()} disabled={busy}>{busy ? (lang === "tl" ? "Hinahanap..." : "Checking...") : (lang === "tl" ? "Ikonekta ang ESP32" : "Connect ESP32")}</button></div>
+    {checked && <div className="mt-3 border-t border-slate-100 pt-3">
+      {devices.length > 0 && <ul className="space-y-2 text-sm text-slate-700">{devices.map((device) => <li key={device.id} className="flex items-center justify-between gap-2"><span className="font-semibold">{device.deviceName}</span><span className={`rounded-full px-2 py-1 text-xs font-bold ${live && telemetry?.deviceId === device.id ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{live && telemetry?.deviceId === device.id ? (lang === "tl" ? "Live" : "Live") : (lang === "tl" ? "Naghihintay ng reading" : "Waiting for readings")}</span></li>)}</ul>}
       {message && <p className="text-sm font-semibold text-slate-700" role="status">{message}</p>}
     </div>}
   </section>;
@@ -1329,7 +1321,7 @@ function AnalysisPage({
   return (
     <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-4 px-3 pb-6 sm:gap-5 sm:px-6 sm:pb-8 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
       <aside className="space-y-5">
-        <ConnectEsp32 lang={lang} />
+        <ConnectEsp32 lang={lang} telemetry={sensorTelemetry} now={now} />
         <WaterParametersPanel
           lang={lang}
           params={params}
