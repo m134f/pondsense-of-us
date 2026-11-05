@@ -95,6 +95,8 @@ CREATE TABLE IF NOT EXISTS sensor_devices (
   device_name VARCHAR(100) NOT NULL,
   api_key_hash VARCHAR(255) NOT NULL,
   owner_user_id INT,
+  pairing_code_hash VARCHAR(255),
+  pairing_expires_at DATETIME,
   is_active TINYINT(1) DEFAULT 1,
   last_seen_at DATETIME,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -109,6 +111,7 @@ CREATE TABLE IF NOT EXISTS sensor_telemetry (
   turbidity_voltage DECIMAL(5,3) NOT NULL,
   turbidity_ntu DECIMAL(8,2) NULL,
   temperature_c DECIMAL(5,2) NULL,
+  ph DECIMAL(4,2) NULL,
   recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX sensor_telemetry_device_recorded_index (device_id, recorded_at),
   INDEX sensor_owner_recorded_index (owner_user_id, recorded_at),
@@ -125,9 +128,48 @@ CREATE TABLE IF NOT EXISTS harvest_batches (
   actual_harvest_date DATE NULL,
   harvested_kg DECIMAL(10,2) NULL,
   selling_price DECIMAL(10,2) NULL,
+  fishpen_name VARCHAR(100) NULL,
+  target_weight_g DECIMAL(10,2) NULL,
+  reminder_sms TINYINT(1) NOT NULL DEFAULT 0,
   created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
   INDEX harvest_owner_date_index (owner_user_id, target_harvest_date)
+);
+
+CREATE TABLE IF NOT EXISTS harvest_samples (
+  id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL,
+  sampled_at DATE NOT NULL, sample_size INT NOT NULL,
+  average_weight_g DECIMAL(10,2) NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE,
+  INDEX (batch_id, sampled_at)
+);
+
+CREATE TABLE IF NOT EXISTS harvest_mortalities (
+  id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL,
+  mortality_date DATE NOT NULL, dead_count INT NOT NULL,
+  notes VARCHAR(500) NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE,
+  INDEX (batch_id, mortality_date)
+);
+
+CREATE TABLE IF NOT EXISTS harvest_events (
+  id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL,
+  harvest_type ENUM('partial','complete') NOT NULL,
+  harvest_date DATE NOT NULL, fish_count INT NULL,
+  weight_kg DECIMAL(10,2) NOT NULL, price_per_kg DECIMAL(10,2) NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE,
+  INDEX (batch_id, harvest_date)
+);
+
+CREATE TABLE IF NOT EXISTS harvest_reminder_log (
+  id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL,
+  reminder_day INT NOT NULL, target_date DATE NOT NULL,
+  sms_status ENUM('sent','failed') NOT NULL,
+  created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+  UNIQUE KEY harvest_reminder_unique (batch_id, reminder_day, target_date),
+  FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE
 );
 
 DELETE FROM fish_species

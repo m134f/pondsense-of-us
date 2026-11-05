@@ -138,6 +138,8 @@ function validateTurbidityTelemetry(payload: Record<string, unknown>) {
   const suppliedTemperature = payload.temperatureC ?? payload.temperature_c ?? payload.temperature;
   const temperatureC = suppliedTemperature === undefined || suppliedTemperature === null || suppliedTemperature === ""
     ? null : numberFromBody(suppliedTemperature);
+  const suppliedPh = payload.ph ?? payload.phValue ?? payload.ph_value;
+  const ph = suppliedPh === undefined || suppliedPh === null || suppliedPh === "" ? null : numberFromBody(suppliedPh);
 
   if (rawValue === null || rawValue < 0 || rawValue > 4095) {
     return { error: "Raw turbidity value must be between 0 and 4095.", values: null };
@@ -157,8 +159,10 @@ function validateTurbidityTelemetry(payload: Record<string, unknown>) {
   if (temperatureC !== null && (temperatureC < -10 || temperatureC > 60)) {
     return { error: "Temperature must be between -10 and 60 C.", values: null };
   }
+  if (suppliedPh !== undefined && suppliedPh !== null && ph === null) return { error: "Invalid pH value.", values: null };
+  if (ph !== null && (ph < 0 || ph > 14)) return { error: "pH must be between 0 and 14.", values: null };
 
-  return { values: { rawValue: Math.round(rawValue), voltage, ntu, temperatureC }, error: null };
+  return { values: { rawValue: Math.round(rawValue), voltage, ntu, temperatureC, ph }, error: null };
 }
 
 function adminPublicUser(row: RowDataPacket) {
@@ -223,6 +227,8 @@ async function ensureAdminStorage() {
       FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL
     )
   `);
+  await safeExecute("ALTER TABLE sensor_devices ADD COLUMN pairing_code_hash VARCHAR(255) NULL");
+  await safeExecute("ALTER TABLE sensor_devices ADD COLUMN pairing_expires_at DATETIME NULL");
   await pool.execute(`
     CREATE TABLE IF NOT EXISTS sensor_telemetry (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -263,6 +269,39 @@ async function ensureAdminStorage() {
       INDEX harvest_owner_date_index (owner_user_id, target_harvest_date)
     )
   `);
+  await safeExecute("ALTER TABLE harvest_batches ADD COLUMN fishpen_name VARCHAR(100) NULL");
+  await safeExecute("ALTER TABLE harvest_batches ADD COLUMN target_weight_g DECIMAL(10,2) NULL");
+  await safeExecute("ALTER TABLE harvest_batches ADD COLUMN reminder_sms TINYINT(1) NOT NULL DEFAULT 0");
+  await pool.execute(`CREATE TABLE IF NOT EXISTS harvest_samples (
+    id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL, sampled_at DATE NOT NULL,
+    sample_size INT NOT NULL, average_weight_g DECIMAL(10,2) NOT NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE,
+    INDEX (batch_id, sampled_at)
+  )`);
+  await pool.execute(`CREATE TABLE IF NOT EXISTS harvest_mortalities (
+    id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL, mortality_date DATE NOT NULL,
+    dead_count INT NOT NULL, notes VARCHAR(500) NULL,
+    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE,
+    INDEX (batch_id, mortality_date)
+  )`);
+  await pool.execute(`CREATE TABLE IF NOT EXISTS harvest_events (
+    id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL,
+    harvest_type ENUM('partial','complete') NOT NULL, harvest_date DATE NOT NULL,
+    fish_count INT NULL, weight_kg DECIMAL(10,2) NOT NULL,
+    price_per_kg DECIMAL(10,2) NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE,
+    INDEX (batch_id, harvest_date)
+  )`);
+  await pool.execute(`CREATE TABLE IF NOT EXISTS harvest_reminder_log (
+    id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL,
+    reminder_day INT NOT NULL, target_date DATE NOT NULL,
+    sms_status ENUM('sent','failed') NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE KEY harvest_reminder_unique (batch_id, reminder_day, target_date),
+    FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE
+  )`);
+  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN ph DECIMAL(4,2) NULL");
   await safeExecute("ALTER TABLE alerts ADD COLUMN sms_status ENUM('sent','failed','skipped') DEFAULT 'skipped'");
   await safeExecute("ALTER TABLE alerts ADD COLUMN sms_error TEXT");
   await pool.execute(`
@@ -576,11 +615,13 @@ app.get("/api/admin/devices", requireAdmin, async (_req, res) => {
 
 app.post("/api/admin/devices", requireAdmin, async (req: AuthRequest, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
-  const ownerUserId = Number(req.body?.ownerUserId);
+  const ownerUserId = req.body?.ownerUserId ? Number(req.body.ownerUserId) : null;
   const deviceName = String(req.body?.deviceName || "PondSense ESP32").trim().slice(0, 100);
-  if (!Number.isSafeInteger(ownerUserId) || ownerUserId < 1 || !deviceName) return res.status(400).json({ message: "Select a farmer and enter a device name." });
-  const [owners] = await pool.execute<RowDataPacket[]>("SELECT id FROM users WHERE id = ? AND role = 'farmer' LIMIT 1", [ownerUserId]);
-  if (!owners.length) return res.status(404).json({ message: "Farmer account not found." });
+  if (!deviceName || (ownerUserId !== null && (!Number.isSafeInteger(ownerUserId) || ownerUserId < 1))) return res.status(400).json({ message: "Enter a device name and valid farmer." });
+  if (ownerUserId !== null) {
+    const [owners] = await pool.execute<RowDataPacket[]>("SELECT id FROM users WHERE id = ? AND role = 'farmer' LIMIT 1", [ownerUserId]);
+    if (!owners.length) return res.status(404).json({ message: "Farmer account not found." });
+  }
   const apiKey = `ps_${crypto.randomBytes(24).toString("base64url")}`;
   const [result] = await pool.execute<ResultSetHeader>(
     "INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)",
@@ -588,6 +629,59 @@ app.post("/api/admin/devices", requireAdmin, async (req: AuthRequest, res) => {
   );
   await logAdminAction(req, "device_created", `Device ${result.insertId} assigned to user ${ownerUserId}`);
   res.status(201).json({ deviceId: result.insertId, apiKey });
+});
+
+app.post("/api/admin/devices/:id/pairing-code", requireAdmin, async (req: AuthRequest, res) => {
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const deviceId = Number(req.params.id);
+  if (!Number.isSafeInteger(deviceId) || deviceId < 1) return res.status(400).json({ message: "Invalid device." });
+  const code = crypto.randomBytes(9).toString("base64url").toUpperCase();
+  const [result] = await pool.execute<ResultSetHeader>(
+    `UPDATE sensor_devices SET pairing_code_hash = ?, pairing_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 15 MINUTE)
+     WHERE id = ? AND owner_user_id IS NULL AND is_active = 1`,
+    [await bcrypt.hash(code, 10), deviceId]);
+  if (!result.affectedRows) return res.status(409).json({ message: "Only active, unassigned devices can be paired." });
+  await logAdminAction(req, "device_pairing_code_created", `Pairing code issued for device ${deviceId}`);
+  res.json({ code, expiresInMinutes: 15 });
+});
+
+app.get("/api/sensors/devices", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
+  if (auth.role !== "farmer") return res.status(403).json({ message: "Farmer account required." });
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT d.id, d.device_name AS deviceName, d.last_seen_at AS lastSeenAt,
+            (SELECT MAX(t.recorded_at) FROM sensor_telemetry t WHERE t.device_id = d.id) AS lastReadingAt
+     FROM sensor_devices d WHERE d.owner_user_id = ? AND d.is_active = 1 ORDER BY d.id DESC`, [auth.sub]);
+  res.json({ devices: rows });
+});
+
+const pairingAttempts = new Map<number, { count: number; startedAt: number }>();
+app.post("/api/sensors/connect", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
+  if (auth.role !== "farmer") return res.status(403).json({ message: "Farmer account required." });
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const code = String(req.body?.code || "").trim().toUpperCase();
+  if (!/^[A-Z0-9_-]{12}$/.test(code)) return res.status(400).json({ message: "Enter the 12-character pairing code from your administrator." });
+  const attempt = pairingAttempts.get(auth.sub);
+  if (attempt && Date.now() - attempt.startedAt < 15 * 60_000 && attempt.count >= 5) return res.status(429).json({ message: "Too many attempts. Try again later." });
+  pairingAttempts.set(auth.sub, attempt && Date.now() - attempt.startedAt < 15 * 60_000
+    ? { ...attempt, count: attempt.count + 1 } : { count: 1, startedAt: Date.now() });
+  const [devices] = await pool.execute<RowDataPacket[]>(
+    `SELECT id, pairing_code_hash FROM sensor_devices
+     WHERE owner_user_id IS NULL AND is_active = 1 AND pairing_expires_at > UTC_TIMESTAMP() AND pairing_code_hash IS NOT NULL`);
+  for (const device of devices) {
+    if (!await bcrypt.compare(code, String(device.pairing_code_hash))) continue;
+    const [result] = await pool.execute<ResultSetHeader>(
+      `UPDATE sensor_devices SET owner_user_id = ?, pairing_code_hash = NULL, pairing_expires_at = NULL
+       WHERE id = ? AND owner_user_id IS NULL AND pairing_expires_at > UTC_TIMESTAMP()`, [auth.sub, device.id]);
+    if (!result.affectedRows) break;
+    pairingAttempts.delete(auth.sub);
+    return res.json({ connected: true, deviceId: device.id });
+  }
+  res.status(400).json({ message: "Pairing code is invalid or expired. Ask your administrator for a new code." });
 });
 
 app.patch("/api/admin/devices/:id", requireAdmin, async (req: AuthRequest, res) => {
@@ -610,7 +704,7 @@ app.get("/api/sensors/latest", async (req, res) => {
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
       `SELECT telemetry.id, telemetry.device_id, telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
-              telemetry.temperature_c, telemetry.recorded_at, device.device_name
+              telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
        WHERE telemetry.owner_user_id = ?
@@ -631,6 +725,7 @@ app.get("/api/sensors/latest", async (req, res) => {
         voltage: Number(latest.turbidity_voltage),
         turbidityNtu: latest.turbidity_ntu === null ? null : Number(latest.turbidity_ntu),
         temperatureC: latest.temperature_c === null ? null : Number(latest.temperature_c),
+        ph: latest.ph === null ? null : Number(latest.ph),
         recordedAt: latest.recorded_at
       }
     });
@@ -646,7 +741,7 @@ app.get("/api/sensors/trend", async (req, res) => {
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
       `SELECT telemetry.id, telemetry.device_id, telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
-              telemetry.temperature_c, telemetry.recorded_at, device.device_name
+              telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
        WHERE telemetry.owner_user_id = ?
@@ -661,6 +756,7 @@ app.get("/api/sensors/trend", async (req, res) => {
       voltage: Number(row.turbidity_voltage),
       turbidityNtu: row.turbidity_ntu === null ? null : Number(row.turbidity_ntu),
       temperatureC: row.temperature_c === null ? null : Number(row.temperature_c),
+      ph: row.ph === null ? null : Number(row.ph),
       recordedAt: row.recorded_at
     })) });
   } catch (error) {
@@ -683,9 +779,9 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
     if (!device.ownerUserId) return res.status(409).json({ message: "Device has no assigned farmer. Contact the administrator." });
 
     const [result] = await pool.execute<ResultSetHeader>(
-      `INSERT INTO sensor_telemetry (device_id, owner_user_id, turbidity_raw, turbidity_voltage, turbidity_ntu, temperature_c)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC]
+      `INSERT INTO sensor_telemetry (device_id, owner_user_id, turbidity_raw, turbidity_voltage, turbidity_ntu, temperature_c, ph)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC, telemetry.values.ph]
     );
 
     res.status(201).json({
@@ -703,6 +799,9 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
 
 function validateHarvest(body: Record<string, unknown>) {
   const species = String(body.species || "").trim().slice(0, 100);
+  const fishpenName = String(body.fishpenName || "").trim().slice(0, 100);
+  const targetWeightG = body.targetWeightG === null || body.targetWeightG === undefined || body.targetWeightG === "" ? null : Number(body.targetWeightG);
+  const reminderSms = body.reminderSms === true;
   const stockingDate = String(body.stockingDate || "");
   const targetHarvestDate = String(body.targetHarvestDate || "");
   const actualHarvestDate = body.actualHarvestDate ? String(body.actualHarvestDate) : null;
@@ -715,26 +814,79 @@ function validateHarvest(body: Record<string, unknown>) {
     return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
   };
   if (!species || !dateValid(stockingDate) || !dateValid(targetHarvestDate) || targetHarvestDate < stockingDate) return null;
+  if (targetWeightG !== null && (!Number.isFinite(targetWeightG) || targetWeightG <= 0 || targetWeightG > 100_000)) return null;
   if (actualHarvestDate && (!dateValid(actualHarvestDate) || actualHarvestDate < stockingDate)) return null;
   if (!Number.isSafeInteger(stockedCount) || stockedCount < 1 || stockedCount > 1_000_000_000) return null;
   if (harvestedKg !== null && (!Number.isFinite(harvestedKg) || harvestedKg < 0 || harvestedKg > 1_000_000_000)) return null;
   if (sellingPrice !== null && (!Number.isFinite(sellingPrice) || sellingPrice < 0 || sellingPrice > 1_000_000_000)) return null;
   if (!actualHarvestDate && (harvestedKg !== null || sellingPrice !== null)) return null;
   if (actualHarvestDate && harvestedKg === null) return null;
-  return { species, stockingDate, stockedCount, targetHarvestDate, actualHarvestDate, harvestedKg, sellingPrice };
+  return { species, fishpenName, targetWeightG, reminderSms, stockingDate, stockedCount, targetHarvestDate, actualHarvestDate, harvestedKg, sellingPrice };
+}
+
+function validHarvestDate(value: unknown) {
+  if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+  const parsed = new Date(`${value}T00:00:00Z`);
+  return !Number.isNaN(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
+}
+
+function validPositiveInteger(value: unknown) {
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 && number <= 1_000_000_000;
+}
+
+function validNonnegativeMoney(value: unknown) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 && number <= 1_000_000_000;
 }
 
 app.get("/api/harvests", async (req, res) => {
   const auth = verifyAuthToken(req);
   if (!auth) return res.status(401).json({ message: "Login required." });
   if (!pool) return res.status(503).json({ message: "Database is required." });
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id, species, stocking_date AS stockingDate, stocked_count AS stockedCount,
-            target_harvest_date AS targetHarvestDate, actual_harvest_date AS actualHarvestDate,
-            harvested_kg AS harvestedKg, selling_price AS sellingPrice
-     FROM harvest_batches WHERE owner_user_id = ? ORDER BY target_harvest_date ASC, id DESC`, [auth.sub]
-  );
-  res.json({ harvests: rows });
+  try {
+    const [rows] = await pool.execute<RowDataPacket[]>(
+      `SELECT id, species, fishpen_name AS fishpenName, target_weight_g AS targetWeightG,
+              reminder_sms AS reminderSms, DATE_FORMAT(stocking_date, '%Y-%m-%d') AS stockingDate, stocked_count AS stockedCount,
+              DATE_FORMAT(target_harvest_date, '%Y-%m-%d') AS targetHarvestDate,
+              DATE_FORMAT(actual_harvest_date, '%Y-%m-%d') AS actualHarvestDate,
+              harvested_kg AS harvestedKg, selling_price AS sellingPrice
+       FROM harvest_batches WHERE owner_user_id = ? ORDER BY target_harvest_date ASC, id DESC`, [auth.sub]
+    );
+    const ids = rows.map((row) => Number(row.id));
+    const [samples] = ids.length ? await pool.query<RowDataPacket[]>(
+      `SELECT s.id, s.batch_id AS batchId, DATE_FORMAT(s.sampled_at, '%Y-%m-%d') AS sampledAt,
+              s.sample_size AS sampleSize, s.average_weight_g AS averageWeightG
+       FROM harvest_samples s INNER JOIN harvest_batches b ON b.id = s.batch_id
+       WHERE b.owner_user_id = ? ORDER BY s.sampled_at DESC, s.id DESC`, [auth.sub]) : [[] as RowDataPacket[]];
+    const [mortalities] = ids.length ? await pool.query<RowDataPacket[]>(
+      `SELECT m.id, m.batch_id AS batchId, DATE_FORMAT(m.mortality_date, '%Y-%m-%d') AS mortalityDate,
+              m.dead_count AS deadCount, m.notes
+       FROM harvest_mortalities m INNER JOIN harvest_batches b ON b.id = m.batch_id
+       WHERE b.owner_user_id = ? ORDER BY m.mortality_date DESC, m.id DESC`, [auth.sub]) : [[] as RowDataPacket[]];
+    const [events] = ids.length ? await pool.query<RowDataPacket[]>(
+      `SELECT e.id, e.batch_id AS batchId, e.harvest_type AS harvestType,
+              DATE_FORMAT(e.harvest_date, '%Y-%m-%d') AS harvestDate, e.fish_count AS fishCount,
+              e.weight_kg AS weightKg, e.price_per_kg AS pricePerKg
+       FROM harvest_events e INNER JOIN harvest_batches b ON b.id = e.batch_id
+       WHERE b.owner_user_id = ? ORDER BY e.harvest_date DESC, e.id DESC`, [auth.sub]) : [[] as RowDataPacket[]];
+    const [water] = await pool.execute<RowDataPacket[]>(
+      `SELECT status, recorded_at FROM water_readings WHERE user_id = ? ORDER BY id DESC LIMIT 1`, [auth.sub]);
+    const waterStatus = water[0] && Date.now() - new Date(water[0].recorded_at).getTime() < 24 * 60 * 60 * 1000
+      ? String(water[0].status).toLowerCase() : null;
+    res.json({ harvests: rows.map((row) => ({
+      ...row,
+      stockingDate: String(row.stockingDate).slice(0, 10),
+      targetHarvestDate: String(row.targetHarvestDate).slice(0, 10),
+      actualHarvestDate: row.actualHarvestDate ? String(row.actualHarvestDate).slice(0, 10) : null,
+      samples: samples.filter((item) => Number(item.batchId) === Number(row.id)),
+      mortalities: mortalities.filter((item) => Number(item.batchId) === Number(row.id)),
+      harvestEvents: events.filter((item) => Number(item.batchId) === Number(row.id))
+    })), waterStatus });
+  } catch (error) {
+    console.error("Harvest list error:", error);
+    res.status(503).json({ message: "Unable to load harvest records." });
+  }
 });
 
 app.post("/api/harvests", async (req, res) => {
@@ -744,9 +896,9 @@ app.post("/api/harvests", async (req, res) => {
   const harvest = validateHarvest(req.body || {});
   if (!harvest) return res.status(400).json({ message: "Check species, dates, stocking count, and harvest values." });
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO harvest_batches (owner_user_id, species, stocking_date, stocked_count, target_harvest_date, actual_harvest_date, harvested_kg, selling_price)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-    [auth.sub, harvest.species, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice]
+    `INSERT INTO harvest_batches (owner_user_id, species, fishpen_name, target_weight_g, reminder_sms, stocking_date, stocked_count, target_harvest_date, actual_harvest_date, harvested_kg, selling_price)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [auth.sub, harvest.species, harvest.fishpenName || null, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice]
   );
   res.status(201).json({ id: result.insertId });
 });
@@ -759,9 +911,9 @@ app.put("/api/harvests/:id", async (req, res) => {
   const harvest = validateHarvest(req.body || {});
   if (!Number.isSafeInteger(id) || !harvest) return res.status(400).json({ message: "Check the harvest record values." });
   const [result] = await pool.execute<ResultSetHeader>(
-    `UPDATE harvest_batches SET species = ?, stocking_date = ?, stocked_count = ?, target_harvest_date = ?,
+    `UPDATE harvest_batches SET species = ?, fishpen_name = ?, target_weight_g = ?, reminder_sms = ?, stocking_date = ?, stocked_count = ?, target_harvest_date = ?,
        actual_harvest_date = ?, harvested_kg = ?, selling_price = ? WHERE id = ? AND owner_user_id = ?`,
-    [harvest.species, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice, id, auth.sub]
+    [harvest.species, harvest.fishpenName || null, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice, id, auth.sub]
   );
   if (!result.affectedRows) return res.status(404).json({ message: "Harvest record not found." });
   res.json({ saved: true });
@@ -776,6 +928,117 @@ app.delete("/api/harvests/:id", async (req, res) => {
   const [result] = await pool.execute<ResultSetHeader>("DELETE FROM harvest_batches WHERE id = ? AND owner_user_id = ?", [id, auth.sub]);
   if (!result.affectedRows) return res.status(404).json({ message: "Harvest record not found." });
   res.json({ deleted: true });
+});
+
+app.post("/api/harvests/:id/samples", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const batchId = Number(req.params.id);
+  const { sampledAt, sampleSize, averageWeightG } = req.body || {};
+  if (!Number.isSafeInteger(batchId) || !validHarvestDate(sampledAt) || !validPositiveInteger(sampleSize) ||
+      !Number.isFinite(Number(averageWeightG)) || Number(averageWeightG) <= 0 || Number(averageWeightG) > 100_000) {
+    return res.status(400).json({ message: "Check the sample date, number sampled, and average weight." });
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      "SELECT stocked_count, DATE_FORMAT(stocking_date, '%Y-%m-%d') AS stocking_date, actual_harvest_date FROM harvest_batches WHERE id = ? AND owner_user_id = ? FOR UPDATE",
+      [batchId, auth.sub]);
+    const batch = rows[0];
+    if (!batch || batch.actual_harvest_date) { await connection.rollback(); return res.status(404).json({ message: "Active batch not found." }); }
+    if (sampledAt < String(batch.stocking_date).slice(0, 10)) { await connection.rollback(); return res.status(400).json({ message: "Sample date cannot precede stocking." }); }
+    const [totals] = await connection.execute<RowDataPacket[]>(
+      `SELECT (SELECT COALESCE(SUM(dead_count),0) FROM harvest_mortalities WHERE batch_id = ?) AS dead,
+              (SELECT COALESCE(SUM(fish_count),0) FROM harvest_events WHERE batch_id = ?) AS harvested`, [batchId, batchId]);
+    const remaining = Number(batch.stocked_count) - Number(totals[0].dead) - Number(totals[0].harvested);
+    if (Number(sampleSize) > remaining) { await connection.rollback(); return res.status(400).json({ message: "Sample size exceeds estimated remaining stock." }); }
+    const [result] = await connection.execute<ResultSetHeader>(
+      "INSERT INTO harvest_samples (batch_id, sampled_at, sample_size, average_weight_g) VALUES (?, ?, ?, ?)",
+      [batchId, sampledAt, Number(sampleSize), Number(averageWeightG)]);
+    await connection.commit();
+    res.status(201).json({ id: result.insertId });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Sampling record error:", error);
+    res.status(503).json({ message: "Unable to save sampling record." });
+  } finally { connection.release(); }
+});
+
+app.post("/api/harvests/:id/mortalities", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const batchId = Number(req.params.id);
+  const { mortalityDate, deadCount } = req.body || {};
+  const notes = String(req.body?.notes || "").trim().slice(0, 500);
+  if (!Number.isSafeInteger(batchId) || !validHarvestDate(mortalityDate) || !validPositiveInteger(deadCount)) {
+    return res.status(400).json({ message: "Check mortality date and number of fish." });
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      "SELECT stocked_count, DATE_FORMAT(stocking_date, '%Y-%m-%d') AS stocking_date, actual_harvest_date FROM harvest_batches WHERE id = ? AND owner_user_id = ? FOR UPDATE", [batchId, auth.sub]);
+    const batch = rows[0];
+    if (!batch || batch.actual_harvest_date) { await connection.rollback(); return res.status(404).json({ message: "Active batch not found." }); }
+    if (mortalityDate < String(batch.stocking_date).slice(0, 10)) { await connection.rollback(); return res.status(400).json({ message: "Date cannot precede stocking." }); }
+    const [totals] = await connection.execute<RowDataPacket[]>(
+      `SELECT (SELECT COALESCE(SUM(dead_count),0) FROM harvest_mortalities WHERE batch_id = ?) AS dead,
+              (SELECT COALESCE(SUM(fish_count),0) FROM harvest_events WHERE batch_id = ?) AS harvested`, [batchId, batchId]);
+    const remaining = Number(batch.stocked_count) - Number(totals[0].dead) - Number(totals[0].harvested);
+    if (Number(deadCount) > remaining) { await connection.rollback(); return res.status(400).json({ message: "Dead fish count exceeds estimated remaining stock." }); }
+    const [result] = await connection.execute<ResultSetHeader>(
+      "INSERT INTO harvest_mortalities (batch_id, mortality_date, dead_count, notes) VALUES (?, ?, ?, ?)",
+      [batchId, mortalityDate, Number(deadCount), notes || null]);
+    await connection.commit();
+    res.status(201).json({ id: result.insertId });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Mortality record error:", error);
+    res.status(503).json({ message: "Unable to save mortality record." });
+  } finally { connection.release(); }
+});
+
+app.post("/api/harvests/:id/events", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
+  if (!pool) return res.status(503).json({ message: "Database is required." });
+  const batchId = Number(req.params.id);
+  const { harvestType, harvestDate, fishCount, weightKg, pricePerKg } = req.body || {};
+  const count = fishCount === "" || fishCount === null || fishCount === undefined ? null : Number(fishCount);
+  const price = pricePerKg === "" || pricePerKg === null || pricePerKg === undefined ? null : Number(pricePerKg);
+  if (!Number.isSafeInteger(batchId) || !["partial", "complete"].includes(harvestType) || !validHarvestDate(harvestDate) ||
+      (count !== null && !validPositiveInteger(count)) || !Number.isFinite(Number(weightKg)) || Number(weightKg) <= 0 ||
+      Number(weightKg) > 1_000_000_000 || (price !== null && !validNonnegativeMoney(price))) {
+    return res.status(400).json({ message: "Check harvest type, date, fish count, weight, and price." });
+  }
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.execute<RowDataPacket[]>(
+      "SELECT stocked_count, DATE_FORMAT(stocking_date, '%Y-%m-%d') AS stocking_date, actual_harvest_date FROM harvest_batches WHERE id = ? AND owner_user_id = ? FOR UPDATE", [batchId, auth.sub]);
+    const batch = rows[0];
+    if (!batch || batch.actual_harvest_date) { await connection.rollback(); return res.status(404).json({ message: "Active batch not found." }); }
+    if (harvestDate < String(batch.stocking_date).slice(0, 10)) { await connection.rollback(); return res.status(400).json({ message: "Date cannot precede stocking." }); }
+    const [totals] = await connection.execute<RowDataPacket[]>(
+      `SELECT (SELECT COALESCE(SUM(dead_count),0) FROM harvest_mortalities WHERE batch_id = ?) AS dead,
+              (SELECT COALESCE(SUM(fish_count),0) FROM harvest_events WHERE batch_id = ?) AS harvested`, [batchId, batchId]);
+    const remaining = Number(batch.stocked_count) - Number(totals[0].dead) - Number(totals[0].harvested);
+    if (count !== null && count > remaining) { await connection.rollback(); return res.status(400).json({ message: "Harvested fish count exceeds estimated remaining stock." }); }
+    const [result] = await connection.execute<ResultSetHeader>(
+      `INSERT INTO harvest_events (batch_id, harvest_type, harvest_date, fish_count, weight_kg, price_per_kg)
+       VALUES (?, ?, ?, ?, ?, ?)`, [batchId, harvestType, harvestDate, count, Number(weightKg), price]);
+    if (harvestType === "complete") await connection.execute(
+      "UPDATE harvest_batches SET actual_harvest_date = ? WHERE id = ?", [harvestDate, batchId]);
+    await connection.commit();
+    res.status(201).json({ id: result.insertId });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Harvest event error:", error);
+    res.status(503).json({ message: "Unable to save harvest event." });
+  } finally { connection.release(); }
 });
 
 app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
@@ -1065,8 +1328,32 @@ app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
   });
 });
 
+async function sendDueHarvestReminders() {
+  if (!pool || !isSmsConfigured()) return;
+  const [rows] = await pool.execute<RowDataPacket[]>(
+    `SELECT b.id, b.species, b.fishpen_name, b.target_harvest_date, u.phone,
+            DATEDIFF(b.target_harvest_date, DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR)) AS days_left
+     FROM harvest_batches b INNER JOIN users u ON u.id = b.owner_user_id
+     WHERE b.reminder_sms = 1 AND b.actual_harvest_date IS NULL
+       AND DATEDIFF(b.target_harvest_date, DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR)) IN (7, 1, 0)`
+  );
+  for (const row of rows) {
+    const day = Number(row.days_left);
+    const [claim] = await pool.execute<ResultSetHeader>(
+      `INSERT IGNORE INTO harvest_reminder_log (batch_id, reminder_day, target_date, sms_status)
+       VALUES (?, ?, ?, 'failed')`, [row.id, day, row.target_harvest_date]);
+    if (!claim.affectedRows) continue;
+    const timing = day === 0 ? "today" : `in ${day} day${day === 1 ? "" : "s"}`;
+    const message = `PondSense: Planned harvest for ${row.species}${row.fishpen_name ? ` at ${row.fishpen_name}` : ""} is ${timing}. Inspect fish health and water conditions before deciding to harvest.`;
+    const result = await sendSms(String(row.phone), message);
+    if (result.ok) await pool.execute("UPDATE harvest_reminder_log SET sms_status = 'sent' WHERE batch_id = ? AND reminder_day = ? AND target_date = ?", [row.id, day, row.target_harvest_date]);
+    else console.warn(`Harvest SMS failed for batch ${row.id}: ${result.message}`);
+  }
+}
+
 try {
   await ensureAdminStorage();
+  void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
 } catch (error) {
   console.warn("PondSense API started without MySQL migrations. Start XAMPP MySQL, then restart npm run dev.", error);
 }
@@ -1074,3 +1361,4 @@ try {
 app.listen(port, () => {
   console.log(`PondSense API running on http://localhost:${port}`);
 });
+setInterval(() => void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error)), 60 * 60 * 1000);
