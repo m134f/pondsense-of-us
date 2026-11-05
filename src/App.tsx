@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect, useMemo, useRef, useState } from "react";
+import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import {
   Activity,
@@ -656,10 +656,10 @@ export default function App() {
     return () => window.removeEventListener("popstate", syncPath);
   }, []);
 
-  const navigate = (nextPath: string) => {
+  const navigate = useCallback((nextPath: string) => {
     window.history.pushState({}, "", nextPath);
     setPath(nextPath);
-  };
+  }, []);
 
   useEffect(() => {
     if (path === "/dashboard") setTab("analysis");
