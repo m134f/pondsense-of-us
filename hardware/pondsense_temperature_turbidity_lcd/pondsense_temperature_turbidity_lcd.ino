@@ -117,7 +117,11 @@ void loop() {
   float temperatureC = readTemperatureC();
 
   showLine(0, "PondSense of Us");
-  showLine(1, isnan(temperatureC) ? "Temp: sensor error" : "Temp: " + String(temperatureC, 1) + " C");
+  if (isnan(temperatureC)) {
+    showLine(1, temperatureSensor.getDeviceCount() == 0 ? "Temp: sensor missing" : "Temp: check GPIO 4");
+  } else {
+    showLine(1, "Temp: " + String(temperatureC, 1) + " C");
+  }
   // Display the same provisional conversion as the dashboard; calibration is still required.
   int estimatedNtu = roundf(constrain((1.0f - rawValue / 4095.0f) * 250.0f, 0.0f, 250.0f));
   showLine(2, "Turb: ~" + String(estimatedNtu) + " NTU est");

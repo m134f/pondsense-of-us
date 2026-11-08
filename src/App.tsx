@@ -1473,7 +1473,8 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
   const label = level === "critical" ? "Very cloudy" : level === "warning" ? "Cloudy" : "Clear range";
   const chart = readings.map((reading) => ({
     time: new Date(reading.recordedAt).toLocaleTimeString("en-PH"),
-    turbidity: reading.turbidityNtu,
+    // Show the same provisional value used in Water Parameters until the probe is calibrated.
+    turbidity: sensorTurbidityValue(reading),
     temperature: reading.temperatureC,
     ph: reading.ph
   }));
@@ -1497,9 +1498,9 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
         </div>
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Labo ng tubig" : "Turbidity"}</p>
-          <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? value : '--'} <span className="text-base">{calibrated ? 'NTU' : ''}</span></strong>
-          {calibrated && live ? <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span> : <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-900">{calibrated ? "Last reading" : "Unverified estimate"}</span>}
-          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "Walang beripikadong sukat. Kailangan munang ipa-calibrate ang sensor." : "No verified measurement. Sensor calibration is required."}</p>}
+          <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? "" : "~"}{value} <span className="text-base">NTU</span></strong>
+          {calibrated && live ? <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span> : <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-900">{calibrated ? "Last reading" : live ? (lang === "tl" ? "Live na tantiya" : "Live estimate") : (lang === "tl" ? "Huling tantiya" : "Last estimate")}</span>}
+          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "Tantiya ito mula sa live sensor signal; i-calibrate muna bago gamiting opisyal na NTU." : "This is a live estimate from the sensor signal; calibrate the probe before using it as an official NTU value."}</p>}
         </div>
       </div>
       {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Lumang sukat ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This is a stale reading. Check device connectivity or contact the administrator."}</p>}
