@@ -33,7 +33,9 @@ import {
 } from "recharts";
 import { fishDatabase } from "./data/fish";
 import { analyzeWaterQuality, detectRisks, feedingAdvice } from "./lib/decisionEngine";
-import { daysUntilHarvest, estimatedRemainingStock, harvestReminderDue } from "./lib/harvest";
+import { daysUntilHarvest, estimatedRemainingStock, harvestReminderDue, harvestStage, recentMortality, csvCell } from "./lib/harvest";
+import { RecommendedActions, type WaterContext } from "./components/RecommendedActions";
+import { HarvestReview } from "./components/HarvestReview";
 import { simpleHash, storage, type AppUser } from "./lib/storage";
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
 
@@ -60,6 +62,9 @@ type SensorTelemetry = {
   recordedAt: string;
 };
 type HarvestBatch = {
+  notes?: string;
+  sensorDeviceId?: number | null;
+  waterContext?: WaterContext;
   id: number;
   species: string;
   stockingDate: string;
@@ -984,6 +989,8 @@ export default function App() {
 
       {tab === "analysis" && (
         <AnalysisPage
+          key={currentUser?.id || 'guest'}
+          ownerId={currentUser?.id}
           lang={lang}
           params={params}
           setParams={setParams}
@@ -1285,6 +1292,7 @@ function ConnectEsp32({ lang, telemetry, now }: { lang: Lang; telemetry: SensorT
 }
 
 function AnalysisPage({
+  ownerId,
   lang,
   params,
   setParams,
@@ -1306,6 +1314,7 @@ function AnalysisPage({
   onSelectFish,
   text
 }: {
+  ownerId?: string;
   lang: Lang;
   params: WaterParams;
   setParams: (params: WaterParams) => void;
@@ -1345,7 +1354,7 @@ function AnalysisPage({
           sensorTelemetry={sensorTelemetry}
           sensorFresh={sensorFresh}
           showManual={showManual}
-          onAnalyze={onAnalyze}
+          onAnalyze={() => { if (window.confirm(lang === 'tl' ? 'Kumpirmadong aktuwal at bagong sukat ang lahat ng limang value? Huwag gamitin ang panimulang halimbawa bilang sukat.' : 'Are all five values actual, recent measurements? Do not use the starting examples as measurements.')) onAnalyze(); }}
           text={text}
         />
         {showManualResults && (
@@ -1363,8 +1372,11 @@ function AnalysisPage({
 
       <section className="space-y-5">
         {sensorTelemetry && <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} />}
-        {sensorFresh ? (
+        {ownerId && <RecommendedActions lang={lang} refreshKey={`${sensorTelemetry?.id || 0}:${sessions[0]?.id || ""}`} />}
+        {sensorFresh && sensorTelemetry?.turbidityNtu != null ? (
           <TurbidityAssessment telemetry={sensorTelemetry!} fish={fishDb} lang={lang} />
+        ) : sensorFresh ? (
+          <p className="rounded-lg border border-slate-200 bg-white p-4 text-sm">{lang === 'tl' ? 'Kailangan ng beripikadong sukat ng labo ng tubig. Ang available na pH at temperatura ay sinusuri sa Mga Rekomendadong Hakbang.' : 'A verified turbidity measurement is needed. Available pH and temperature readings are assessed in Recommended Actions.'}</p>
         ) : showManualResults ? (
           <>
             <p className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm font-semibold text-sky-900">{lang === "tl" ? "Manu-manong analysis ito, hindi galing sa ESP32." : "Manual analysis only. These values did not come from the ESP32."}</p>
@@ -1410,7 +1422,7 @@ function AnalysisPage({
         )}
       </section>
 
-      {sensorFresh ? (
+      {sensorFresh && sensorTelemetry?.turbidityNtu != null ? (
         <TurbidityFishRanking value={sensorTurbidityValue(sensorTelemetry!)} fish={fishDb} lang={lang} />
       ) : showManualResults ? (
         <>
@@ -1461,7 +1473,7 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
   const label = level === "critical" ? "Very cloudy" : level === "warning" ? "Cloudy" : "Clear range";
   const chart = readings.map((reading) => ({
     time: new Date(reading.recordedAt).toLocaleTimeString("en-PH"),
-    turbidity: sensorTurbidityValue(reading),
+    turbidity: reading.turbidityNtu,
     temperature: reading.temperatureC,
     ph: reading.ph
   }));
@@ -1481,13 +1493,13 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Temperatura" : "Temperature"}</p>
           <strong className="mt-1 block text-2xl text-slate-950">{telemetry.temperatureC === null ? "--" : `${telemetry.temperatureC.toFixed(1)} °C`}</strong>
-          <p className="mt-1 text-xs text-slate-500">{telemetry.temperatureC === null ? (lang === "tl" ? "Walang natanggap na temperatura. Suriin ang DS18B20 at GPIO 4." : "No temperature received. Check DS18B20 wiring on GPIO 4 and upload the current sketch.") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p>
+          <p className="mt-1 text-xs text-slate-500">{telemetry.temperatureC === null ? (lang === "tl" ? "Walang sukat. Ipasuri ang sensor sa administrator." : "No measurement. Ask the administrator to check the sensor.") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p>
         </div>
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Labo ng tubig" : "Turbidity"}</p>
-          <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? "" : "~"}{value} <span className="text-base">NTU</span></strong>
+          <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? value : '--'} <span className="text-base">{calibrated ? 'NTU' : ''}</span></strong>
           {calibrated && live ? <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span> : <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-900">{calibrated ? "Last reading" : "Unverified estimate"}</span>}
-          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "Tantya mula sa signal, hindi calibrated NTU. Ilubog ang probe para sa water test." : "Signal-based estimate, not calibrated NTU. Submerge probe for a water test."}</p>}
+          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "Walang beripikadong sukat. Kailangan munang ipa-calibrate ang sensor." : "No verified measurement. Sensor calibration is required."}</p>}
         </div>
       </div>
       {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Lumang sukat ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This is a stale reading. Check device connectivity or contact the administrator."}</p>}
@@ -2662,15 +2674,16 @@ function ProfilePage({ currentUser, navigate }: { currentUser: AppUser | null; n
 
 function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: AppUser | null; lang: Lang; fishDb: FishSpecies[]; navigate: (path: string) => void }) {
   const today = new Date().toLocaleDateString("en-CA", { timeZone: "Asia/Manila" });
-  const emptyForm = { species: fishDb[0]?.name || "Tilapia", fishpenName: "", targetWeightG: "", reminderSms: false, stockingDate: today, stockedCount: "", targetHarvestDate: "", actualHarvestDate: "", harvestedKg: "", sellingPrice: "" };
+  const emptyForm = { notes: "", sensorDeviceId: "", species: fishDb[0]?.name || "Tilapia", fishpenName: "", targetWeightG: "", reminderSms: false, stockingDate: today, stockedCount: "", targetHarvestDate: "", actualHarvestDate: "", harvestedKg: "", sellingPrice: "" };
   const [form, setForm] = useState(emptyForm);
   const [editingId, setEditingId] = useState<number | null>(null);
   const [records, setRecords] = useState<HarvestBatch[]>([]);
-  const [waterStatus, setWaterStatus] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
+  const [devices, setDevices] = useState<Array<{ id: number; deviceName: string }>>([]);
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [action, setAction] = useState<"batch" | "harvest" | "sample" | "mortality">("batch");
-  const [eventForm, setEventForm] = useState({ harvestType: "partial", harvestDate: today, fishCount: "", weightKg: "", pricePerKg: "" });
-  const [sampleForm, setSampleForm] = useState({ sampledAt: today, sampleSize: "", averageWeightG: "" });
+  const [eventForm, setEventForm] = useState({ harvestType: "partial", harvestDate: today, fishCount: "", weightKg: "", pricePerKg: "", notes: "" });
+  const [sampleForm, setSampleForm] = useState({ sampledAt: today, sampleSize: "", averageWeightG: "", notes: "" });
   const [mortalityForm, setMortalityForm] = useState({ mortalityDate: today, deadCount: "", notes: "" });
   const [penFilter, setPenFilter] = useState("");
   const [speciesFilter, setSpeciesFilter] = useState("");
@@ -2681,10 +2694,10 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
   const refresh = async () => {
     const result = await apiJson<{ harvests: HarvestBatch[]; waterStatus: string | null }>("/api/harvests");
     setLoading(false);
-    if (result.data) { setRecords(result.data.harvests); setWaterStatus(result.data.waterStatus); }
+    if (result.data) setRecords(result.data.harvests);
     else setMessage(result.error || "Unable to load harvest records.");
   };
-  useEffect(() => { if (currentUser) void refresh(); }, [currentUser?.id]);
+  useEffect(() => { setRecords([]); if (currentUser) { void refresh(); void apiJson<{ devices: Array<{ id: number; deviceName: string }> }>("/api/sensors/devices").then(r => setDevices(r.data?.devices || [])); } }, [currentUser?.id]);
   const save = async () => {
     if (!form.species || !form.stockingDate || !form.targetHarvestDate || !Number(form.stockedCount)) {
       setMessage(lang === "tl" ? "Punan ang isda, petsa, at dami ng inalagaan." : "Enter species, dates, and number stocked.");
@@ -2698,18 +2711,20 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
     setBusy(false);
     if (result.error) return setMessage(result.error);
     setMessage(lang === "tl" ? "Nai-save ang tala ng ani." : "Harvest record saved.");
+    setShowForm(false);
     setForm(emptyForm);
     setEditingId(null);
     void refresh();
   };
   const edit = (row: HarvestBatch) => {
     setEditingId(row.id);
-    setForm({ species: row.species, fishpenName: row.fishpenName || "", targetWeightG: row.targetWeightG === null ? "" : String(row.targetWeightG), reminderSms: Boolean(row.reminderSms), stockingDate: String(row.stockingDate).slice(0, 10), stockedCount: String(row.stockedCount), targetHarvestDate: String(row.targetHarvestDate).slice(0, 10), actualHarvestDate: row.actualHarvestDate ? String(row.actualHarvestDate).slice(0, 10) : "", harvestedKg: row.harvestedKg === null ? "" : String(row.harvestedKg), sellingPrice: row.sellingPrice === null ? "" : String(row.sellingPrice) });
+    setShowForm(true);
+    setForm({ notes: row.notes || "", sensorDeviceId: row.sensorDeviceId ? String(row.sensorDeviceId) : "", species: row.species, fishpenName: row.fishpenName || "", targetWeightG: row.targetWeightG === null ? "" : String(row.targetWeightG), reminderSms: Boolean(row.reminderSms), stockingDate: String(row.stockingDate).slice(0, 10), stockedCount: String(row.stockedCount), targetHarvestDate: String(row.targetHarvestDate).slice(0, 10), actualHarvestDate: row.actualHarvestDate ? String(row.actualHarvestDate).slice(0, 10) : "", harvestedKg: row.harvestedKg === null ? "" : String(row.harvestedKg), sellingPrice: row.sellingPrice === null ? "" : String(row.sellingPrice) });
     setAction("batch");
     window.scrollTo({ top: 0, behavior: "smooth" });
   };
   const remove = async (id: number) => {
-    if (!window.confirm(lang === "tl" ? "Burahin ang tala ng ani?" : "Delete this harvest record?")) return;
+    if (!window.confirm(lang === "tl" ? "Burahin ang batch at lahat ng sample, mortality, obserbasyon at ani nito? Hindi ito maibabalik." : "Delete this batch and all its samples, mortality, observations and harvests? This cannot be undone.")) return;
     const result = await apiJson(`/api/harvests/${id}`, { method: "DELETE" });
     setMessage(result.error || (lang === "tl" ? "Nabura ang tala." : "Record deleted."));
     if (!result.error) void refresh();
@@ -2722,21 +2737,23 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
   const remainingStock = (row: HarvestBatch) => estimatedRemainingStock(row.stockedCount, row.mortalities || [], row.harvestEvents || []);
   const submitAction = async () => {
     if (!selected) return;
+    const confirmComplete = action === "harvest" && eventForm.harvestType === "complete";
+    if (confirmComplete && !window.confirm(lang === "tl" ? "Tapusin ang batch pagkatapos nitong ani? Mananatili ang kasaysayan." : "Complete this batch after recording this harvest? Its history will be preserved.")) return;
     setBusy(true);
     const endpoint = action === "harvest" ? "events" : action === "sample" ? "samples" : "mortalities";
-    const payload = action === "harvest" ? eventForm : action === "sample" ? sampleForm : mortalityForm;
+    const payload = action === "harvest" ? { ...eventForm, confirmComplete } : action === "sample" ? sampleForm : mortalityForm;
     const result = await apiJson(`/api/harvests/${selected.id}/${endpoint}`, { method: "POST", body: JSON.stringify(payload) });
     setBusy(false);
     setMessage(result.error || (lang === "tl" ? "Nai-save ang tala." : "Record saved."));
-    if (!result.error) { setEventForm({ harvestType: "partial", harvestDate: today, fishCount: "", weightKg: "", pricePerKg: "" }); setSampleForm({ sampledAt: today, sampleSize: "", averageWeightG: "" }); setMortalityForm({ mortalityDate: today, deadCount: "", notes: "" }); void refresh(); }
+    if (!result.error) { setEventForm({ harvestType: "partial", harvestDate: today, fishCount: "", weightKg: "", pricePerKg: "", notes: "" }); setSampleForm({ sampledAt: today, sampleSize: "", averageWeightG: "", notes: "" }); setMortalityForm({ mortalityDate: today, deadCount: "", notes: "" }); void refresh(); }
   };
   const exportCsv = () => {
     const lines = [["Fishpen", "Species", "Stocking date", "Stocked fish", "Target harvest", "Actual harvest", "Harvest type", "Fish harvested", "Harvested kg", "Price per kg", "Estimated gross sales"]];
     filtered.forEach((row) => {
-      if (row.harvestEvents?.length) row.harvestEvents.forEach((event) => lines.push([row.fishpenName || "", row.species, row.stockingDate, String(row.stockedCount), row.targetHarvestDate, event.harvestDate, event.harvestType, String(event.fishCount ?? ""), String(event.weightKg), String(event.pricePerKg ?? ""), String(Number(event.weightKg) * Number(event.pricePerKg || 0))]));
-      else lines.push([row.fishpenName || "", row.species, row.stockingDate, String(row.stockedCount), row.targetHarvestDate, row.actualHarvestDate || "", row.actualHarvestDate ? "complete" : "", "", String(row.harvestedKg ?? ""), String(row.sellingPrice ?? ""), String(Number(row.harvestedKg || 0) * Number(row.sellingPrice || 0))]);
+      if (row.harvestEvents?.length) row.harvestEvents.forEach((event) => lines.push([row.fishpenName || "", row.species, row.stockingDate, String(row.stockedCount), row.targetHarvestDate, event.harvestDate, event.harvestType, String(event.fishCount ?? ""), String(event.weightKg), String(event.pricePerKg ?? ""), event.pricePerKg === null ? "" : String(Number(event.weightKg) * Number(event.pricePerKg))]));
+      else lines.push([row.fishpenName || "", row.species, row.stockingDate, String(row.stockedCount), row.targetHarvestDate, row.actualHarvestDate || "", row.actualHarvestDate ? "complete" : "", "", String(row.harvestedKg ?? ""), String(row.sellingPrice ?? ""), row.sellingPrice === null ? "" : String(Number(row.harvestedKg || 0) * Number(row.sellingPrice))]);
     });
-    const csv = lines.map((line) => line.map((value) => `"${String(value).replaceAll('"', '""')}"`).join(",")).join("\r\n");
+    const csv = lines.map((line) => line.map(csvCell).join(",")).join("\r\n");
     const url = URL.createObjectURL(new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" }));
     const link = document.createElement("a"); link.href = url; link.download = "pondsense-harvests.csv"; link.click(); URL.revokeObjectURL(url);
   };
@@ -2744,15 +2761,19 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
     if (row.actualHarvestDate) return false;
     const days = Math.round((Date.parse(String(row.targetHarvestDate).slice(0, 10) + "T00:00:00") - Date.parse(today + "T00:00:00")) / 86400000);
     return days >= 0 && days <= 7;
-  });
+  }).sort((a, b) => a.targetHarvestDate.localeCompare(b.targetHarvestDate));
+  const overdue = records.filter(row => !row.actualHarvestDate && daysUntilHarvest(row.targetHarvestDate, today) < 0);
+  const recentHarvests = records.flatMap(row => row.harvestEvents.map(event => ({ ...event, species: row.species, fishpen: row.fishpenName }))).sort((a, b) => b.harvestDate.localeCompare(a.harvestDate) || b.id - a.id).slice(0, 5);
   return <main className="mx-auto max-w-[1500px] space-y-5 px-3 pb-8 sm:px-6">
-    <div><h1 className="text-2xl font-black text-slate-950">{lang === "tl" ? "Pamamahala ng Ani" : "Fish Harvesting"}</h1><p className="text-sm text-slate-600">{lang === "tl" ? "Ang petsa ng ani ay plano mo, hindi hula ng paglaki o dami ng isda." : "Harvest dates are your plans, not predictions of fish growth or yield."}</p></div>
+    <div><h1 className="text-2xl font-black text-slate-950">{lang === "tl" ? "Pagpaplano at Pagsubaybay sa Ani" : "Harvest Planning and Decision Support"}</h1><p className="text-sm text-slate-600">{lang === "tl" ? "Ang petsa ng ani ay plano mo, hindi hula ng paglaki o dami ng isda." : "Harvest dates are your plans, not predictions of fish growth or yield."}</p></div>
     {!currentUser ? <section className="card p-5"><p className="text-sm text-slate-700">{lang === "tl" ? "Mag-login upang ma-save ang tala ng ani." : "Log in to save your harvest records."}</p><button className="primary-button mt-3" onClick={() => navigate("/login")}>{lang === "tl" ? "Mag-login" : "Login"}</button></section> : <>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><AdminStat label={lang === "tl" ? "Aktibong alaga" : "Active batches"} value={records.length - completed.length} /><AdminStat label={lang === "tl" ? "Malapit nang anihin" : "Upcoming (7 days)"} value={upcoming.length} /><AdminStat label={lang === "tl" ? "Natapos na ani" : "Completed batches"} value={completed.length} /><AdminStat label={lang === "tl" ? "Kabuuang ani (kg)" : "Harvested (kg)"} value={totalKg.toFixed(2)} /><AdminStat label={lang === "tl" ? "Tinatayang kabuuang benta" : "Estimated gross sales"} value={`₱${grossSales.toFixed(2)}`} /></div>
-      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">{(["batch", "harvest", "sample", "mortality"] as const).map((item) => <button key={item} className={`rounded-md px-4 py-2 text-sm font-bold ${action === item ? "bg-teal-700 text-white" : "text-slate-700 hover:bg-slate-100"}`} onClick={() => setAction(item)}>{item === "batch" ? (lang === "tl" ? "Mga Batch" : "Batches") : item === "harvest" ? (lang === "tl" ? "Magtala ng Ani" : "Record Harvest") : item === "sample" ? (lang === "tl" ? "Sukat ng Isda" : "Sampling") : (lang === "tl" ? "Namatay na Isda" : "Mortality")}</button>)}</div>
+      <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">{(["batch", "harvest", "sample", "mortality"] as const).map((item) => <button key={item} className={`rounded-md px-4 py-2 text-sm font-bold ${action === item ? "bg-teal-700 text-white" : "text-slate-700 hover:bg-slate-100"}`} onClick={() => { setAction(item); setShowForm(item !== "batch"); setMessage(""); }}>{item === "batch" ? (lang === "tl" ? "Mga Batch" : "Batches") : item === "harvest" ? (lang === "tl" ? "Magtala ng Ani" : "Record Harvest") : item === "sample" ? (lang === "tl" ? "Sukat ng Isda" : "Sampling") : (lang === "tl" ? "Namatay na Isda" : "Mortality")}</button>)}</div>
       {upcoming.length > 0 && <section className="rounded-lg border border-amber-200 bg-amber-50 p-4" role="status"><h2 className="font-black text-amber-950">{lang === "tl" ? "Paalala sa planong ani" : "Upcoming planned harvest"}</h2><p className="mt-1 text-sm text-amber-900">{upcoming.map((row) => `${row.species} (${String(row.targetHarvestDate).slice(0, 10)})`).join(", ")}</p></section>}
-      {waterStatus && waterStatus !== "safe" && <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm font-semibold text-amber-900">{lang === "tl" ? "May babala sa huling sukat ng tubig. Suriin muna ang kalusugan ng isda at kondisyon ng tubig bago mag-ani." : "The latest water reading needs attention. Inspect fish health and water conditions before harvesting."}</p>}
-      {action === "batch" ? <section className="card p-5"><h2 className="text-lg font-black text-slate-950">{editingId ? (lang === "tl" ? "I-edit ang tala" : "Edit batch") : (lang === "tl" ? "Magdagdag ng alaga" : "Add fish batch")}</h2>
+      {message && <p role="status" className="text-sm font-semibold text-slate-700">{message}</p>}
+      {overdue.length > 0 && <p className="rounded-lg border border-amber-200 bg-amber-50 p-4 text-sm">{lang === "tl" ? "Lampas na sa plano" : "Past the planned date"}: {overdue.map(row => `${row.species} - ${row.fishpenName || "#" + row.id}`).join(", ")}. {lang === "tl" ? "I-update ang plano o magtala ng ani kung angkop." : "Update the plan or record a harvest when appropriate."}</p>}
+      {action === "batch" && !showForm && <button className="primary-button" onClick={() => { setEditingId(null); setForm(emptyForm); setShowForm(true); }}>{lang === "tl" ? "Magdagdag ng Fish Batch" : "Add Fish Batch"}</button>}
+      {action === "batch" ? showForm && <section className="card p-5"><h2 className="text-lg font-black text-slate-950">{editingId ? (lang === "tl" ? "I-edit ang tala" : "Edit batch") : (lang === "tl" ? "Magdagdag ng alaga" : "Add fish batch")}</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label className="text-sm font-bold text-slate-700">{lang === "tl" ? "Uri ng isda" : "Fish species"}<select className="mt-1 w-full rounded-lg border border-slate-300 p-3" value={form.species} onChange={(event) => setForm({ ...form, species: event.target.value })}>{fishDb.map((fish) => <option key={fish.id} value={fish.name}>{fish.name}</option>)}</select></label>
           <label className="text-sm font-bold text-slate-700">{lang === "tl" ? "Pangalan/ID ng fishpen" : "Fishpen name or ID"}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" maxLength={100} value={form.fishpenName} onChange={(event) => setForm({ ...form, fishpenName: event.target.value })} /></label>
@@ -2762,10 +2783,12 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
             ["stockedCount", lang === "tl" ? "Bilang ng isda" : "Fish stocked", "number"],
             ["targetHarvestDate", lang === "tl" ? "Planong petsa ng ani" : "Target harvest date", "date"]
           ] as const).map(([key, label, type]) => <label key={key} className="text-sm font-bold text-slate-700">{label}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" type={type} min={type === "number" ? "0" : undefined} step={type === "number" ? "0.01" : undefined} value={form[key]} onChange={(event) => setForm({ ...form, [key]: event.target.value })} /></label>)}
-        </div><label className="mt-3 flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={form.reminderSms} onChange={(e) => setForm({ ...form, reminderSms: e.target.checked })} />{lang === "tl" ? "Padalhan ako ng SMS sa 7 araw, 1 araw, at araw ng planong ani (kung available)" : "Send optional SMS at 7 days, 1 day, and target day (when available)"}</label><p className="mt-2 text-xs text-slate-600">{lang === "tl" ? "Laging makikita ang mga paalala dito sa app. Maaaring maantala ang SMS kung offline ang server." : "In-app reminders always appear. SMS may be delayed when the server is offline."}</p><div className="mt-4 flex gap-2"><button className="primary-button" onClick={save} disabled={busy}>{busy ? "Saving..." : editingId ? (lang === "tl" ? "I-save ang pagbabago" : "Save changes") : (lang === "tl" ? "I-save ang alaga" : "Save batch")}</button>{editingId && <button className="soft-button" onClick={() => { setEditingId(null); setForm(emptyForm); }}>{lang === "tl" ? "Kanselahin" : "Cancel"}</button>}</div>{message && <p role="status" className="mt-3 text-sm font-semibold text-slate-700">{message}</p>}</section> : <section className="card p-5"><h2 className="text-lg font-black text-slate-950">{action === "harvest" ? (lang === "tl" ? "Magtala ng ani" : "Record harvest") : action === "sample" ? (lang === "tl" ? "Magtala ng timbang ng sample" : "Record fish sample") : (lang === "tl" ? "Magtala ng namatay na isda" : "Record mortality")}</h2><label className="mt-4 block text-sm font-bold text-slate-700">{lang === "tl" ? "Piliin ang batch" : "Select batch"}<select className="mt-1 w-full rounded-lg border border-slate-300 p-3" value={selectedId || ""} onChange={(event) => setSelectedId(Number(event.target.value))}><option value="">{lang === "tl" ? "Pumili" : "Choose a batch"}</option>{records.filter((row) => !row.actualHarvestDate).map((row) => <option key={row.id} value={row.id}>{row.fishpenName || "Fishpen"} · {row.species} · #{row.id}</option>)}</select></label>{selected && <p className="mt-2 text-xs text-slate-600">{lang === "tl" ? "Tinatayang natitira batay sa mga tala" : "Estimated remaining from farmer records"}: {remainingStock(selected)}</p>}
-      {action === "harvest" ? <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><label className="text-sm font-bold">{lang === "tl" ? "Uri ng ani" : "Harvest type"}<select className="mt-1 w-full rounded-lg border border-slate-300 p-3" value={eventForm.harvestType} onChange={(e) => setEventForm({ ...eventForm, harvestType: e.target.value })}><option value="partial">Partial harvest</option><option value="complete">Complete harvest</option></select></label>{([ ["harvestDate", lang === "tl" ? "Petsa ng ani" : "Harvest date", "date"], ["fishCount", lang === "tl" ? "Bilang ng inani (opsyonal)" : "Fish harvested (optional)", "number"], ["weightKg", lang === "tl" ? "Timbang (kg)" : "Weight (kg)", "number"], ["pricePerKg", lang === "tl" ? "Presyo bawat kg (opsyonal)" : "Price per kg (optional)", "number"] ] as const).map(([key, label, type]) => <label key={key} className="text-sm font-bold">{label}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" type={type} min={type === "number" ? "0" : undefined} step={type === "number" ? "0.01" : undefined} value={eventForm[key]} onChange={(e) => setEventForm({ ...eventForm, [key]: e.target.value })} /></label>)}</div> : action === "sample" ? <div className="mt-4 grid gap-3 sm:grid-cols-3">{([ ["sampledAt", lang === "tl" ? "Petsa" : "Date", "date"], ["sampleSize", lang === "tl" ? "Bilang ng sample" : "Sample size", "number"], ["averageWeightG", lang === "tl" ? "Karaniwang timbang (g)" : "Average weight (g)", "number"] ] as const).map(([key, label, type]) => <label key={key} className="text-sm font-bold">{label}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" type={type} min={type === "number" ? "1" : undefined} step={type === "number" ? "0.01" : undefined} value={sampleForm[key]} onChange={(e) => setSampleForm({ ...sampleForm, [key]: e.target.value })} /></label>)}</div> : <div className="mt-4 grid gap-3 sm:grid-cols-3">{([ ["mortalityDate", lang === "tl" ? "Petsa" : "Date", "date"], ["deadCount", lang === "tl" ? "Bilang ng namatay" : "Dead fish count", "number"], ["notes", lang === "tl" ? "Puna (opsyonal)" : "Notes (optional)", "text"] ] as const).map(([key, label, type]) => <label key={key} className="text-sm font-bold">{label}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" type={type} min={type === "number" ? "1" : undefined} value={mortalityForm[key]} onChange={(e) => setMortalityForm({ ...mortalityForm, [key]: e.target.value })} /></label>)}</div>}
+        </div><div className="mt-3 grid gap-3 sm:grid-cols-2"><label className="text-sm font-semibold">{lang === "tl" ? "Monitor sa fishpen (opsyonal)" : "Fishpen monitor (optional)"}<select className="mt-1 w-full rounded-lg border border-slate-300 p-3" value={form.sensorDeviceId} onChange={e => setForm({ ...form, sensorDeviceId: e.target.value })}><option value="">{lang === "tl" ? "Walang nakatalagang monitor" : "No assigned monitor"}</option>{devices.map(d => <option key={d.id} value={d.id}>{d.deviceName}</option>)}</select></label><label className="text-sm font-semibold">{lang === "tl" ? "Mga tala (opsyonal)" : "Notes (optional)"}<textarea maxLength={1000} className="mt-1 w-full rounded-lg border border-slate-300 p-3" value={form.notes} onChange={e => setForm({ ...form, notes: e.target.value })}/></label></div><label className="mt-3 flex items-center gap-2 text-sm font-semibold text-slate-700"><input type="checkbox" checked={form.reminderSms} onChange={(e) => setForm({ ...form, reminderSms: e.target.checked })} />{lang === "tl" ? "Padalhan ako ng SMS sa 7 araw, 1 araw, at araw ng planong ani (kung available)" : "Send optional SMS at 7 days, 1 day, and target day (when available)"}</label><p className="mt-2 text-xs text-slate-600">{lang === "tl" ? "Laging makikita ang mga paalala dito sa app. Maaaring maantala ang SMS kung offline ang server." : "In-app reminders always appear. SMS may be delayed when the server is offline."}</p><div className="mt-4 flex gap-2"><button className="primary-button" onClick={save} disabled={busy}>{busy ? "Saving..." : editingId ? (lang === "tl" ? "I-save ang pagbabago" : "Save changes") : (lang === "tl" ? "I-save ang alaga" : "Save batch")}</button>{editingId && <button className="soft-button" onClick={() => { setEditingId(null); setForm(emptyForm); }}>{lang === "tl" ? "Kanselahin" : "Cancel"}</button>}</div>{message && <p role="status" className="mt-3 text-sm font-semibold text-slate-700">{message}</p>}</section> : <section className="card p-5"><h2 className="text-lg font-black text-slate-950">{action === "harvest" ? (lang === "tl" ? "Magtala ng ani" : "Record harvest") : action === "sample" ? (lang === "tl" ? "Magtala ng timbang ng sample" : "Record fish sample") : (lang === "tl" ? "Magtala ng namatay na isda" : "Record mortality")}</h2><label className="mt-4 block text-sm font-bold text-slate-700">{lang === "tl" ? "Piliin ang batch" : "Select batch"}<select className="mt-1 w-full rounded-lg border border-slate-300 p-3" value={selectedId || ""} onChange={(event) => setSelectedId(Number(event.target.value))}><option value="">{lang === "tl" ? "Pumili" : "Choose a batch"}</option>{records.filter((row) => !row.actualHarvestDate).map((row) => <option key={row.id} value={row.id}>{row.fishpenName || "Fishpen"} · {row.species} · #{row.id}</option>)}</select></label>{selected && <p className="mt-2 text-xs text-slate-600">{lang === "tl" ? "Tinatayang natitira batay sa mga tala" : "Estimated remaining from farmer records"}: {remainingStock(selected)}</p>}
+      {action === "harvest" ? <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><label className="text-sm font-bold">{lang === "tl" ? "Uri ng ani" : "Harvest type"}<select className="mt-1 w-full rounded-lg border border-slate-300 p-3" value={eventForm.harvestType} onChange={(e) => setEventForm({ ...eventForm, harvestType: e.target.value })}><option value="partial">{lang === "tl" ? "Bahagyang ani" : "Partial harvest"}</option><option value="complete">{lang === "tl" ? "Kumpletong ani" : "Complete harvest"}</option></select></label>{([ ["harvestDate", lang === "tl" ? "Petsa ng ani" : "Harvest date", "date"], ["fishCount", lang === "tl" ? "Bilang ng inani (opsyonal)" : "Fish harvested (optional)", "number"], ["weightKg", lang === "tl" ? "Timbang (kg)" : "Weight (kg)", "number"], ["pricePerKg", lang === "tl" ? "Presyo bawat kg (opsyonal)" : "Price per kg (optional)", "number"] ] as const).map(([key, label, type]) => <label key={key} className="text-sm font-bold">{label}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" type={type} min={type === "number" ? "0" : undefined} step={type === "number" ? "0.01" : undefined} value={eventForm[key]} onChange={(e) => setEventForm({ ...eventForm, [key]: e.target.value })} /></label>)}</div> : action === "sample" ? <div className="mt-4 grid gap-3 sm:grid-cols-3">{([ ["sampledAt", lang === "tl" ? "Petsa" : "Date", "date"], ["sampleSize", lang === "tl" ? "Bilang ng sample" : "Sample size", "number"], ["averageWeightG", lang === "tl" ? "Karaniwang timbang (g)" : "Average weight (g)", "number"] ] as const).map(([key, label, type]) => <label key={key} className="text-sm font-bold">{label}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" type={type} min={type === "number" ? "1" : undefined} step={type === "number" ? "0.01" : undefined} value={sampleForm[key]} onChange={(e) => setSampleForm({ ...sampleForm, [key]: e.target.value })} /></label>)}</div> : <div className="mt-4 grid gap-3 sm:grid-cols-3">{([ ["mortalityDate", lang === "tl" ? "Petsa" : "Date", "date"], ["deadCount", lang === "tl" ? "Bilang ng namatay" : "Dead fish count", "number"], ["notes", lang === "tl" ? "Puna (opsyonal)" : "Notes (optional)", "text"] ] as const).map(([key, label, type]) => <label key={key} className="text-sm font-bold">{label}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" type={type} min={type === "number" ? "1" : undefined} value={mortalityForm[key]} onChange={(e) => setMortalityForm({ ...mortalityForm, [key]: e.target.value })} /></label>)}</div>}
+      {action !== "mortality" && <label className="mt-3 block text-sm font-semibold">{lang === "tl" ? "Mga tala (opsyonal)" : "Notes (optional)"}<textarea maxLength={1000} className="mt-1 block w-full rounded-lg border border-slate-300 p-3" value={action === "sample" ? sampleForm.notes : eventForm.notes} onChange={e => action === "sample" ? setSampleForm({ ...sampleForm, notes: e.target.value }) : setEventForm({ ...eventForm, notes: e.target.value })}/></label>}
       <button className="primary-button mt-4" disabled={busy || !selected} onClick={submitAction}>{busy ? (lang === "tl" ? "Sine-save..." : "Saving...") : (lang === "tl" ? "I-save ang tala" : "Save record")}</button>{message && <p role="status" className="mt-3 text-sm font-semibold text-slate-700">{message}</p>}</section>}
-      <section className="card p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Mga Batch at Kasaysayan" : "Batches and history"}</h2><button className="soft-button flex items-center gap-2" onClick={exportCsv} disabled={!filtered.length}><Download size={16} /> CSV</button></div><div className="mt-4 grid gap-2 sm:grid-cols-3"><input className="rounded-lg border border-slate-300 p-2 text-sm" placeholder={lang === "tl" ? "Hanapin ang fishpen" : "Filter fishpen"} value={penFilter} onChange={(e) => setPenFilter(e.target.value)} /><select className="rounded-lg border border-slate-300 p-2 text-sm" value={speciesFilter} onChange={(e) => setSpeciesFilter(e.target.value)}><option value="">{lang === "tl" ? "Lahat ng isda" : "All species"}</option>{[...new Set(records.map((row) => row.species))].map((species) => <option key={species}>{species}</option>)}</select><label className="text-xs text-slate-600">{lang === "tl" ? "Mula sa planong petsa" : "Target date from"}<input className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm" type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} /></label></div>{loading ? <p className="mt-4 text-sm text-slate-600">{lang === "tl" ? "Naglo-load..." : "Loading..."}</p> : filtered.length === 0 ? <p className="mt-4 text-sm text-slate-600">{lang === "tl" ? "Walang tumugmang tala." : "No matching records."}</p> : <div className="mt-4 space-y-2">{filtered.map((row) => { const remaining = daysUntilHarvest(row.targetHarvestDate, today); const latestSample = row.samples?.[0]; const notice = !row.actualHarvestDate && harvestReminderDue(row.targetHarvestDate, today); const fish = fishDb.find((item) => item.name === row.species); return <article key={row.id} className="rounded-lg border border-slate-200 p-3 sm:p-4"><div className="flex flex-wrap items-center gap-3"><div className="h-14 w-14 shrink-0 overflow-hidden rounded-md bg-slate-100">{fish && <img className="h-full w-full object-cover" src={fishImageSrc(fish.id)} alt="" />}</div><div className="min-w-[180px] flex-1"><p className="font-black text-slate-950">{row.species}</p><p className="text-sm text-slate-600">{row.fishpenName || (lang === "tl" ? "Walang pangalan ng fishpen" : "Unnamed fishpen")} · {Number(row.stockedCount).toLocaleString()} {lang === "tl" ? "inilagay" : "stocked"}</p><p className="text-xs text-slate-500">{lang === "tl" ? "Inilagay" : "Stocked"}: {row.stockingDate}</p></div><div className="min-w-[125px] text-sm"><p className="text-xs text-slate-500">{lang === "tl" ? "Planong ani" : "Target harvest"}</p><strong>{row.targetHarvestDate}</strong></div><div className={`min-w-[125px] rounded-md px-3 py-2 text-sm font-bold ${row.actualHarvestDate ? "bg-emerald-50 text-emerald-800" : remaining < 0 ? "bg-red-50 text-red-800" : notice ? "bg-amber-50 text-amber-900" : "bg-sky-50 text-sky-900"}`}>{row.actualHarvestDate ? (lang === "tl" ? "Natapos" : "Completed") : remaining < 0 ? `${-remaining} ${lang === "tl" ? "araw nang lampas" : "days overdue"}` : remaining === 0 ? (lang === "tl" ? "Planong ani ngayon" : "Target today") : `${remaining} ${lang === "tl" ? "araw pa" : "days left"}`}</div><div className="rounded-md bg-slate-50 px-3 py-2 text-sm"><p className="text-xs text-slate-500">{lang === "tl" ? "Kondisyon ng tubig" : "Water status"}</p><strong className={waterStatus === "critical" ? "text-red-700" : waterStatus === "warning" ? "text-amber-700" : "text-slate-700"}>{waterStatus || (lang === "tl" ? "Walang bagong datos" : "No recent data")}</strong></div></div><div className="mt-3 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 text-xs text-slate-600"><span>{lang === "tl" ? "Tinatayang natitira" : "Estimated remaining"}: <strong>{remainingStock(row)}</strong></span><span>{lang === "tl" ? "Huling sample" : "Latest sample"}: <strong>{latestSample ? `${latestSample.averageWeightG} g` : "--"}</strong></span>{row.targetWeightG && <span>{lang === "tl" ? "Target timbang" : "Target weight"}: <strong>{row.targetWeightG} g</strong></span>}<span>{lang === "tl" ? "Mga ani" : "Harvests"}: <strong>{row.harvestEvents?.length || (row.actualHarvestDate ? 1 : 0)}</strong></span><div className="ml-auto flex gap-2"><button className="text-teal-800 underline" onClick={() => edit(row)}>{lang === "tl" ? "I-edit" : "Edit"}</button><button className="text-red-700 underline" onClick={() => remove(row.id)}>{lang === "tl" ? "Burahin" : "Delete"}</button></div></div>{(row.samples?.length || row.mortalities?.length || row.harvestEvents?.length) ? <details className="mt-2 text-sm text-slate-700"><summary className="cursor-pointer font-bold">{lang === "tl" ? "Tingnan ang buong kasaysayan" : "View full history"}</summary><div className="mt-2 space-y-1">{row.samples?.map((item) => <p key={`s${item.id}`}>{item.sampledAt} · {lang === "tl" ? "Sample" : "Sample"}: {item.sampleSize} {lang === "tl" ? "isda" : "fish"}, {item.averageWeightG} g</p>)}{row.mortalities?.map((item) => <p key={`m${item.id}`}>{item.mortalityDate} · {lang === "tl" ? "Namatay" : "Mortality"}: {item.deadCount} {item.notes && `· ${item.notes}`}</p>)}{row.harvestEvents?.map((item) => <p key={`h${item.id}`}>{item.harvestDate} · {item.harvestType} · {item.weightKg} kg {item.fishCount !== null && `· ${item.fishCount} fish`}</p>)}</div></details> : null}</article>; })}</div>}</section>
+      <section className="card p-5"><div className="flex flex-wrap items-center justify-between gap-3"><h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Mga Batch at Kasaysayan" : "Batches and history"}</h2><button className="soft-button flex items-center gap-2" onClick={exportCsv} disabled={!filtered.length}><Download size={16} /> CSV</button></div><div className="mt-4 grid gap-2 sm:grid-cols-3"><input className="rounded-lg border border-slate-300 p-2 text-sm" placeholder={lang === "tl" ? "Hanapin ang fishpen" : "Filter fishpen"} value={penFilter} onChange={(e) => setPenFilter(e.target.value)} /><select className="rounded-lg border border-slate-300 p-2 text-sm" value={speciesFilter} onChange={(e) => setSpeciesFilter(e.target.value)}><option value="">{lang === "tl" ? "Lahat ng isda" : "All species"}</option>{[...new Set(records.map((row) => row.species))].map((species) => <option key={species}>{species}</option>)}</select><label className="text-xs text-slate-600">{lang === "tl" ? "Mula sa planong petsa" : "Target date from"}<input className="mt-1 w-full rounded-lg border border-slate-300 p-2 text-sm" type="date" value={dateFilter} onChange={(e) => setDateFilter(e.target.value)} /></label></div>{loading ? <p className="mt-4 text-sm text-slate-600">{lang === "tl" ? "Naglo-load..." : "Loading..."}</p> : filtered.length === 0 ? <p className="mt-4 text-sm text-slate-600">{lang === "tl" ? "Walang tumugmang tala." : "No matching records."}</p> : <div className="mt-4 space-y-2">{filtered.map((row) => { const remaining = daysUntilHarvest(row.targetHarvestDate, today); const latestSample = row.samples?.[0]; const notice = !row.actualHarvestDate && harvestReminderDue(row.targetHarvestDate, today); const fish = fishDb.find((item) => item.name === row.species); const waterStatus = row.waterContext?.status; const stage = harvestStage(row.targetHarvestDate, today, !!row.actualHarvestDate); const review = !row.actualHarvestDate && (waterStatus === "critical" || waterStatus === "warning" || recentMortality(row.mortalities, today) > 0); return <article key={row.id} className="rounded-lg border border-slate-200 p-3 sm:p-4"><div className="flex flex-wrap items-center gap-3"><div className="h-14 w-14 shrink-0 overflow-hidden rounded-md bg-slate-100">{fish && <img className="h-full w-full object-cover" src={fishImageSrc(fish.id)} alt="" />}</div><div className="min-w-[180px] flex-1"><p className="font-black text-slate-950">{row.species}</p><p className="text-sm text-slate-600">{row.fishpenName || (lang === "tl" ? "Walang pangalan ng fishpen" : "Unnamed fishpen")} · {Number(row.stockedCount).toLocaleString()} {lang === "tl" ? "inilagay" : "stocked"}</p><p className="text-xs text-slate-500">{lang === "tl" ? "Inilagay" : "Stocked"}: {row.stockingDate}</p></div><div className="min-w-[125px] text-sm"><p className="text-xs text-slate-500">{lang === "tl" ? "Planong ani" : "Target harvest"}</p><strong>{row.targetHarvestDate}</strong></div><div className={`min-w-[125px] rounded-md px-3 py-2 text-sm font-bold ${row.actualHarvestDate ? "bg-emerald-50 text-emerald-800" : remaining < 0 ? "bg-red-50 text-red-800" : notice ? "bg-amber-50 text-amber-900" : "bg-sky-50 text-sky-900"}`}>{row.actualHarvestDate ? (lang === "tl" ? "Natapos" : "Completed") : remaining < 0 ? `${-remaining} ${lang === "tl" ? "araw nang lampas" : "days overdue"}` : remaining === 0 ? (lang === "tl" ? "Planong ani ngayon" : "Target today") : `${remaining} ${lang === "tl" ? "araw pa" : "days left"}`}</div><div className="rounded-md bg-slate-50 px-3 py-2 text-sm"><p className="text-xs text-slate-500">{lang === "tl" ? "Kondisyon ng tubig" : "Water status"}</p><strong className={waterStatus === "critical" ? "text-red-700" : waterStatus === "warning" ? "text-amber-700" : "text-slate-700"}>{waterStatus === "safe" ? (lang === "tl" ? "Ligtas" : "Safe") : waterStatus === "warning" ? (lang === "tl" ? "Babala" : "Warning") : waterStatus === "critical" ? (lang === "tl" ? "Kritikal" : "Critical") : (lang === "tl" ? "Kulang / walang bagong datos" : "Incomplete / no recent data")}</strong></div></div><div className="mt-3 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-3 text-xs text-slate-600"><span>{lang === "tl" ? "Tinatayang natitira" : "Estimated remaining"}: <strong>{remainingStock(row)}</strong></span><span>{lang === "tl" ? "Huling sample" : "Latest sample"}: <strong>{latestSample ? `${latestSample.averageWeightG} g (${latestSample.sampledAt})` : "--"}</strong></span>{row.targetWeightG && <span>{lang === "tl" ? "Target timbang" : "Target weight"}: <strong>{row.targetWeightG} g</strong></span>}<span>{lang === "tl" ? "Mga ani" : "Harvests"}: <strong>{row.harvestEvents?.length || (row.actualHarvestDate ? 1 : 0)}</strong></span><div className="ml-auto flex gap-2"><button className="text-teal-800 underline" onClick={() => edit(row)}>{lang === "tl" ? "I-edit" : "Edit"}</button><button className="text-red-700 underline" onClick={() => remove(row.id)}>{lang === "tl" ? "Burahin" : "Delete"}</button></div></div>{(row.samples?.length || row.mortalities?.length || row.harvestEvents?.length) ? <details className="mt-2 text-sm text-slate-700"><summary className="cursor-pointer font-bold">{lang === "tl" ? "Tingnan ang buong kasaysayan" : "View full history"}</summary><div className="mt-2 space-y-1">{row.samples?.map((item) => <p key={`s${item.id}`}>{item.sampledAt} · {lang === "tl" ? "Sample" : "Sample"}: {item.sampleSize} {lang === "tl" ? "isda" : "fish"}, {item.averageWeightG} g</p>)}{row.mortalities?.map((item) => <p key={`m${item.id}`}>{item.mortalityDate} · {lang === "tl" ? "Namatay" : "Mortality"}: {item.deadCount} {item.notes && `· ${item.notes}`}</p>)}{row.harvestEvents?.map((item) => <p key={`h${item.id}`}>{item.harvestDate} · {item.harvestType} · {item.weightKg} kg {item.fishCount !== null && `· ${item.fishCount} fish`}</p>)}</div></details> : null}<div className="mt-3 flex flex-wrap gap-2 text-sm"><span className="rounded-md bg-sky-50 px-3 py-2 font-semibold">{lang === "tl" ? ({ planned: "Nakaplano", approaching: "Papalapit", due: "Takda ngayon", overdue: "Lampas na", completed: "Natapos" })[stage] : stage.toUpperCase()}</span>{review && <span className="rounded-md bg-amber-50 px-3 py-2 font-semibold text-amber-900">{lang === "tl" ? "Suriin ang kondisyon" : "Review conditions"}</span>}{!row.actualHarvestDate && (["sample", "harvest"] as const).map(item => <button className="soft-button" key={item} onClick={() => { setSelectedId(row.id); setAction(item); setShowForm(true); window.scrollTo({ top: 0, behavior: "smooth" }); }}>{item === "sample" ? (lang === "tl" ? "Magtala ng sample" : "Record sample") : (lang === "tl" ? "Magtala ng ani" : "Record harvest")}</button>)}</div><HarvestReview batch={row} lang={lang}/></article>; })}</div>}</section>
+      {recentHarvests.length > 0 && <section className="border-t border-slate-200 pt-5"><h2 className="text-lg font-bold">{lang === "tl" ? "Mga pinakahuling ani" : "Recent harvests"}</h2><div className="mt-3 divide-y">{recentHarvests.map(item => <p key={item.id} className="py-3 text-sm">{item.harvestDate} - {item.species} / {item.fishpen || "--"} - {item.weightKg} kg - {item.harvestType === "complete" ? (lang === "tl" ? "Kumpleto" : "Complete") : (lang === "tl" ? "Bahagya" : "Partial")}</p>)}</div></section>}
     </>}
   </main>;
 }
@@ -3154,6 +3177,7 @@ function AdminUsersPage() {
 
 function AdminLogsPage() {
   const [logs, setLogs] = useState<Array<Record<string, unknown>>>([]);
+  const [planningSms, setPlanningSms] = useState<Array<Record<string, unknown>>>([]);
   const [alerts, setAlerts] = useState<Array<Record<string, unknown>>>([]);
   const [auditLogs, setAuditLogs] = useState<Array<Record<string, unknown>>>([]);
   const [logSearch, setLogSearch] = useState("");
@@ -3162,6 +3186,7 @@ function AdminLogsPage() {
   useEffect(() => {
     apiJson<{ logs: Array<Record<string, unknown>> }>("/api/admin/logs").then((result) => result.data && setLogs(result.data.logs));
     apiJson<{ alerts: Array<Record<string, unknown>> }>("/api/admin/alerts").then((result) => result.data && setAlerts(result.data.alerts));
+    apiJson<{ logs: Array<Record<string, unknown>> }>('/api/admin/planning-sms').then(result => result.data && setPlanningSms(result.data.logs));
     apiJson<{ auditLogs: Array<Record<string, unknown>> }>("/api/admin/audit-logs").then((result) => result.data && setAuditLogs(result.data.auditLogs));
   }, []);
   const filteredLogs = logs.filter((row) => {
@@ -3269,7 +3294,15 @@ function AdminLogsPage() {
       </section>
       <section className="card p-5">
         <div className="mb-4">
-          <h2 className="text-xl font-black text-slate-950">Admin Audit Logs</h2>
+          <h2 className="text-xl font-black text-slate-950">Planning SMS Attempts</h2>
+          <p className="text-sm text-slate-600">Provider acceptance is not confirmation of delivery to the phone.</p>
+          <div className="mt-3 max-h-80 space-y-2 overflow-y-auto">{planningSms.map(row => <div key={String(row.id)} className="rounded-lg border p-3 text-sm">
+            <p className="font-bold">{String(row.full_name || 'Deleted account')} · {String(row.phone || '')}</p>
+            <p>{String(row.kind)} · {row.status === 'sent' ? 'Provider accepted' : String(row.status)} · {new Date(String(row.created_at)).toLocaleString()}</p>
+            {Boolean(row.error_message) && <p className="text-red-700">{String(row.error_message)}</p>}
+          </div>)}</div>
+          {!planningSms.length && <p className="mt-3 text-sm text-slate-600">No planning SMS attempts.</p>}
+          <h2 className="mt-6 text-xl font-black text-slate-950">Admin Audit Logs</h2>
           <p className="text-sm font-semibold text-slate-500">{filteredAuditLogs.length} admin actions shown</p>
         </div>
         <div className="space-y-2">

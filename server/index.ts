@@ -8,6 +8,10 @@ import { hasDbConfig, pool } from "./db";
 import { isSmsConfigured, sendSms } from "./sms";
 import { clearAuthSession, createAuthSession, requireAdmin, verifyAuthToken, type AuthRequest } from "./auth";
 import { DecisionSupportService, type AlertResult } from "./services/DecisionSupportService";
+import { migratePlanning } from './migrations/planning';
+import { planningRouter } from './routes/planning';
+import { archiveRecommendations, planningContext } from './services/PlanningService';
+import { sendDailySms } from './services/PlanningSms';
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
@@ -53,6 +57,7 @@ app.use(cors({
   }
 }));
 app.use(express.json());
+app.use('/api', planningRouter(pool));
 
 app.get("/api/health", async (_req, res) => {
   if (!pool) {
@@ -550,9 +555,10 @@ app.post("/api/readings", async (req, res) => {
 
   try {
     const fallbackGuestId = await getGuestUserId();
-    const numericUserId = Number(reading.userId);
-    const isRegisteredUser = Number.isInteger(numericUserId) && numericUserId > 0;
-    const userId = isRegisteredUser ? numericUserId : fallbackGuestId;
+    const auth = verifyAuthToken(req);
+    const numericUserId = auth?.sub;
+    const isRegisteredUser = Boolean(auth);
+    const userId = auth ? auth.sub : fallbackGuestId;
     if (!userId) return res.status(500).json({ message: "Unable to resolve user for reading." });
 
     const status = normalizeStatus(reading.status);
@@ -590,10 +596,11 @@ app.post("/api/readings", async (req, res) => {
     } else if (shouldSendSms) {
       const [users] = await pool.execute<RowDataPacket[]>("SELECT phone, full_name FROM users WHERE id = ? LIMIT 1", [userId]);
       const recipient = users[0];
-      smsResult = await sendSms(String(recipient?.phone || ""), formatAlertSms(reading, alerts));
+      smsResult = await sendDailySms(pool, userId, String(recipient?.phone || ""), formatAlertSms(reading, alerts), 'water');
     }
 
     await logReadingAlerts(readingId, userId, alerts, smsResult, shouldSendSms);
+    if (isRegisteredUser) await archiveRecommendations(pool, userId, 'manual', readingId).catch(error => console.error('Recommendation archive:', error));
 
     res.json({ saved: true, readingId, userId, sms: smsResult });
   } catch (error) {
@@ -783,6 +790,13 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC, telemetry.values.ph]
     );
+    const context = await archiveRecommendations(pool, device.ownerUserId, 'sensor', result.insertId).catch(error => { console.error('Recommendation archive:', error); return null; });
+    const critical = context?.recommendations.filter(item => item.source === 'sensor' && item.state === 'critical') || [];
+    if (critical.length) {
+      const [owners] = await pool.query<RowDataPacket[]>('SELECT phone FROM users WHERE id = ?', [device.ownerUserId]);
+      await sendDailySms(pool, device.ownerUserId, String(owners[0]?.phone || ''),
+        `PondSense: Check water conditions. ${critical.map(item => `${item.parameter}: ${item.value}`).join(', ')}. Inspect fish and confirm measurements; contact your fisheries officer if distress continues.`, 'sensor').catch(error => console.error('Sensor SMS unavailable:', error));
+    }
 
     res.status(201).json({
       saved: true,
@@ -850,13 +864,13 @@ app.get("/api/harvests", async (req, res) => {
               reminder_sms AS reminderSms, DATE_FORMAT(stocking_date, '%Y-%m-%d') AS stockingDate, stocked_count AS stockedCount,
               DATE_FORMAT(target_harvest_date, '%Y-%m-%d') AS targetHarvestDate,
               DATE_FORMAT(actual_harvest_date, '%Y-%m-%d') AS actualHarvestDate,
-              harvested_kg AS harvestedKg, selling_price AS sellingPrice
+              harvested_kg AS harvestedKg, selling_price AS sellingPrice, notes, sensor_device_id AS sensorDeviceId
        FROM harvest_batches WHERE owner_user_id = ? ORDER BY target_harvest_date ASC, id DESC`, [auth.sub]
     );
     const ids = rows.map((row) => Number(row.id));
     const [samples] = ids.length ? await pool.query<RowDataPacket[]>(
       `SELECT s.id, s.batch_id AS batchId, DATE_FORMAT(s.sampled_at, '%Y-%m-%d') AS sampledAt,
-              s.sample_size AS sampleSize, s.average_weight_g AS averageWeightG
+              s.sample_size AS sampleSize, s.average_weight_g AS averageWeightG, s.notes
        FROM harvest_samples s INNER JOIN harvest_batches b ON b.id = s.batch_id
        WHERE b.owner_user_id = ? ORDER BY s.sampled_at DESC, s.id DESC`, [auth.sub]) : [[] as RowDataPacket[]];
     const [mortalities] = ids.length ? await pool.query<RowDataPacket[]>(
@@ -867,22 +881,21 @@ app.get("/api/harvests", async (req, res) => {
     const [events] = ids.length ? await pool.query<RowDataPacket[]>(
       `SELECT e.id, e.batch_id AS batchId, e.harvest_type AS harvestType,
               DATE_FORMAT(e.harvest_date, '%Y-%m-%d') AS harvestDate, e.fish_count AS fishCount,
-              e.weight_kg AS weightKg, e.price_per_kg AS pricePerKg
+              e.weight_kg AS weightKg, e.price_per_kg AS pricePerKg, e.notes
        FROM harvest_events e INNER JOIN harvest_batches b ON b.id = e.batch_id
        WHERE b.owner_user_id = ? ORDER BY e.harvest_date DESC, e.id DESC`, [auth.sub]) : [[] as RowDataPacket[]];
-    const [water] = await pool.execute<RowDataPacket[]>(
-      `SELECT status, recorded_at FROM water_readings WHERE user_id = ? ORDER BY id DESC LIMIT 1`, [auth.sub]);
-    const waterStatus = water[0] && Date.now() - new Date(water[0].recorded_at).getTime() < 24 * 60 * 60 * 1000
-      ? String(water[0].status).toLowerCase() : null;
+    const waterContexts = new Map<number, Awaited<ReturnType<typeof planningContext>>>();
+    for (const row of rows) waterContexts.set(Number(row.id), await planningContext(pool, auth.sub, Number(row.id)));
     res.json({ harvests: rows.map((row) => ({
       ...row,
+      waterContext: waterContexts.get(Number(row.id)),
       stockingDate: String(row.stockingDate).slice(0, 10),
       targetHarvestDate: String(row.targetHarvestDate).slice(0, 10),
       actualHarvestDate: row.actualHarvestDate ? String(row.actualHarvestDate).slice(0, 10) : null,
       samples: samples.filter((item) => Number(item.batchId) === Number(row.id)),
       mortalities: mortalities.filter((item) => Number(item.batchId) === Number(row.id)),
       harvestEvents: events.filter((item) => Number(item.batchId) === Number(row.id))
-    })), waterStatus });
+    })), waterStatus: null });
   } catch (error) {
     console.error("Harvest list error:", error);
     res.status(503).json({ message: "Unable to load harvest records." });
@@ -895,10 +908,16 @@ app.post("/api/harvests", async (req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
   const harvest = validateHarvest(req.body || {});
   if (!harvest) return res.status(400).json({ message: "Check species, dates, stocking count, and harvest values." });
+  if (harvest.actualHarvestDate) return res.status(400).json({ message: 'Create the batch first, then confirm its completion using Record Harvest.' });
+  const sensorDeviceId = Number(req.body.sensorDeviceId) || null;
+  if (sensorDeviceId) {
+    const [devices] = await pool.query<RowDataPacket[]>('SELECT id FROM sensor_devices WHERE id = ? AND owner_user_id = ? AND is_active = 1', [sensorDeviceId, auth.sub]);
+    if (!devices.length) return res.status(400).json({ message: 'Choose a device assigned to your account.' });
+  }
   const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO harvest_batches (owner_user_id, species, fishpen_name, target_weight_g, reminder_sms, stocking_date, stocked_count, target_harvest_date, actual_harvest_date, harvested_kg, selling_price)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [auth.sub, harvest.species, harvest.fishpenName || null, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice]
+    `INSERT INTO harvest_batches (owner_user_id, species, fishpen_name, target_weight_g, reminder_sms, stocking_date, stocked_count, target_harvest_date, actual_harvest_date, harvested_kg, selling_price, notes, sensor_device_id)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    [auth.sub, harvest.species, harvest.fishpenName || null, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice, String(req.body.notes || '').trim().slice(0, 1000), sensorDeviceId]
   );
   res.status(201).json({ id: result.insertId });
 });
@@ -910,13 +929,41 @@ app.put("/api/harvests/:id", async (req, res) => {
   const id = Number(req.params.id);
   const harvest = validateHarvest(req.body || {});
   if (!Number.isSafeInteger(id) || !harvest) return res.status(400).json({ message: "Check the harvest record values." });
-  const [result] = await pool.execute<ResultSetHeader>(
+  const connection = await pool.getConnection();
+  try {
+  await connection.beginTransaction();
+  const [existing] = await connection.query<RowDataPacket[]>('SELECT actual_harvest_date FROM harvest_batches WHERE id = ? AND owner_user_id = ? FOR UPDATE', [id, auth.sub]);
+  if (!existing[0]) { await connection.rollback(); return res.status(404).json({ message: 'Batch not found.' }); }
+  const [totals] = await connection.query<RowDataPacket[]>(`SELECT
+    (SELECT COALESCE(SUM(dead_count), 0) FROM harvest_mortalities WHERE batch_id = ?) +
+    (SELECT COALESCE(SUM(fish_count), 0) FROM harvest_events WHERE batch_id = ?) AS removed,
+    (SELECT MAX(event_date) FROM (
+      SELECT mortality_date AS event_date FROM harvest_mortalities WHERE batch_id = ?
+      UNION ALL SELECT harvest_date FROM harvest_events WHERE batch_id = ?
+      UNION ALL SELECT sampled_at FROM harvest_samples WHERE batch_id = ?
+    ) dates) AS last_record`, [id, id, id, id, id]);
+  if (harvest.stockedCount < Number(totals[0].removed)) { await connection.rollback(); return res.status(400).json({ message: 'Stock count cannot be less than recorded mortality and harvested fish.' }); }
+  const [dates] = await connection.query<RowDataPacket[]>(`SELECT MIN(event_date) AS first_record FROM (
+    SELECT mortality_date AS event_date FROM harvest_mortalities WHERE batch_id = ? UNION ALL SELECT harvest_date FROM harvest_events WHERE batch_id = ?
+    UNION ALL SELECT sampled_at FROM harvest_samples WHERE batch_id = ? UNION ALL SELECT observed_at FROM harvest_observations WHERE batch_id = ?
+  ) dates`, [id, id, id, id]);
+  if (dates[0].first_record && harvest.stockingDate > new Date(dates[0].first_record).toLocaleDateString('en-CA')) { await connection.rollback(); return res.status(400).json({ message: 'Stocking date cannot follow existing batch records.' }); }
+  if (Boolean(existing[0].actual_harvest_date) !== Boolean(harvest.actualHarvestDate)) { await connection.rollback(); return res.status(400).json({ message: 'Use Record Harvest to close a batch. Completed batches cannot be reopened here.' }); }
+  const sensorDeviceId = Number(req.body.sensorDeviceId) || null;
+  if (sensorDeviceId) {
+    const [devices] = await connection.query<RowDataPacket[]>('SELECT id FROM sensor_devices WHERE id = ? AND owner_user_id = ? AND is_active = 1', [sensorDeviceId, auth.sub]);
+    if (!devices.length) { await connection.rollback(); return res.status(400).json({ message: 'Choose a device assigned to your account.' }); }
+  }
+  const [result] = await connection.execute<ResultSetHeader>(
     `UPDATE harvest_batches SET species = ?, fishpen_name = ?, target_weight_g = ?, reminder_sms = ?, stocking_date = ?, stocked_count = ?, target_harvest_date = ?,
-       actual_harvest_date = ?, harvested_kg = ?, selling_price = ? WHERE id = ? AND owner_user_id = ?`,
-    [harvest.species, harvest.fishpenName || null, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice, id, auth.sub]
+       actual_harvest_date = ?, harvested_kg = ?, selling_price = ?, notes = ?, sensor_device_id = ? WHERE id = ? AND owner_user_id = ?`,
+    [harvest.species, harvest.fishpenName || null, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice, String(req.body.notes || '').trim().slice(0, 1000), sensorDeviceId, id, auth.sub]
   );
+  await connection.commit();
   if (!result.affectedRows) return res.status(404).json({ message: "Harvest record not found." });
   res.json({ saved: true });
+  } catch (error) { await connection.rollback(); console.error('Batch edit:', error); res.status(503).json({ message: 'Unable to update batch.' }); }
+  finally { connection.release(); }
 });
 
 app.delete("/api/harvests/:id", async (req, res) => {
@@ -936,6 +983,7 @@ app.post("/api/harvests/:id/samples", async (req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
   const batchId = Number(req.params.id);
   const { sampledAt, sampleSize, averageWeightG } = req.body || {};
+  if (sampledAt > new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })) return res.status(400).json({ message: 'Samples cannot be recorded in the future.' });
   if (!Number.isSafeInteger(batchId) || !validHarvestDate(sampledAt) || !validPositiveInteger(sampleSize) ||
       !Number.isFinite(Number(averageWeightG)) || Number(averageWeightG) <= 0 || Number(averageWeightG) > 100_000) {
     return res.status(400).json({ message: "Check the sample date, number sampled, and average weight." });
@@ -955,8 +1003,8 @@ app.post("/api/harvests/:id/samples", async (req, res) => {
     const remaining = Number(batch.stocked_count) - Number(totals[0].dead) - Number(totals[0].harvested);
     if (Number(sampleSize) > remaining) { await connection.rollback(); return res.status(400).json({ message: "Sample size exceeds estimated remaining stock." }); }
     const [result] = await connection.execute<ResultSetHeader>(
-      "INSERT INTO harvest_samples (batch_id, sampled_at, sample_size, average_weight_g) VALUES (?, ?, ?, ?)",
-      [batchId, sampledAt, Number(sampleSize), Number(averageWeightG)]);
+      "INSERT INTO harvest_samples (batch_id, sampled_at, sample_size, average_weight_g, notes) VALUES (?, ?, ?, ?, ?)",
+      [batchId, sampledAt, Number(sampleSize), Number(averageWeightG), String(req.body.notes || '').trim().slice(0, 1000)]);
     await connection.commit();
     res.status(201).json({ id: result.insertId });
   } catch (error) {
@@ -972,6 +1020,7 @@ app.post("/api/harvests/:id/mortalities", async (req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
   const batchId = Number(req.params.id);
   const { mortalityDate, deadCount } = req.body || {};
+  if (mortalityDate > new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })) return res.status(400).json({ message: 'Mortality cannot be recorded in the future.' });
   const notes = String(req.body?.notes || "").trim().slice(0, 500);
   if (!Number.isSafeInteger(batchId) || !validHarvestDate(mortalityDate) || !validPositiveInteger(deadCount)) {
     return res.status(400).json({ message: "Check mortality date and number of fish." });
@@ -1007,6 +1056,8 @@ app.post("/api/harvests/:id/events", async (req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
   const batchId = Number(req.params.id);
   const { harvestType, harvestDate, fishCount, weightKg, pricePerKg } = req.body || {};
+  if (harvestType === 'complete' && req.body.confirmComplete !== true) return res.status(400).json({ message: 'Confirm complete harvest before closing this batch.' });
+  if (harvestDate > new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })) return res.status(400).json({ message: 'Actual harvest cannot be in the future.' });
   const count = fishCount === "" || fishCount === null || fishCount === undefined ? null : Number(fishCount);
   const price = pricePerKg === "" || pricePerKg === null || pricePerKg === undefined ? null : Number(pricePerKg);
   if (!Number.isSafeInteger(batchId) || !["partial", "complete"].includes(harvestType) || !validHarvestDate(harvestDate) ||
@@ -1022,14 +1073,25 @@ app.post("/api/harvests/:id/events", async (req, res) => {
     const batch = rows[0];
     if (!batch || batch.actual_harvest_date) { await connection.rollback(); return res.status(404).json({ message: "Active batch not found." }); }
     if (harvestDate < String(batch.stocking_date).slice(0, 10)) { await connection.rollback(); return res.status(400).json({ message: "Date cannot precede stocking." }); }
+    if (harvestType === 'complete') {
+      const [later] = await connection.query<RowDataPacket[]>(`SELECT MAX(event_date) AS lastDate FROM (
+        SELECT mortality_date AS event_date FROM harvest_mortalities WHERE batch_id = ?
+        UNION ALL SELECT harvest_date FROM harvest_events WHERE batch_id = ?
+        UNION ALL SELECT sampled_at FROM harvest_samples WHERE batch_id = ?
+        UNION ALL SELECT observed_at FROM harvest_observations WHERE batch_id = ?
+      ) records`, [batchId, batchId, batchId, batchId]);
+      if (later[0].lastDate && harvestDate < new Date(later[0].lastDate).toLocaleDateString('en-CA')) {
+        await connection.rollback(); return res.status(400).json({ message: 'Completion cannot precede existing batch records.' });
+      }
+    }
     const [totals] = await connection.execute<RowDataPacket[]>(
       `SELECT (SELECT COALESCE(SUM(dead_count),0) FROM harvest_mortalities WHERE batch_id = ?) AS dead,
               (SELECT COALESCE(SUM(fish_count),0) FROM harvest_events WHERE batch_id = ?) AS harvested`, [batchId, batchId]);
     const remaining = Number(batch.stocked_count) - Number(totals[0].dead) - Number(totals[0].harvested);
     if (count !== null && count > remaining) { await connection.rollback(); return res.status(400).json({ message: "Harvested fish count exceeds estimated remaining stock." }); }
     const [result] = await connection.execute<ResultSetHeader>(
-      `INSERT INTO harvest_events (batch_id, harvest_type, harvest_date, fish_count, weight_kg, price_per_kg)
-       VALUES (?, ?, ?, ?, ?, ?)`, [batchId, harvestType, harvestDate, count, Number(weightKg), price]);
+      `INSERT INTO harvest_events (batch_id, harvest_type, harvest_date, fish_count, weight_kg, price_per_kg, notes)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`, [batchId, harvestType, harvestDate, count, Number(weightKg), price, String(req.body.notes || '').trim().slice(0, 1000)]);
     if (harvestType === "complete") await connection.execute(
       "UPDATE harvest_batches SET actual_harvest_date = ? WHERE id = ?", [harvestDate, batchId]);
     await connection.commit();
@@ -1092,10 +1154,10 @@ app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
       } else {
         const [users] = await pool.execute<RowDataPacket[]>("SELECT phone, full_name FROM users WHERE id = ? LIMIT 1", [userId]);
         const recipient = users[0];
-        smsResult = await sendSms(String(recipient?.phone || ""), formatAlertSms({
+        smsResult = await sendDailySms(pool, userId, String(recipient?.phone || ""), formatAlertSms({
           ...validation.values,
           status: analysis.status
-        }, criticalAlerts));
+        }, criticalAlerts), 'water');
       }
     }
 
@@ -1218,6 +1280,14 @@ app.get("/api/admin/alerts", requireAdmin, async (_req, res) => {
   res.json({ alerts: rows });
 });
 
+app.get('/api/admin/planning-sms', requireAdmin, async (_req, res) => {
+  if (!pool) return res.status(503).json({ message: 'Database is required.' });
+  const [rows] = await pool.query<RowDataPacket[]>(`SELECT s.id, s.kind, s.status, s.error_message,
+    s.created_at, u.full_name, u.phone FROM planning_sms_log s
+    LEFT JOIN users u ON u.id = s.owner_user_id ORDER BY s.id DESC LIMIT 250`);
+  res.json({ logs: rows });
+});
+
 app.get("/api/admin/audit-logs", requireAdmin, async (_req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
   const [rows] = await pool.execute<RowDataPacket[]>(
@@ -1331,21 +1401,26 @@ app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
 async function sendDueHarvestReminders() {
   if (!pool || !isSmsConfigured()) return;
   const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT b.id, b.species, b.fishpen_name, b.target_harvest_date, u.phone,
+    `SELECT b.id, b.owner_user_id, b.species, b.fishpen_name, b.target_harvest_date, u.phone,
             DATEDIFF(b.target_harvest_date, DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR)) AS days_left
      FROM harvest_batches b INNER JOIN users u ON u.id = b.owner_user_id
      WHERE b.reminder_sms = 1 AND b.actual_harvest_date IS NULL
-       AND DATEDIFF(b.target_harvest_date, DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR)) IN (7, 1, 0)`
+       AND (DATEDIFF(b.target_harvest_date, DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR)) IN (7, 1, 0)
+         OR b.target_harvest_date < DATE(UTC_TIMESTAMP() + INTERVAL 8 HOUR))
+     ORDER BY b.target_harvest_date, b.id`
   );
   for (const row of rows) {
-    const day = Number(row.days_left);
+    const day = Number(row.days_left) < 0 ? -1 : Number(row.days_left);
+    if (await hasSentWaterAlertToday(Number(row.owner_user_id))) continue;
+    const [quota] = await pool.query<RowDataPacket[]>('SELECT id FROM planning_sms_log WHERE owner_user_id = ? AND send_day = ?', [row.owner_user_id, new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })]);
+    if (quota.length) continue;
     const [claim] = await pool.execute<ResultSetHeader>(
       `INSERT IGNORE INTO harvest_reminder_log (batch_id, reminder_day, target_date, sms_status)
        VALUES (?, ?, ?, 'failed')`, [row.id, day, row.target_harvest_date]);
     if (!claim.affectedRows) continue;
-    const timing = day === 0 ? "today" : `in ${day} day${day === 1 ? "" : "s"}`;
+    const timing = day < 0 ? 'overdue' : day === 0 ? "today" : `in ${day} day${day === 1 ? "" : "s"}`;
     const message = `PondSense: Planned harvest for ${row.species}${row.fishpen_name ? ` at ${row.fishpen_name}` : ""} is ${timing}. Inspect fish health and water conditions before deciding to harvest.`;
-    const result = await sendSms(String(row.phone), message);
+    const result = await sendDailySms(pool, Number(row.owner_user_id), String(row.phone), message, 'harvest');
     if (result.ok) await pool.execute("UPDATE harvest_reminder_log SET sms_status = 'sent' WHERE batch_id = ? AND reminder_day = ? AND target_date = ?", [row.id, day, row.target_harvest_date]);
     else console.warn(`Harvest SMS failed for batch ${row.id}: ${result.message}`);
   }
@@ -1353,6 +1428,7 @@ async function sendDueHarvestReminders() {
 
 try {
   await ensureAdminStorage();
+  if (pool) await migratePlanning(pool);
   void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
 } catch (error) {
   console.warn("PondSense API started without MySQL migrations. Start XAMPP MySQL, then restart npm run dev.", error);
