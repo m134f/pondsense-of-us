@@ -1373,7 +1373,11 @@ function AnalysisPage({
       <section className="space-y-5">
         {sensorTelemetry && <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} />}
         {ownerId && <RecommendedActions lang={lang} refreshKey={`${sensorTelemetry?.id || 0}:${sessions[0]?.id || ""}`} />}
-        {sensorFresh && sensorTelemetry?.turbidityNtu != null ? (
+        {sensorFresh && sensorTelemetry?.temperatureC !== null ? (
+          <TemperatureAssessment telemetry={sensorTelemetry!} lang={lang} />
+        ) : sensorFresh && sensorTelemetry?.ph !== null ? (
+          <PhAssessment telemetry={sensorTelemetry!} lang={lang} />
+        ) : sensorFresh && sensorTelemetry?.turbidityNtu != null ? (
           <TurbidityAssessment telemetry={sensorTelemetry!} fish={fishDb} lang={lang} />
         ) : sensorFresh ? (
           <p className="rounded-lg border border-slate-200 bg-white p-4 text-sm">{lang === 'tl' ? 'Kailangan ng beripikadong sukat ng labo ng tubig. Ang available na pH at temperatura ay sinusuri sa Mga Rekomendadong Hakbang.' : 'A verified turbidity measurement is needed. Available pH and temperature readings are assessed in Recommended Actions.'}</p>
@@ -1422,7 +1426,11 @@ function AnalysisPage({
         )}
       </section>
 
-      {sensorFresh && sensorTelemetry?.turbidityNtu != null ? (
+      {sensorFresh && sensorTelemetry?.temperatureC !== null ? (
+        <TemperatureFishRanking temperature={sensorTelemetry!.temperatureC!} fish={fishDb} lang={lang} />
+      ) : sensorFresh && sensorTelemetry?.ph !== null ? (
+        <PhFishRanking ph={sensorTelemetry!.ph!} fish={fishDb} lang={lang} />
+      ) : sensorFresh && sensorTelemetry?.turbidityNtu != null ? (
         <TurbidityFishRanking value={sensorTurbidityValue(sensorTelemetry!)} fish={fishDb} lang={lang} />
       ) : showManualResults ? (
         <>
@@ -1538,6 +1546,115 @@ function turbidityMatches(value: number, fish: FishSpecies[]) {
     const distance = value < minimum ? minimum - value : value > maximum ? value - maximum : 0;
     return { fish: species, distance };
   }).sort((a, b) => a.distance - b.distance || a.fish.name.localeCompare(b.fish.name));
+}
+
+function temperatureMatches(value: number, fish: FishSpecies[]) {
+  return fish.map((species) => {
+    const [minimum, maximum] = species.ranges.temperature;
+    const distance = value < minimum ? minimum - value : value > maximum ? value - maximum : 0;
+    return { fish: species, distance };
+  }).sort((a, b) => a.distance - b.distance || a.fish.name.localeCompare(b.fish.name));
+}
+
+function phMatches(value: number, fish: FishSpecies[]) {
+  return fish.map((species) => {
+    const [minimum, maximum] = species.ranges.ph;
+    const distance = value < minimum ? minimum - value : value > maximum ? value - maximum : 0;
+    return { fish: species, distance };
+  }).sort((a, b) => a.distance - b.distance || a.fish.name.localeCompare(b.fish.name));
+}
+
+function PhAssessment({ telemetry, lang }: { telemetry: SensorTelemetry; lang: Lang }) {
+  const ph = telemetry.ph!;
+  return (
+    <section className="card border border-sky-200 p-5" aria-live="polite">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Paunang live na pagsusuri" : "Preliminary live assessment"}</h2>
+        <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-black text-sky-800">{lang === "tl" ? "pH lamang" : "pH-based"}</span>
+      </div>
+      <p className="mt-3 text-2xl font-black text-teal-800">pH {ph.toFixed(2)}</p>
+      <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">
+        {lang === "tl"
+          ? "Live ang pH at awtomatikong nag-a-update. Ginagamit ito para magpakita ng paunang tugma ng isda batay sa pH."
+          : "pH is live and updates automatically. It is used to show preliminary fish matches by pH."}
+      </p>
+      <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-900">
+        {lang === "tl"
+          ? "Paunang gabay lamang ito. Kailangan pa rin ng temperatura, DO, ammonia, at calibrated turbidity para sa buong water-quality decision."
+          : "This is preliminary guidance only. Temperature, DO, ammonia, and calibrated turbidity are still needed for a full water-quality decision."}
+      </p>
+    </section>
+  );
+}
+
+function PhFishRanking({ ph, fish, lang }: { ph: number; fish: FishSpecies[]; lang: Lang }) {
+  const matches = phMatches(ph, fish);
+  return (
+    <aside className="card h-fit p-5">
+      <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Fish size={21} className="text-teal-600" />{lang === "tl" ? "Paunang Tugma ng Isda" : "Preliminary Fish Matches"}</h2>
+      <p className="mt-2 text-xs font-semibold leading-5 text-sky-900">
+        {lang === "tl" ? `Batay lamang sa live na pH ${ph.toFixed(2)}. Hindi pa ito buong fish recommendation.` : `Based only on the live pH ${ph.toFixed(2)}. This is not a full fish recommendation.`}
+      </p>
+      <ol className="mt-4 space-y-2">
+        {matches.map(({ fish: species, distance }, index) => (
+          <li key={species.id} className={`flex items-center gap-3 rounded-lg border p-3 ${index === 0 ? "border-teal-300 bg-teal-50" : "border-slate-200"}`}>
+            <span className="w-7 shrink-0 text-sm font-black text-slate-500">#{index + 1}</span>
+            <img src={`/fish/${species.id}.jpg`} alt="" className="h-10 w-10 shrink-0 rounded-md object-cover" />
+            <div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-900">{species.name}</p><p className="text-xs text-slate-500">pH {species.ranges.ph[0]}-{species.ranges.ph[1]}</p></div>
+            <span className={`text-xs font-black ${distance === 0 ? "text-emerald-700" : "text-amber-700"}`}>{distance === 0 ? (lang === "tl" ? "Tugma" : "Matches") : (lang === "tl" ? "Labas" : "Outside")}</span>
+          </li>
+        ))}
+      </ol>
+      <p className="mt-4 text-xs font-semibold leading-5 text-slate-600">{lang === "tl" ? "Ikumpara rin ang temperatura, DO, ammonia, at calibrated turbidity bago pumili ng isda o gumawa ng mahalagang desisyon." : "Also check temperature, DO, ammonia, and calibrated turbidity before choosing fish or making an important decision."}</p>
+    </aside>
+  );
+}
+
+function TemperatureAssessment({ telemetry, lang }: { telemetry: SensorTelemetry; lang: Lang }) {
+  const temperature = telemetry.temperatureC!;
+  const estimatedTurbidity = sensorTurbidityValue(telemetry);
+  return (
+    <section className="card border border-sky-200 p-5" aria-live="polite">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Paunang live na pagsusuri" : "Preliminary live assessment"}</h2>
+        <span className="rounded-full bg-sky-100 px-3 py-1 text-xs font-black text-sky-800">{lang === "tl" ? "Temperatura lamang" : "Temperature-based"}</span>
+      </div>
+      <p className="mt-3 text-2xl font-black text-teal-800">{temperature.toFixed(1)} °C</p>
+      <p className="mt-2 text-sm font-semibold leading-6 text-slate-700">
+        {lang === "tl"
+          ? "Live ang temperatura at awtomatikong nag-a-update. Ginagamit ito para magpakita ng paunang tugma ng isda batay sa temperatura."
+          : "Temperature is live and updates automatically. It is used to show preliminary fish matches by temperature."}
+      </p>
+      <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-900">
+        {lang === "tl"
+          ? `Ang turbidity na ~${estimatedTurbidity} NTU ay tantiya pa lamang at hindi kasama sa ranking hanggang ma-calibrate. Kailangan pa rin ng pH, DO, at ammonia para sa buong water-quality decision.`
+          : `The ~${estimatedTurbidity} NTU turbidity value is still an estimate, so it is not used in the ranking until calibrated. pH, DO, and ammonia are still needed for a full water-quality decision.`}
+      </p>
+    </section>
+  );
+}
+
+function TemperatureFishRanking({ temperature, fish, lang }: { temperature: number; fish: FishSpecies[]; lang: Lang }) {
+  const matches = temperatureMatches(temperature, fish);
+  return (
+    <aside className="card h-fit p-5">
+      <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Fish size={21} className="text-teal-600" />{lang === "tl" ? "Paunang Tugma ng Isda" : "Preliminary Fish Matches"}</h2>
+      <p className="mt-2 text-xs font-semibold leading-5 text-sky-900">
+        {lang === "tl" ? `Batay lamang sa live na ${temperature.toFixed(1)} °C na temperatura. Hindi pa ito buong fish recommendation.` : `Based only on the live ${temperature.toFixed(1)} °C temperature. This is not a full fish recommendation.`}
+      </p>
+      <ol className="mt-4 space-y-2">
+        {matches.map(({ fish: species, distance }, index) => (
+          <li key={species.id} className={`flex items-center gap-3 rounded-lg border p-3 ${index === 0 ? "border-teal-300 bg-teal-50" : "border-slate-200"}`}>
+            <span className="w-7 shrink-0 text-sm font-black text-slate-500">#{index + 1}</span>
+            <img src={`/fish/${species.id}.jpg`} alt="" className="h-10 w-10 shrink-0 rounded-md object-cover" />
+            <div className="min-w-0 flex-1"><p className="truncate text-sm font-bold text-slate-900">{species.name}</p><p className="text-xs text-slate-500">{species.ranges.temperature[0]}-{species.ranges.temperature[1]} °C</p></div>
+            <span className={`text-xs font-black ${distance === 0 ? "text-emerald-700" : "text-amber-700"}`}>{distance === 0 ? (lang === "tl" ? "Tugma" : "Matches") : (lang === "tl" ? "Labas" : "Outside")}</span>
+          </li>
+        ))}
+      </ol>
+      <p className="mt-4 text-xs font-semibold leading-5 text-slate-600">{lang === "tl" ? "Ikumpara rin ang pH, DO, ammonia, at calibrated turbidity bago pumili ng isda o gumawa ng mahalagang desisyon." : "Also check pH, DO, ammonia, and calibrated turbidity before choosing fish or making an important decision."}</p>
+    </aside>
+  );
 }
 
 function TurbidityAssessment({ telemetry, fish, lang }: { telemetry: SensorTelemetry; fish: FishSpecies[]; lang: Lang }) {
