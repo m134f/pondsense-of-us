@@ -60,7 +60,24 @@ type SensorTelemetry = {
   temperatureC: number | null;
   ph: number | null;
   recordedAt: string;
+  receivedAt?: string;
 };
+
+const SENSOR_LIVE_MS = 15_000;
+const SENSOR_OFFLINE_MS = 60_000;
+
+function sensorAgeMs(telemetry: SensorTelemetry | null, now: number): number {
+  if (!telemetry) return Infinity;
+  const sampledAt = new Date(telemetry.recordedAt).getTime();
+  const receivedAt = new Date(telemetry.receivedAt || telemetry.recordedAt).getTime();
+  if (!Number.isFinite(sampledAt) || !Number.isFinite(receivedAt)) return Infinity;
+  return Math.max(0, now - Math.min(sampledAt, receivedAt));
+}
+
+function sensorConnectionState(telemetry: SensorTelemetry | null, now: number): "live" | "stale" | "offline" {
+  const age = sensorAgeMs(telemetry, now);
+  return age < SENSOR_LIVE_MS ? "live" : age < SENSOR_OFFLINE_MS ? "stale" : "offline";
+}
 type HarvestBatch = {
   notes?: string;
   sensorDeviceId?: number | null;
@@ -654,29 +671,81 @@ export default function App() {
 
   useEffect(() => {
     let active = true;
+    let latestTimer: number | undefined;
+    let trendTimer: number | undefined;
+    let latestController: AbortController | undefined;
+    let trendController: AbortController | undefined;
+    let failures = 0;
 
     if (!currentUser) {
       setSensorTelemetry(null);
       setSensorTrend([]);
-      return () => {
-        active = false;
-      };
+      return () => { active = false; };
     }
 
-    const loadSensorTelemetry = async () => {
-      const result = await apiJson<{ readings: SensorTelemetry[] }>("/api/sensors/trend");
-      if (active && result.data) {
-        setSensorTrend(result.data.readings);
-        setSensorTelemetry(result.data.readings.at(-1) || null);
+    const loadLatest = async () => {
+      if (!active) return;
+      const startedAt = Date.now();
+      latestController = new AbortController();
+      const timeout = window.setTimeout(() => latestController?.abort(), 8_000);
+      const result = await apiJson<{ telemetry: SensorTelemetry | null }>("/api/sensors/latest", { signal: latestController.signal });
+      window.clearTimeout(timeout);
+      latestController = undefined;
+      if (!active) return;
+      if (result.status === 401 || result.status === 403) return;
+
+      if (result.data) {
+        failures = 0;
+        setSensorTelemetry(result.data.telemetry);
+        if (result.data.telemetry) {
+          const latest = result.data.telemetry;
+          setSensorTrend((previous) => previous.some((reading) => reading.id === latest.id)
+            ? previous
+            : [...previous, latest].sort((a, b) => a.id - b.id).slice(-60));
+        }
+      } else {
+        failures += 1;
       }
+      const delay = failures ? Math.min(30_000, 5_000 * 2 ** (failures - 1)) : Math.max(0, 5_000 - (Date.now() - startedAt));
+      latestTimer = window.setTimeout(() => void loadLatest(), delay);
     };
 
-    void loadSensorTelemetry();
-    const interval = window.setInterval(() => void loadSensorTelemetry(), 3_000);
+    const loadTrend = async () => {
+      if (!active) return;
+      trendController = new AbortController();
+      const timeout = window.setTimeout(() => trendController?.abort(), 8_000);
+      const result = await apiJson<{ readings: SensorTelemetry[] }>("/api/sensors/trend", { signal: trendController.signal });
+      window.clearTimeout(timeout);
+      trendController = undefined;
+      if (!active) return;
+      if (result.data) {
+        setSensorTrend((previous) => {
+          const merged = new Map(result.data!.readings.map((reading) => [reading.id, reading]));
+          for (const reading of previous) merged.set(reading.id, reading);
+          return [...merged.values()].sort((a, b) => a.id - b.id).slice(-60);
+        });
+      }
+      trendTimer = window.setTimeout(() => void loadTrend(), 30_000);
+    };
+
+    const reconnect = () => {
+      if (!active || latestController) return;
+      window.clearTimeout(latestTimer);
+      failures = 0;
+      void loadLatest();
+    };
+
+    void loadLatest();
+    void loadTrend();
+    window.addEventListener("online", reconnect);
 
     return () => {
       active = false;
-      window.clearInterval(interval);
+      window.clearTimeout(latestTimer);
+      window.clearTimeout(trendTimer);
+      latestController?.abort();
+      trendController?.abort();
+      window.removeEventListener("online", reconnect);
     };
   }, [currentUser?.id, currentUser?.phone]);
 
@@ -1212,7 +1281,7 @@ function ConnectEsp32({ lang, telemetry, now }: { lang: Lang; telemetry: SensorT
     setDevices(result.data?.devices || []);
     if (!result.data?.devices.length) setMessage(lang === "tl" ? "Wala pang ESP32 na naka-assign sa account mo. Ipa-assign ito sa administrator." : "No ESP32 is assigned to your account yet. Ask your administrator to assign it.");
   };
-  const live = telemetry && now - new Date(telemetry.recordedAt).getTime() < 30_000;
+  const live = sensorConnectionState(telemetry, now) === "live";
   return <section className="card p-4 sm:p-5">
     <div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-black text-slate-950">ESP32</h2><p className="text-xs text-slate-600">{lang === "tl" ? "Mga sensor ng account mo" : "Your account's sensors"}</p></div><button className="soft-button" onClick={() => void connect()} disabled={busy}>{busy ? (lang === "tl" ? "Hinahanap..." : "Checking...") : (lang === "tl" ? "Ikonekta ang ESP32" : "Connect ESP32")}</button></div>
     {checked && <div className="mt-3 border-t border-slate-100 pt-3">
@@ -1269,8 +1338,7 @@ function AnalysisPage({
 }) {
   const [showParameterDetails, setShowParameterDetails] = useState(false);
   const [showAllActions, setShowAllActions] = useState(false);
-  const sensorAge = sensorTelemetry ? now - new Date(sensorTelemetry.recordedAt).getTime() : Infinity;
-  const sensorFresh = sensorAge >= 0 && sensorAge < 30_000;
+  const sensorFresh = sensorConnectionState(sensorTelemetry, now) === "live";
   const showManual = !sensorFresh;
   const showManualResults = hasAnalyzed && scores.length > 0 && showManual;
 
@@ -1413,8 +1481,8 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
     temperature: reading.temperatureC,
     ph: reading.ph
   }));
-  const lastSeen = now - new Date(telemetry.recordedAt).getTime();
-  const live = lastSeen >= 0 && lastSeen < 30_000;
+  const connectionState = sensorConnectionState(telemetry, now);
+  const live = connectionState === "live";
   return (
     <section className="card p-4 sm:p-5" aria-live="polite">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -1422,7 +1490,7 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
           <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Activity size={20} className="text-teal-600" /> {lang === "tl" ? "Live na Trend ng Kalidad ng Tubig" : "Live Water Quality Trends"}</h2>
           <p className="mt-1 text-xs font-semibold text-slate-500">{telemetry.deviceName} · {new Date(telemetry.recordedAt).toLocaleString("en-PH")}</p>
         </div>
-        <span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-800"}`}>{live ? "Live" : "Offline / last reading"}</span>
+        <span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : connectionState === "stale" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{connectionState === "live" ? "Live" : connectionState === "stale" ? (lang === "tl" ? "Luma" : "Stale") : "Offline"}</span>
       </div>
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">pH</p><strong className="mt-1 block text-2xl text-slate-950">{telemetry.ph === null ? "--" : telemetry.ph.toFixed(2)}</strong><p className="mt-1 text-xs text-slate-500">{telemetry.ph === null ? (lang === "tl" ? "Walang pH na natanggap mula sa device" : "No pH sent by device") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p></div>
@@ -1438,7 +1506,7 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
           {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "Tantiya ito mula sa live sensor signal; i-calibrate muna bago gamiting opisyal na NTU." : "This is a live estimate from the sensor signal; calibrate the probe before using it as an official NTU value."}</p>}
         </div>
       </div>
-      {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Lumang sukat ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This is a stale reading. Check device connectivity or contact the administrator."}</p>}
+      {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Hindi live ang sukat na ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This reading is not live. Check device connectivity or contact the administrator."}</p>}
       <div className="mt-4 h-40 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chart}>
