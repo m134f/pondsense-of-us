@@ -3,7 +3,6 @@ const APP_SHELL = [
   "/",
   "/dashboard",
   "/history",
-  "/guide",
   "/offline.html",
   "/manifest.webmanifest",
   "/logofishpond.png",

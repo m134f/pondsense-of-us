@@ -22,8 +22,9 @@ export function scoreParameter(value: number, [min, max]: [number, number]) {
 }
 
 export function analyzeWaterQuality(params: WaterParams, fishDb: FishSpecies[] = fishDatabase): FishScore[] {
-  return fishDb
-    .map((fish) => {
+  if (!(Object.keys(weights) as (keyof WaterParams)[]).every(key => Number.isFinite(params[key]))) return [];
+  return fishDb.filter(f => f.id === "tilapia" || f.id === "bangus")
+    .map(fish => {
       const breakdown = {
         ph: scoreParameter(params.ph, fish.ranges.ph),
         temperature: scoreParameter(params.temperature, fish.ranges.temperature),

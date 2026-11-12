@@ -4,7 +4,6 @@ import {
   Activity,
   AlertTriangle,
   BarChart3,
-  BookOpen,
   Check,
   Clock3,
   Database,
@@ -16,7 +15,6 @@ import {
   LogOut,
   Menu,
   CalendarDays,
-  Printer,
   Settings,
   Shield,
   User,
@@ -31,19 +29,21 @@ import {
   XAxis,
   YAxis
 } from "recharts";
-import { fishDatabase } from "./data/fish";
+import { activeSpecies, fishDatabase } from "./data/fish";
 import { analyzeWaterQuality, detectRisks, feedingAdvice } from "./lib/decisionEngine";
 import { daysUntilHarvest, estimatedRemainingStock, harvestReminderDue, harvestStage, recentMortality, csvCell } from "./lib/harvest";
 import { RecommendedActions, type WaterContext } from "./components/RecommendedActions";
 import { HarvestReview } from "./components/HarvestReview";
+import { FishpenSmsSettings, manualSmsPenKey } from "./components/FishpenSmsSettings";
+import { WaterSmsLogs } from "./components/WaterSmsLogs";
 import { simpleHash, storage, type AppUser } from "./lib/storage";
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
 
-type AppTab = "analysis" | "history" | "guide" | "harvest";
+type AppTab = "analysis" | "history" | "harvest";
 type AdminTab = "overview" | "users" | "fish" | "records" | "settings";
 type Lang = "en" | "tl";
 type AdminPath = "/admin/login" | "/admin/dashboard" | "/admin/users" | "/admin/logs" | "/admin/thresholds" | "/admin/settings";
-type UserPath = "/login" | "/register" | "/dashboard" | "/history" | "/guide" | "/profile" | "/harvest";
+type UserPath = "/login" | "/register" | "/dashboard" | "/history" | "/profile" | "/harvest";
 type SmsResult = {
   configured: boolean;
   ok: boolean;
@@ -581,7 +581,16 @@ export default function App() {
   const [lang, setLangState] = useState<Lang>(storage.language());
   const [tab, setTab] = useState<AppTab>("analysis");
   const [params, setParams] = useState<WaterParams>(defaultParams);
-  const [fishDb, setFishDb] = useState<FishSpecies[]>(normalizeFishDatabase(storage.fishOverrides() || fishDatabase));
+  const [fishDb, setFishDb] = useState<FishSpecies[]>([]);
+  useEffect(() => {
+    let active = true;
+    const refresh = () => { void apiJson<{ profiles?: FishSpecies[] }>("/api/fish-species").then(({data}) => {
+      if (active && Array.isArray(data?.profiles)) setFishDb(data.profiles);
+    }); };
+    refresh();
+    window.addEventListener("focus", refresh);
+    return () => { active = false; window.removeEventListener("focus", refresh); };
+  }, []);
   const [selectedFishId, setSelectedFishId] = useState("tilapia");
   const [sessions, setSessions] = useState<SessionRecord[]>(storage.sessions(savedUser));
   const [currentUser, setCurrentUser] = useState<AppUser | null>(savedUser);
@@ -685,7 +694,7 @@ export default function App() {
   useEffect(() => {
     if (path === "/dashboard") setTab("analysis");
     if (path === "/history") setTab("history");
-    if (path === "/guide") setTab("guide");
+    if (path === "/guide") navigate("/dashboard");
     if (path === "/harvest") setTab("harvest");
   }, [path]);
 
@@ -709,6 +718,7 @@ export default function App() {
     const analysisScores = analyzeWaterQuality(analysisParams, fishDb);
     const analysisAlerts = detectRisks(analysisParams);
     const analysisBest = analysisScores[0];
+    if (!analysisBest) { setSms(lang === "tl" ? "Hindi pa handa ang mga saklaw ng isda." : "Fish thresholds are not available yet."); return; }
     const analysisStatus = overallStatus(analysisParams);
 
     setHasAnalyzed(true);
@@ -729,6 +739,9 @@ export default function App() {
     const savedReading = await postJson<{ saved: boolean; readingId?: number; sms?: SmsResult }>("/api/readings", {
       userId: currentUser?.id,
       inputMode: options.source || "manual",
+      fishpenId: currentUser ? Number(localStorage.getItem(manualSmsPenKey(currentUser.id))) || null : null,
+      measurementsConfirmed: (options.source || "manual") === "manual",
+      sampledAt: new Date().toISOString(),
       ph: analysisParams.ph,
       temperature: analysisParams.temperature,
       dissolvedOxygen: analysisParams.dissolvedOxygen,
@@ -844,74 +857,6 @@ export default function App() {
     URL.revokeObjectURL(url);
   };
 
-  const printReport = () => {
-    const status = currentStatus;
-    const escapeHtml = (value: unknown) =>
-      String(value ?? "")
-        .replace(/&/g, "&amp;")
-        .replace(/</g, "&lt;")
-        .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
-    const actionRows = alerts
-      .flatMap((alert) => alert.actions.map((action) => ({ title: alert.title, level: alert.level, action })))
-      .slice(0, 8)
-      .map(
-        (item, index) =>
-          `<tr><td>${index + 1}</td><td>${escapeHtml(item.level)}</td><td>${escapeHtml(item.title)}</td><td>${escapeHtml(item.action)}</td></tr>`
-      )
-      .join("");
-    const html = `<!doctype html>
-      <html>
-        <head>
-          <title>PondSense Farmer Report</title>
-          <style>
-            body { font-family: Arial, sans-serif; color: #0f172a; margin: 32px; }
-            .header { border-bottom: 3px solid #0d9488; padding-bottom: 16px; margin-bottom: 20px; }
-            h1 { margin: 0; font-size: 28px; }
-            h2 { margin-top: 24px; font-size: 18px; color: #0f766e; }
-            .meta { color: #475569; margin-top: 6px; }
-            .status { display: inline-block; padding: 8px 12px; border-radius: 999px; font-weight: 700; background: ${status === "critical" ? "#fee2e2" : status === "warning" ? "#fef3c7" : "#dcfce7"}; color: ${status === "critical" ? "#b91c1c" : status === "warning" ? "#92400e" : "#047857"}; }
-            table { border-collapse: collapse; width: 100%; margin-top: 10px; font-size: 13px; }
-            th, td { border: 1px solid #cbd5e1; padding: 9px; text-align: left; vertical-align: top; }
-            th { background: #f1f5f9; }
-            .grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
-            .box { border: 1px solid #cbd5e1; border-radius: 12px; padding: 12px; }
-            @media print { button { display: none; } body { margin: 20px; } }
-          </style>
-        </head>
-        <body>
-          <div class="header">
-            <h1>PondSense of Us - Farmer Report</h1>
-            <p class="meta">Smart Fish Pond Monitoring - Laguna Lake</p>
-            <p class="meta">Generated: ${escapeHtml(new Date().toLocaleString("en-PH"))}</p>
-            <p class="meta">Farmer: ${escapeHtml(currentUser?.fullName || "Guest Mode")}</p>
-          </div>
-          <p><span class="status">${escapeHtml(status.toUpperCase())}</span></p>
-          <div class="grid">
-            <div class="box"><strong>Best Fish:</strong><br>${escapeHtml(best.fish.name)} (${escapeHtml(best.score)}%)</div>
-            <div class="box"><strong>Confidence:</strong><br>${escapeHtml(best.confidence)}</div>
-          </div>
-          <h2>Water Readings</h2>
-          <table>
-            <tr><th>Parameter</th><th>Value</th><th>Safe Range</th></tr>
-            ${parameterMeta.map((meta) => `<tr><td>${escapeHtml(meta.label.en)}</td><td>${escapeHtml(valueText(meta.key, params[meta.key]))}${escapeHtml(meta.unit)}</td><td>${escapeHtml(meta.safe)}</td></tr>`).join("")}
-          </table>
-          <h2>Recommended Actions</h2>
-          <table>
-            <tr><th>#</th><th>Severity</th><th>Issue</th><th>Action</th></tr>
-            ${actionRows || "<tr><td>1</td><td>Safe</td><td>All Parameters Safe</td><td>Continue daily monitoring.</td></tr>"}
-          </table>
-          <h2>Farmer Guide</h2>
-          <p>${escapeHtml(fishCareGuide(best.fish, lang))}</p>
-          <button onclick="window.print()">Print Report</button>
-        </body>
-      </html>`;
-    const report = window.open("", "_blank", "width=900,height=700");
-    if (!report) return window.print();
-    report.document.write(html);
-    report.document.close();
-    report.focus();
-  };
 
   if (path.startsWith("/admin")) {
     return <AdminRouter path={path as AdminPath} navigate={navigate} text={text} />;
@@ -961,11 +906,10 @@ export default function App() {
         activeTab={tab}
         onTabChange={(nextTab) => {
           setTab(nextTab);
-          navigate(nextTab === "history" ? "/history" : nextTab === "guide" ? "/guide" : nextTab === "harvest" ? "/harvest" : "/dashboard");
+          navigate(nextTab === "history" ? "/history" : nextTab === "harvest" ? "/harvest" : "/dashboard");
         }}
         onHome={() => navigate("/dashboard")}
         onProfile={() => navigate("/profile")}
-        onPrint={printReport}
         onAuth={() => navigate("/login")}
         onLogout={async () => {
           await apiJson("/api/logout", { method: "POST", body: "{}" });
@@ -984,7 +928,7 @@ export default function App() {
 
       <Tabs active={tab} onChange={(nextTab) => {
         setTab(nextTab);
-        navigate(nextTab === "history" ? "/history" : nextTab === "guide" ? "/guide" : nextTab === "harvest" ? "/harvest" : "/dashboard");
+        navigate(nextTab === "history" ? "/history" : nextTab === "harvest" ? "/harvest" : "/dashboard");
       }} text={text} />
 
       {tab === "analysis" && (
@@ -1018,9 +962,6 @@ export default function App() {
         <HistoryPage sessions={sessions} onExport={exportCsv} text={text} />
       )}
 
-      {tab === "guide" && (
-        <FarmerGuidePage lang={lang} fishDb={fishDb} text={text} />
-      )}
       {tab === "harvest" && <HarvestPage currentUser={currentUser} lang={lang} fishDb={fishDb} navigate={navigate} />}
 
       {authOpen && (
@@ -1052,7 +993,6 @@ function Header({
   onTabChange,
   onHome,
   onProfile,
-  onPrint,
   onAuth,
   onLogout,
   text
@@ -1065,7 +1005,6 @@ function Header({
   onTabChange: (tab: AppTab) => void;
   onHome: () => void;
   onProfile: () => void;
-  onPrint: () => void;
   onAuth: () => void;
   onLogout: () => void;
   text: typeof ui.en;
@@ -1074,7 +1013,6 @@ function Header({
   const mobileTabs: Array<{ id: AppTab; label: string; icon: typeof BarChart3 }> = [
     { id: "analysis", label: text.analysis, icon: BarChart3 },
     { id: "history", label: text.history, icon: History },
-    { id: "guide", label: text.guide, icon: BookOpen },
     { id: "harvest", label: text.harvest, icon: CalendarDays }
   ];
 
@@ -1131,9 +1069,6 @@ function Header({
           </span>
           <button className="inline-flex min-w-0 items-center justify-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-700 ring-1 ring-amber-100 hover:bg-amber-100" onClick={currentUser ? onProfile : onAuth} title={currentUser ? "Profile and ESP32 pairing" : "Login"}>
             <User size={16} className="shrink-0" /> <span className="truncate">{currentUser ? currentUser.fullName : text.guest}</span>
-          </button>
-          <button className="soft-button" onClick={onPrint}>
-            <Printer size={16} /> {text.print}
           </button>
           {currentUser ? (
             <button className="soft-button" onClick={onLogout}>
@@ -1215,10 +1150,7 @@ function Header({
               </button>
             </div>
 
-            <div className="mt-3 grid grid-cols-2 gap-2">
-              <button className="soft-button min-h-12 rounded-2xl bg-white" onClick={() => { onPrint(); setMenuOpen(false); }}>
-                <Printer size={16} /> {text.print}
-              </button>
+            <div className="mt-3 grid gap-2">
               {currentUser ? (
                 <button className="soft-button min-h-12 rounded-2xl bg-white" onClick={() => { onLogout(); setMenuOpen(false); }}>
                   <LogOut size={16} /> {text.logout}
@@ -1242,7 +1174,6 @@ function Tabs({ active, onChange, text }: { active: AppTab; onChange: (tab: AppT
   const tabs: Array<{ id: AppTab; label: string; icon: typeof BarChart3 }> = [
     { id: "analysis", label: text.analysis, icon: BarChart3 },
     { id: "history", label: text.history, icon: History },
-    { id: "guide", label: text.guide, icon: BookOpen },
     { id: "harvest", label: text.harvest, icon: CalendarDays }
   ];
 
@@ -1341,12 +1272,13 @@ function AnalysisPage({
   const sensorAge = sensorTelemetry ? now - new Date(sensorTelemetry.recordedAt).getTime() : Infinity;
   const sensorFresh = sensorAge >= 0 && sensorAge < 30_000;
   const showManual = !sensorFresh;
-  const showManualResults = hasAnalyzed && showManual;
+  const showManualResults = hasAnalyzed && scores.length > 0 && showManual;
 
   return (
     <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-4 px-3 pb-6 sm:gap-5 sm:px-6 sm:pb-8 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
       <aside className="space-y-5">
         <ConnectEsp32 lang={lang} telemetry={sensorTelemetry} now={now} />
+        {ownerId && <FishpenSmsSettings key={ownerId} ownerId={ownerId} lang={lang} />}
         <WaterParametersPanel
           lang={lang}
           params={params}
@@ -1373,15 +1305,7 @@ function AnalysisPage({
       <section className="space-y-5">
         {sensorTelemetry && <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} />}
         {ownerId && <RecommendedActions lang={lang} refreshKey={`${sensorTelemetry?.id || 0}:${sessions[0]?.id || ""}`} />}
-        {sensorFresh && sensorTelemetry?.temperatureC !== null ? (
-          <TemperatureAssessment telemetry={sensorTelemetry!} lang={lang} />
-        ) : sensorFresh && sensorTelemetry?.ph !== null ? (
-          <PhAssessment telemetry={sensorTelemetry!} lang={lang} />
-        ) : sensorFresh && sensorTelemetry?.turbidityNtu != null ? (
-          <TurbidityAssessment telemetry={sensorTelemetry!} fish={fishDb} lang={lang} />
-        ) : sensorFresh ? (
-          <p className="rounded-lg border border-slate-200 bg-white p-4 text-sm">{lang === 'tl' ? 'Kailangan ng beripikadong sukat ng labo ng tubig. Ang available na pH at temperatura ay sinusuri sa Mga Rekomendadong Hakbang.' : 'A verified turbidity measurement is needed. Available pH and temperature readings are assessed in Recommended Actions.'}</p>
-        ) : showManualResults ? (
+        {sensorFresh ? null : showManualResults ? (
           <>
             <p className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm font-semibold text-sky-900">{lang === "tl" ? "Manu-manong analysis ito, hindi galing sa ESP32." : "Manual analysis only. These values did not come from the ESP32."}</p>
             <AlertBanner alert={alerts[0]} lang={lang} />
@@ -1390,7 +1314,6 @@ function AnalysisPage({
             <QuickStatusCards lang={lang} params={params} />
             {sessions.length > 0 && <DashboardTrends params={params} sessions={sessions} text={text} />}
             <BestMatchCard selectedScore={selectedScore} selectedRank={selectedRank} best={best} lang={lang} text={text} />
-            <FarmerGuideCard selectedScore={selectedScore} lang={lang} text={text} />
             <CollapsiblePanel
               title={lang === "tl" ? "Detalyadong Parameter Analysis" : "Detailed Parameter Analysis"}
               description={
@@ -1426,15 +1349,19 @@ function AnalysisPage({
         )}
       </section>
 
-      {sensorFresh && sensorTelemetry?.temperatureC !== null ? (
-        <TemperatureFishRanking temperature={sensorTelemetry!.temperatureC!} fish={fishDb} lang={lang} />
-      ) : sensorFresh && sensorTelemetry?.ph !== null ? (
-        <PhFishRanking ph={sensorTelemetry!.ph!} fish={fishDb} lang={lang} />
-      ) : sensorFresh && sensorTelemetry?.turbidityNtu != null ? (
-        <TurbidityFishRanking value={sensorTurbidityValue(sensorTelemetry!)} fish={fishDb} lang={lang} />
+      {sensorFresh && sensorTelemetry ? (
+        <aside className="card h-fit space-y-3 p-5">
+          <h2 className="font-black">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
+          {activeSpecies.map(species => {
+            const profile = fishDb.find(f => f.id === species.id);
+            const readings = [["pH", sensorTelemetry.ph, profile?.ranges.ph], [lang === "tl" ? "Temperatura" : "Temperature", sensorTelemetry.temperatureC, profile?.ranges.temperature], [lang === "tl" ? "Labo" : "Turbidity", sensorTelemetry.turbidityNtu, profile?.ranges.turbidity]] as const;
+            return <section key={species.id} className="border-t py-2"><strong>{species.name}</strong>{!profile ? <p>{lang === "tl" ? "Hinihintay ang beripikadong saklaw." : "Threshold validation pending."}</p> : readings.map(([label,value,range]) => <p key={label}>{label}: {value == null || !Number.isFinite(value) || !range ? "--" : value >= range[0] && value <= range[1] ? (lang === "tl" ? "Pasok sa saklaw" : "Within range") : (lang === "tl" ? "Labas sa saklaw" : "Outside range")}</p>)}</section>;
+          })}
+        </aside>
       ) : showManualResults ? (
         <>
           <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} lang={lang} text={text} />
+          <p className="text-sm">Mamali: {lang === "tl" ? "hinihintay ang beripikadong saklaw" : "threshold validation pending"}.</p>
         </>
       ) : (
         <aside className="card h-fit p-6">
@@ -2012,38 +1939,6 @@ function ScoreGauge({ score, confidence }: { score: number; confidence: FishScor
   );
 }
 
-function FarmerGuideCard({ selectedScore, lang, text }: { selectedScore: FishScore; lang: Lang; text: typeof ui.en }) {
-  return (
-    <section className="card border-teal-100 bg-teal-50/70 p-4 sm:p-5">
-      <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-        <div>
-          <p className="text-xs font-black uppercase tracking-wide text-teal-700">
-            {lang === "tl" ? "Praktikal na gabay" : "Practical farmer guide"}
-          </p>
-          <h2 className="text-xl font-black text-slate-950">{selectedScore.fish.name}</h2>
-        </div>
-        <span className={`w-fit rounded-full px-3 py-1 text-xs font-black ring-1 ${badgeClasses(selectedScore.confidence)}`}>
-          {selectedScore.confidence} {text.confidence}
-        </span>
-      </div>
-      <div className="mt-4 grid gap-3 lg:grid-cols-2">
-        <div className="rounded-2xl bg-white/80 p-4 ring-1 ring-teal-100">
-          <h3 className="text-sm font-black text-slate-950">{lang === "tl" ? "Alagaan ang isda" : "Fish care"}</h3>
-          <p className="mt-2 text-sm font-medium leading-6 text-slate-700">{fishDescription(selectedScore.fish, lang)}</p>
-        </div>
-        <div className="rounded-2xl bg-white/80 p-4 ring-1 ring-teal-100">
-          <h3 className="text-sm font-black text-slate-950">{lang === "tl" ? "Paalala sa pagpapakain" : "Feeding note"}</h3>
-          <p className="mt-2 text-sm font-medium leading-6 text-slate-700">{fishCareGuide(selectedScore.fish, lang)}</p>
-        </div>
-      </div>
-      <div className="mt-5 grid gap-3 sm:grid-cols-3">
-        <Fact label={text.harvestTime} value={selectedScore.fish.harvestTime} />
-        <Fact label={text.marketValue} value={selectedScore.fish.marketValue} />
-        <Fact label={text.category} value={selectedScore.fish.category} />
-      </div>
-    </section>
-  );
-}
 
 function ParameterAnalysis({ lang, selectedScore }: { lang: Lang; selectedScore: FishScore }) {
   return (
@@ -2432,236 +2327,6 @@ function HistoryPage({ sessions, onExport, text }: { sessions: SessionRecord[]; 
   );
 }
 
-function FarmerGuidePage({ lang, fishDb, text }: { lang: Lang; fishDb: FishSpecies[]; text: typeof ui.en }) {
-  const guideText = {
-    en: {
-      title: "Farmer Field Guide",
-      intro: "Use this guide after every reading. It focuses on simple actions for fish cages and ponds near Laguna de Bay.",
-      dailyTitle: "Daily Pond Routine",
-      warningTitle: "When There Is a Warning",
-      feedingTitle: "Feeding Best Practices",
-      diseaseTitle: "Disease Prevention",
-      emergencyTitle: "Emergency Response",
-      harvestTitle: "Harvest and Market Tips",
-      contactsTitle: "Who to Contact",
-      fishTitle: "Fish Notes",
-      daily: [
-        "Check fish behavior first: gasping, weak swimming, staying near the surface, or sudden loss of appetite.",
-        "Record pH, temperature, dissolved oxygen, turbidity, and ammonia at the same time each day.",
-        "Clean nets, cages, and feeding areas so waste does not build up under the fish.",
-        "Keep a simple notebook or app record of feeding, weather, and water readings."
-      ],
-      warning: [
-        "Stop or reduce feeding when oxygen is low, ammonia is high, or the water is very cloudy.",
-        "Increase aeration or water circulation if available, especially early morning and late afternoon.",
-        "Remove dead fish, spoiled feed, and organic waste immediately.",
-        "Do not add chemicals or treatments without advice from BFAR, LGU, or an aquaculture technician."
-      ],
-      feeding: [
-        "Feed only what fish can finish quickly. Extra feed becomes ammonia and dirty water.",
-        "Avoid heavy feeding during very hot weather, after strong rain, or when fish look stressed.",
-        "Use smaller feeding amounts when ammonia rises or dissolved oxygen drops.",
-        "Observe fish response during feeding; weak appetite is an early warning sign."
-      ],
-      disease: [
-        "Separate sick or dead fish quickly and record what you observed.",
-        "Keep cages clean and avoid overcrowding because stress increases disease risk.",
-        "Do not mix new fish stocks without observation or quarantine when possible.",
-        "Ask for expert help if fish show wounds, red patches, abnormal swimming, or repeated deaths."
-      ],
-      emergency: [
-        "If DO is critical, maximize aeration and stop feeding immediately.",
-        "If ammonia is critical, stop feeding for 24-48 hours and remove organic waste.",
-        "If turbidity is high, avoid disturbing the lake bottom and clean the cage area.",
-        "If many fish are stressed or dying, contact BFAR/LGU and prepare recent water readings."
-      ],
-      harvest: [
-        "Plan harvest when fish reach marketable size and water readings are stable.",
-        "Avoid handling or harvest during extreme heat, low oxygen, or after heavy rainfall.",
-        "Sort fish gently to reduce stress and damage before selling.",
-        "Track market demand so harvest timing matches better price opportunities."
-      ],
-      contacts: [
-        "Barangay or City Agriculture Office",
-        "BFAR regional or local fisheries office",
-        "LGU disaster or environmental office during fish kill or water pollution events",
-        "Aquaculture adviser, technician, or instructor for treatment decisions"
-      ],
-      rangeNote: "Use these as quick reference ranges. Species-specific ranges may be adjusted by the admin only with adviser or BFAR guidance."
-    },
-    tl: {
-      title: "Gabay sa Bukid-Isdaan",
-      intro: "Gamitin ang gabay na ito pagkatapos ng bawat reading. Nakatuon ito sa madaling gawin para sa palaisdaan at fish cage malapit sa Laguna de Bay.",
-      dailyTitle: "Araw-araw na Routine",
-      warningTitle: "Kapag May Babala",
-      feedingTitle: "Tamang Pagpapakain",
-      diseaseTitle: "Pag-iwas sa Sakit",
-      emergencyTitle: "Emergency Response",
-      harvestTitle: "Ani at Bentahan",
-      contactsTitle: "Sino ang Kokontakin",
-      fishTitle: "Tala sa Isda",
-      daily: [
-        "Unahin tingnan ang kilos ng isda: paghahabol ng hangin, mahinang langoy, pag-angat sa ibabaw, o biglang ayaw kumain.",
-        "I-record ang pH, temperatura, dissolved oxygen, turbidity, at ammonia sa parehong oras araw-araw.",
-        "Linisin ang lambat, kulungan, at feeding area para hindi maipon ang dumi.",
-        "Magtabi ng simpleng record ng pakain, panahon, at water readings."
-      ],
-      warning: [
-        "Itigil o bawasan ang pakain kapag mababa ang oxygen, mataas ang ammonia, o sobrang labo ng tubig.",
-        "Dagdagan ang aeration o sirkulasyon kung mayroon, lalo na sa umaga at hapon.",
-        "Alisin agad ang patay na isda, sirang pakain, at organic waste.",
-        "Huwag maglagay ng kemikal o gamot nang walang payo mula sa BFAR, LGU, o aquaculture technician."
-      ],
-      feeding: [
-        "Pakainin lang ang kaya nilang ubusin agad. Ang sobrang pakain ay nagiging ammonia at dumi sa tubig.",
-        "Iwasan ang malakas na pakain sa sobrang init, pagkatapos ng malakas na ulan, o kapag stressed ang isda.",
-        "Bawasan ang pakain kapag tumataas ang ammonia o bumababa ang dissolved oxygen.",
-        "Obserbahan ang gana sa pagkain; ang mahinang gana ay maagang senyales ng problema."
-      ],
-      disease: [
-        "Ihiwalay o alisin agad ang may sakit o patay na isda at isulat ang nakita.",
-        "Panatilihing malinis ang kulungan at iwasan ang sobrang siksikan.",
-        "Huwag basta maghalo ng bagong isda nang walang obserbasyon o quarantine kung kaya.",
-        "Humingi ng tulong kapag may sugat, pulang marka, kakaibang langoy, o paulit-ulit na pagkamatay."
-      ],
-      emergency: [
-        "Kung critical ang DO, lakasan ang aeration at itigil agad ang pakain.",
-        "Kung critical ang ammonia, itigil ang pakain ng 24-48 oras at alisin ang dumi.",
-        "Kung mataas ang turbidity, iwasang galawin ang ilalim ng lawa at linisin ang cage area.",
-        "Kung maraming isda ang stressed o namamatay, kontakin ang BFAR/LGU at ihanda ang recent water readings."
-      ],
-      harvest: [
-        "Mag-ani kapag marketable na ang laki ng isda at stable ang water readings.",
-        "Iwasan ang paghawak o pag-ani sa sobrang init, mababang oxygen, o pagkatapos ng malakas na ulan.",
-        "Dahan-dahang i-sort ang isda para iwas stress at damage bago ibenta.",
-        "Bantayan ang demand sa merkado para mas maganda ang timing ng benta."
-      ],
-      contacts: [
-        "Barangay o City Agriculture Office",
-        "BFAR regional o local fisheries office",
-        "LGU disaster o environmental office kapag may fish kill o polusyon",
-        "Aquaculture adviser, technician, o instructor para sa treatment decisions"
-      ],
-      rangeNote: "Gamitin ito bilang quick reference. Ang species-specific ranges ay dapat baguhin lang ng admin kapag may payo ng adviser o BFAR."
-    }
-  }[lang];
-
-  const guideCards = [
-    { title: guideText.dailyTitle, items: guideText.daily, tone: "border-teal-200 bg-teal-50/70 text-teal-900", icon: <Clock3 size={20} /> },
-    { title: guideText.warningTitle, items: guideText.warning, tone: "border-amber-200 bg-amber-50/80 text-amber-900", icon: <AlertTriangle size={20} /> },
-    { title: guideText.feedingTitle, items: guideText.feeding, tone: "border-emerald-200 bg-emerald-50/70 text-emerald-900", icon: <Fish size={20} /> },
-    { title: guideText.diseaseTitle, items: guideText.disease, tone: "border-sky-200 bg-sky-50/70 text-sky-900", icon: <Shield size={20} /> },
-    { title: guideText.emergencyTitle, items: guideText.emergency, tone: "border-red-200 bg-red-50/80 text-red-900", icon: <AlertTriangle size={20} /> },
-    { title: guideText.harvestTitle, items: guideText.harvest, tone: "border-slate-200 bg-white text-slate-800", icon: <BarChart3 size={20} /> }
-  ];
-
-  return (
-    <main className="mx-auto max-w-[1500px] space-y-5 px-4 pb-8 sm:px-6">
-      <section className="card overflow-hidden">
-        <div className="grid gap-6 bg-gradient-to-br from-teal-700 via-teal-600 to-emerald-600 p-6 text-white lg:grid-cols-[1.6fr_1fr]">
-          <div>
-            <div className="flex items-center gap-3">
-              <span className="grid h-12 w-12 place-items-center rounded-2xl bg-white/15 ring-1 ring-white/25">
-                <BookOpen size={24} />
-              </span>
-              <div>
-                <p className="text-xs font-black uppercase tracking-[0.18em] text-teal-50">{text.guide}</p>
-                <h2 className="text-3xl font-black">{guideText.title}</h2>
-              </div>
-            </div>
-            <p className="mt-4 max-w-3xl text-base font-semibold leading-7 text-teal-50">{guideText.intro}</p>
-          </div>
-          <div className="rounded-2xl border border-white/20 bg-white/10 p-4">
-            <h3 className="text-sm font-black uppercase tracking-[0.12em] text-teal-50">{guideText.contactsTitle}</h3>
-            <ul className="mt-3 space-y-2 text-sm font-semibold leading-6 text-white">
-              {guideText.contacts.map((item) => (
-                <li key={item} className="flex gap-2">
-                  <Check className="mt-1 shrink-0" size={15} />
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </section>
-
-      <section className="grid gap-5 lg:grid-cols-3">
-        {guideCards.map((card) => (
-          <article key={card.title} className={`rounded-2xl border p-5 shadow-sm ${card.tone}`}>
-            <div className="flex items-center gap-3">
-              <span className="grid h-10 w-10 place-items-center rounded-xl bg-white/70 ring-1 ring-current/10">{card.icon}</span>
-              <h3 className="text-lg font-black">{card.title}</h3>
-            </div>
-            <ol className="mt-4 space-y-3">
-              {card.items.map((item, index) => (
-                <li key={item} className="grid grid-cols-[2rem_1fr] gap-3 text-sm font-semibold leading-6">
-                  <span className="grid h-8 w-8 place-items-center rounded-full bg-white text-xs font-black shadow-sm ring-1 ring-current/10">{index + 1}</span>
-                  <span>{item}</span>
-                </li>
-              ))}
-            </ol>
-          </article>
-        ))}
-      </section>
-
-      <section className="grid gap-5 lg:grid-cols-[1fr_1.5fr]">
-        <section className="card overflow-hidden p-6">
-          <div className="flex items-center gap-3">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-teal-50 text-teal-700 ring-1 ring-teal-100">
-              <Droplets size={20} />
-            </span>
-            <div>
-              <h2 className="text-xl font-black text-slate-950">{text.optimalRanges}</h2>
-              <p className="text-sm font-semibold text-slate-500">{guideText.rangeNote}</p>
-            </div>
-          </div>
-        <div className="mt-4 overflow-x-auto">
-          <table className="min-w-full text-left text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500">
-                <th className="px-3 py-3">Parameter</th>
-                <th className="px-3 py-3">Safe Range</th>
-              </tr>
-            </thead>
-            <tbody>
-              {parameterMeta.map((meta) => (
-                <tr key={meta.key} className="border-b border-slate-100">
-                  <td className="px-3 py-3 font-bold text-slate-800">{meta.label[lang]}</td>
-                  <td className="px-3 py-3 font-black text-teal-700">{meta.safe}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        </section>
-
-        <section className="card p-6">
-          <div className="flex items-center gap-3">
-            <span className="grid h-10 w-10 place-items-center rounded-xl bg-emerald-50 text-emerald-700 ring-1 ring-emerald-100">
-              <Fish size={20} />
-            </span>
-            <div>
-              <h2 className="text-xl font-black text-slate-950">{guideText.fishTitle}</h2>
-              <p className="text-sm font-semibold text-slate-500">Quick notes for the 8 supported species in PondSense.</p>
-            </div>
-          </div>
-          <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {fishDb.map((fish) => (
-          <article key={fish.id} className="card p-5">
-            <div className="h-28 overflow-hidden rounded-2xl bg-slate-100 ring-1 ring-slate-200">
-              <img src={fishImageSrc(fish.id)} alt={fish.name} className="h-full w-full object-cover" />
-            </div>
-            <h3 className="mt-3 text-lg font-black text-slate-950">{fish.name}</h3>
-            <p className="text-xs italic text-slate-500">{fish.scientificName}</p>
-            <p className="mt-3 text-sm leading-6 text-slate-700">{fishDescription(fish, lang)}</p>
-          </article>
-        ))}
-          </div>
-        </section>
-      </section>
-    </main>
-  );
-}
 
 function AuthPage({
   initialMode,
@@ -2893,7 +2558,7 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
       {action === "batch" && !showForm && <button className="primary-button" onClick={() => { setEditingId(null); setForm(emptyForm); setShowForm(true); }}>{lang === "tl" ? "Magdagdag ng Fish Batch" : "Add Fish Batch"}</button>}
       {action === "batch" ? showForm && <section className="card p-5"><h2 className="text-lg font-black text-slate-950">{editingId ? (lang === "tl" ? "I-edit ang tala" : "Edit batch") : (lang === "tl" ? "Magdagdag ng alaga" : "Add fish batch")}</h2>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <label className="text-sm font-bold text-slate-700">{lang === "tl" ? "Uri ng isda" : "Fish species"}<select className="mt-1 w-full rounded-lg border border-slate-300 p-3" value={form.species} onChange={(event) => setForm({ ...form, species: event.target.value })}>{fishDb.map((fish) => <option key={fish.id} value={fish.name}>{fish.name}</option>)}</select></label>
+          <label className="text-sm font-bold text-slate-700">{lang === "tl" ? "Uri ng isda" : "Fish species"}<select className="mt-1 w-full rounded-lg border border-slate-300 p-3" value={form.species} onChange={(event) => setForm({ ...form, species: event.target.value })}>{Array.from(new Set([...activeSpecies.map(f => f.name), form.species].filter(Boolean))).map(name => <option key={name} value={name}>{name}</option>)}</select></label>
           <label className="text-sm font-bold text-slate-700">{lang === "tl" ? "Pangalan/ID ng fishpen" : "Fishpen name or ID"}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" maxLength={100} value={form.fishpenName} onChange={(event) => setForm({ ...form, fishpenName: event.target.value })} /></label>
           <label className="text-sm font-bold text-slate-700">{lang === "tl" ? "Target na timbang bawat isda (g), opsyonal" : "Target market weight per fish (g), optional"}<input className="mt-1 w-full rounded-lg border border-slate-300 p-3" type="number" min="1" step="0.1" value={form.targetWeightG} onChange={(event) => setForm({ ...form, targetWeightG: event.target.value })} /></label>
           {([
@@ -3338,6 +3003,7 @@ function AdminLogsPage() {
   };
   return (
     <div className="space-y-5">
+      <WaterSmsLogs />
       <section className="card p-5">
         <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
           <div>

@@ -4,6 +4,7 @@ type SendSmsResult = {
   message: string;
   messageId?: string;
   provider?: string;
+  uncertain?: boolean;
 };
 
 const iprogEndpoint = "https://sms.iprogtech.com/api/v1/sms_messages";
@@ -20,7 +21,7 @@ export function normalizeSmsPhone(phone: string) {
   return clean;
 }
 
-export async function sendSms(phone: string, message: string): Promise<SendSmsResult> {
+export async function sendSms(phone: string, message: string, options: { singleAttempt?: boolean } = {}): Promise<SendSmsResult> {
   const apiToken = process.env.IPROG_SMS_API_TOKEN;
   if (!apiToken) {
     return {
@@ -52,7 +53,7 @@ export async function sendSms(phone: string, message: string): Promise<SendSmsRe
       message: "SMS request failed."
     };
 
-    for (const provider of providers) {
+    for (const provider of options.singleAttempt ? providers.slice(0, 1) : providers) {
       const body = new URLSearchParams({
         api_token: apiToken,
         phone_number: phoneNumber,
@@ -62,7 +63,8 @@ export async function sendSms(phone: string, message: string): Promise<SendSmsRe
 
       const response = await fetch(`${iprogEndpoint}?${body.toString()}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" }
+        headers: { "Content-Type": "application/json" },
+        signal: AbortSignal.timeout(10000)
       });
       const payload = (await response.json().catch(() => ({}))) as {
         status?: number | string;
@@ -75,11 +77,12 @@ export async function sendSms(phone: string, message: string): Promise<SendSmsRe
         configured: true,
         ok,
         provider,
-        message: payload.message || (ok ? "SMS queued successfully." : "SMS request failed."),
+        uncertain: !ok && (response.status >= 500 || (response.ok && payload.status === undefined)),
+        message: String(payload.message || (ok ? "SMS accepted by provider; handset delivery not confirmed." : "SMS request failed.")).replaceAll(apiToken, '[redacted]'),
         messageId: payload.message_id
       };
 
-      if (ok) return lastResult;
+      if (ok || lastResult.uncertain) return lastResult;
     }
 
     if (/Smart\/TNT|shared sender/i.test(lastResult.message)) {
@@ -91,11 +94,12 @@ export async function sendSms(phone: string, message: string): Promise<SendSmsRe
     }
 
     return lastResult;
-  } catch (error) {
+  } catch {
     return {
       configured: true,
       ok: false,
-      message: error instanceof Error ? error.message : "Unable to reach iProgSMS."
+      uncertain: true,
+      message: "Unable to confirm iProgSMS response. Delivery unknown."
     };
   }
 }

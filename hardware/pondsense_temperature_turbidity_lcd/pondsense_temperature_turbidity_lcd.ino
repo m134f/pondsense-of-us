@@ -73,6 +73,14 @@ void sendTelemetry(int rawValue, float voltage, float temperatureC) {
   http.addHeader("X-API-Key", SENSOR_API_KEY);
 
   JsonDocument payload;
+  time_t sampledAt = time(nullptr);
+  struct tm utcTime;
+  gmtime_r(&sampledAt, &utcTime);
+  char timestamp[25];
+  strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", &utcTime);
+  payload["sampledAt"] = timestamp;
+  JsonArray verified = payload["verifiedParameters"].to<JsonArray>();
+  if (!isnan(temperatureC)) verified.add("temperature");
   payload["rawValue"] = rawValue;
   payload["voltage"] = voltage;
   // Keep NTU absent until the probe has been calibrated against reference water samples.

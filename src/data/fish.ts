@@ -13,30 +13,8 @@ export const fishDatabase: FishSpecies[] = [
     ranges: { ph: [6.5, 8.5], temperature: [25, 32], dissolvedOxygen: [5, 8], turbidity: [25, 100], ammonia: [0, 0.05] }
   },
   {
-    id: "catfish",
-    name: "Catfish",
-    scientificName: "Clarias batrachus",
-    category: "Freshwater",
-    marketValue: "High",
-    harvestTime: "4-6 months",
-    description: "Resilient fish that tolerates lower oxygen better than many species.",
-    guide: "Keep ammonia controlled and avoid overfeeding. Maintain pond cleanliness.",
-    ranges: { ph: [6, 8.5], temperature: [24, 34], dissolvedOxygen: [3, 7], turbidity: [20, 150], ammonia: [0, 0.08] }
-  },
-  {
-    id: "common-carp",
-    name: "Common Carp",
-    scientificName: "Cyprinus carpio",
-    category: "Freshwater",
-    marketValue: "Medium",
-    harvestTime: "8-12 months",
-    description: "Adaptable freshwater species suitable for semi-intensive ponds.",
-    guide: "Works well in polyculture. Watch turbidity and organic waste buildup.",
-    ranges: { ph: [6.5, 9], temperature: [20, 30], dissolvedOxygen: [4, 8], turbidity: [25, 120], ammonia: [0, 0.06] }
-  },
-  {
     id: "bangus",
-    name: "Milkfish (Bangus)",
+    name: "Bangus (Milkfish)",
     scientificName: "Chanos chanos",
     category: "Brackish/Freshwater",
     marketValue: "High",
@@ -45,48 +23,15 @@ export const fishDatabase: FishSpecies[] = [
     guide: "Maintain stable water quality and avoid feeding during poor oxygen conditions.",
     ranges: { ph: [7, 8.5], temperature: [26, 32], dissolvedOxygen: [5, 8], turbidity: [20, 100], ammonia: [0, 0.04] }
   },
-  {
-    id: "grass-carp",
-    name: "Grass Carp",
-    scientificName: "Ctenopharyngodon idella",
-    category: "Freshwater",
-    marketValue: "High",
-    harvestTime: "8-10 months",
-    description: "Herbivorous freshwater fish useful in pond vegetation control.",
-    guide: "Provide plant-based feed and keep dissolved oxygen stable.",
-    ranges: { ph: [6.5, 8.5], temperature: [22, 30], dissolvedOxygen: [5, 8], turbidity: [20, 100], ammonia: [0, 0.05] }
-  },
-  {
-    id: "mamali",
-    name: "Mamali",
-    scientificName: "Hypophthalmichthys nobilis",
-    category: "Freshwater",
-    marketValue: "Medium",
-    harvestTime: "8-12 months",
-    description: "Bighead carp that grows well in warm freshwater and feeds on natural plankton.",
-    guide: "Maintain good oxygen and avoid heavy organic waste. Best for ponds with stable green water.",
-    ranges: { ph: [6.5, 8.5], temperature: [22, 30], dissolvedOxygen: [4, 8], turbidity: [20, 120], ammonia: [0, 0.05] }
-  },
-  {
-    id: "snakehead",
-    name: "Snakehead",
-    scientificName: "Channa striata",
-    category: "Freshwater",
-    marketValue: "Medium",
-    harvestTime: "7-10 months",
-    description: "Air-breathing freshwater fish that can tolerate difficult conditions.",
-    guide: "Still manage ammonia and avoid heavy organic waste accumulation.",
-    ranges: { ph: [6, 8], temperature: [24, 32], dissolvedOxygen: [3, 8], turbidity: [20, 130], ammonia: [0, 0.08] }
-  },
-  {
-    id: "red-tilapia",
-    name: "Red Tilapia",
-    scientificName: "Oreochromis sp. hybrid",
-    category: "Freshwater",
-    marketValue: "High",
-    harvestTime: "6-8 months",
-    description: "Marketable tilapia hybrid with similar needs to Nile tilapia.",
-    guide: "Maintain warm water and consistent feeding, but pause feeding when ammonia rises.",
-    ranges: { ph: [6.5, 8.5], temperature: [25, 32], dissolvedOxygen: [5, 8], turbidity: [25, 100], ammonia: [0, 0.05] }
-  }
 ];
+
+export const activeSpecies = [
+  { id: "tilapia", name: "Tilapia" },
+  { id: "mamali", name: "Mamali" },
+  { id: "bangus", name: "Bangus (Milkfish)" }
+] as const;
+
+export function speciesId(name: string) {
+  if (["Milkfish (Bangus)", "Bangus", "Milkfish"].includes(name)) return "bangus";
+  return activeSpecies.find(s => s.name === name)?.id;
+}

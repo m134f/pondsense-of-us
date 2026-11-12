@@ -1,3 +1,4 @@
+import { loadFishCatalog } from "./services/FishCatalog";
 import "dotenv/config";
 import crypto from "node:crypto";
 import express from "express";
@@ -12,6 +13,10 @@ import { migratePlanning } from './migrations/planning';
 import { planningRouter } from './routes/planning';
 import { archiveRecommendations, planningContext } from './services/PlanningService';
 import { sendDailySms } from './services/PlanningSms';
+import { migrateFishpenSms } from './migrations/fishpenSms';
+import { fishpenSmsRouter } from './routes/fishpenSms';
+import { drainWaterSms, queueWaterSms, sensorSmsMeasurements } from './services/FishpenSms';
+import { parameters, type Measurements } from '../src/lib/recommendations';
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
@@ -58,6 +63,16 @@ app.use(cors({
 }));
 app.use(express.json());
 app.use('/api', planningRouter(pool));
+app.use('/api', fishpenSmsRouter(pool));
+
+let waterSmsBusy = false;
+async function flushWaterSms() {
+  if (!pool || waterSmsBusy) return;
+  waterSmsBusy = true;
+  try { await drainWaterSms(pool); }
+  catch { console.error('Water SMS queue temporarily unavailable.'); }
+  finally { waterSmsBusy = false; }
+}
 
 app.get("/api/health", async (_req, res) => {
   if (!pool) {
@@ -561,7 +576,8 @@ app.post("/api/readings", async (req, res) => {
     const userId = auth ? auth.sub : fallbackGuestId;
     if (!userId) return res.status(500).json({ message: "Unable to resolve user for reading." });
 
-    const status = normalizeStatus(reading.status);
+    const analysis = decisionSupport.analyze(validation.values, (await loadFishCatalog(pool)).profiles);
+    const status = analysis.status;
     const [result] = await pool.execute<ResultSetHeader>(
       `INSERT INTO water_readings
         (user_id, input_mode, ph, temperature, turbidity, ammonia, dissolved_oxygen,
@@ -575,28 +591,27 @@ app.post("/api/readings", async (req, res) => {
         validation.values.turbidity,
         validation.values.ammonia,
         validation.values.dissolvedOxygen,
-        reading.bestFish,
-        reading.score,
-        reading.confidence,
+        analysis.bestFish,
+        analysis.bestScore,
+        analysis.confidence,
         status
       ]
     );
 
     const readingId = result.insertId;
-    const alerts = Array.isArray(reading.alerts) ? (reading.alerts as AlertPayload[]) : [];
+    const alerts = analysis.alerts;
     let smsResult = { configured: isSmsConfigured(), ok: false, message: "SMS alerts require a registered account." };
-    const shouldSendSms = isRegisteredUser && alerts.some((alert) => alert.level === "warning" || alert.level === "critical");
-    const alreadySentToday = shouldSendSms ? await hasSentWaterAlertToday(userId) : false;
-    if (shouldSendSms && alreadySentToday) {
-      smsResult = {
-        configured: isSmsConfigured(),
-        ok: false,
-        message: "Daily SMS limit reached. One water warning text was already sent today."
-      };
-    } else if (shouldSendSms) {
-      const [users] = await pool.execute<RowDataPacket[]>("SELECT phone, full_name FROM users WHERE id = ? LIMIT 1", [userId]);
-      const recipient = users[0];
-      smsResult = await sendDailySms(pool, userId, String(recipient?.phone || ""), formatAlertSms(reading, alerts), 'water');
+    const shouldSendSms = isRegisteredUser && reading.measurementsConfirmed === true && Number.isSafeInteger(reading.fishpenId);
+    if (shouldSendSms) {
+      const measurements: Measurements = Object.fromEntries(parameters.map(parameter => [parameter, {
+        value: validation.values![parameter], source: 'manual', recordedAt: typeof reading.sampledAt === 'string' ? reading.sampledAt : null
+      }]));
+      await queueWaterSms(pool, { owner: userId, fishpenId: reading.fishpenId, sourceId: readingId, sourceKind: 'manual', measurements })
+        .catch(() => console.error('Manual water alert could not be queued. Reading was saved.'));
+      void flushWaterSms();
+      smsResult.message = 'Water reading saved. Eligible alerts are processed using your fishpen SMS settings; delivery is not yet confirmed.';
+    } else if (isRegisteredUser) {
+      smsResult.message = 'Water reading saved. Select a fishpen in SMS Alert Settings and confirm actual measurements to enable water alerts.';
     }
 
     await logReadingAlerts(readingId, userId, alerts, smsResult, shouldSendSms);
@@ -790,13 +805,11 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
        VALUES (?, ?, ?, ?, ?, ?, ?)`,
       [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC, telemetry.values.ph]
     );
-    const context = await archiveRecommendations(pool, device.ownerUserId, 'sensor', result.insertId).catch(error => { console.error('Recommendation archive:', error); return null; });
-    const critical = context?.recommendations.filter(item => item.source === 'sensor' && item.state === 'critical') || [];
-    if (critical.length) {
-      const [owners] = await pool.query<RowDataPacket[]>('SELECT phone FROM users WHERE id = ?', [device.ownerUserId]);
-      await sendDailySms(pool, device.ownerUserId, String(owners[0]?.phone || ''),
-        `PondSense: Check water conditions. ${critical.map(item => `${item.parameter}: ${item.value}`).join(', ')}. Inspect fish and confirm measurements; contact your fisheries officer if distress continues.`, 'sensor').catch(error => console.error('Sensor SMS unavailable:', error));
-    }
+    await archiveRecommendations(pool, device.ownerUserId, 'sensor', result.insertId).catch(error => { console.error('Recommendation archive:', error); });
+    await queueWaterSms(pool, { owner: device.ownerUserId, deviceId: device.id, sourceId: result.insertId, sourceKind: 'telemetry',
+      measurements: sensorSmsMeasurements({ temperature: telemetry.values.temperatureC, ph: telemetry.values.ph, turbidity: telemetry.values.ntu }, req.body)
+    }).catch(() => console.error('Water alert could not be queued. Reading was saved.'));
+    void flushWaterSms();
 
     res.status(201).json({
       saved: true,
@@ -1119,7 +1132,7 @@ app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
     if (!device.ownerUserId) return res.status(409).json({ message: "Device has no assigned farmer. Contact the administrator." });
     const userId = device.ownerUserId;
 
-    const analysis = decisionSupport.analyze(validation.values);
+    const analysis = decisionSupport.analyze(validation.values, (await loadFishCatalog(pool)).profiles);
 
     const [result] = await pool.execute<ResultSetHeader>(
       `INSERT INTO water_readings
@@ -1140,26 +1153,12 @@ app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
       ]
     );
 
-    const criticalAlerts = analysis.alerts.filter((alert) => alert.level === "critical");
-    let smsResult = { configured: isSmsConfigured(), ok: false, message: "No critical sensor alert was sent." };
-    const shouldSendSms = criticalAlerts.length > 0;
-    if (shouldSendSms) {
-      const alreadySentToday = await hasSentWaterAlertToday(userId);
-      if (alreadySentToday) {
-        smsResult = {
-          configured: isSmsConfigured(),
-          ok: false,
-          message: "Daily SMS limit reached. One water warning text was already sent today."
-        };
-      } else {
-        const [users] = await pool.execute<RowDataPacket[]>("SELECT phone, full_name FROM users WHERE id = ? LIMIT 1", [userId]);
-        const recipient = users[0];
-        smsResult = await sendDailySms(pool, userId, String(recipient?.phone || ""), formatAlertSms({
-          ...validation.values,
-          status: analysis.status
-        }, criticalAlerts), 'water');
-      }
-    }
+    const smsResult = { configured: isSmsConfigured(), ok: false, message: 'Reading saved. Eligible fishpen SMS alerts are processed separately; delivery is not confirmed.' };
+    const shouldSendSms = analysis.alerts.some(alert => alert.level === 'warning' || alert.level === 'critical');
+    await queueWaterSms(pool, { owner: userId, deviceId: device.id, sourceId: result.insertId, sourceKind: 'sensor-full',
+      measurements: sensorSmsMeasurements(validation.values, reading)
+    }).catch(() => console.error('Water alert could not be queued. Reading was saved.'));
+    void flushWaterSms();
 
     await logReadingAlerts(result.insertId, userId, analysis.alerts, smsResult, shouldSendSms);
 
@@ -1302,8 +1301,7 @@ app.get("/api/admin/audit-logs", requireAdmin, async (_req, res) => {
 
 app.get("/api/admin/thresholds", requireAdmin, async (_req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
-  const [rows] = await pool.execute<RowDataPacket[]>("SELECT * FROM fish_species ORDER BY id ASC");
-  res.json({ fish: rows });
+  res.json(await loadFishCatalog(pool));
 });
 
 app.patch("/api/admin/thresholds/:id", requireAdmin, async (req: AuthRequest, res) => {
@@ -1370,8 +1368,7 @@ app.delete("/api/admin/factory-reset", requireAdmin, async (req: AuthRequest, re
 
 app.get("/api/fish-species", async (_req, res) => {
   if (!pool) return res.json({ demo: true, fish: [] });
-  const [rows] = await pool.execute("SELECT * FROM fish_species ORDER BY id ASC");
-  res.json({ fish: rows });
+  res.json(await loadFishCatalog(pool));
 });
 
 app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
@@ -1429,6 +1426,7 @@ async function sendDueHarvestReminders() {
 try {
   await ensureAdminStorage();
   if (pool) await migratePlanning(pool);
+  if (pool) await migrateFishpenSms(pool);
   void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
 } catch (error) {
   console.warn("PondSense API started without MySQL migrations. Start XAMPP MySQL, then restart npm run dev.", error);
@@ -1438,3 +1436,4 @@ app.listen(port, () => {
   console.log(`PondSense API running on http://localhost:${port}`);
 });
 setInterval(() => void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error)), 60 * 60 * 1000);
+setInterval(() => void flushWaterSms(), 5000).unref();

@@ -35,9 +35,9 @@
       "url": "/history"
     },
     {
-      "name": "Farmer Guide",
-      "short_name": "Guide",
-      "url": "/guide"
+      "name": "Harvests",
+      "short_name": "Harvests",
+      "url": "/harvest"
     }
   ]
 }

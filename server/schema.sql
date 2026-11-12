@@ -172,8 +172,6 @@ CREATE TABLE IF NOT EXISTS harvest_reminder_log (
   FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE
 );
 
-DELETE FROM fish_species
-WHERE name = 'Rainbow Trout' OR scientific_name = 'Oncorhynchus mykiss';
 
 INSERT INTO fish_species
   (name, scientific_name, optimal_ph_min, optimal_ph_max,
@@ -183,14 +181,10 @@ INSERT INTO fish_species
    max_ammonia, market_value, harvest_months, category, description)
 VALUES
   ('Tilapia','Oreochromis niloticus',6.5,8.5,25,32,5,8,25,100,0.05,'High','6-8 months','Freshwater','Hardy, fast-growing freshwater fish ideal for warm climates.'),
-  ('Catfish','Clarias batrachus',6.0,8.0,25,32,4,8,20,150,0.08,'Medium','5-7 months','Freshwater','Tolerant of low oxygen; good for lake-cage farming.'),
-  ('Common Carp','Cyprinus carpio',6.5,8.5,20,28,5,8,25,100,0.05,'Medium','8-12 months','Freshwater','Adaptable species; popular in Laguna de Bay farming.'),
-  ('Milkfish (Bangus)','Chanos chanos',7.0,8.5,26,32,4,8,20,100,0.06,'High','6-8 months','Brackish','National fish of the Philippines; thrives near Laguna Lake.'),
-  ('Grass Carp','Ctenopharyngodon idella',6.5,8.5,20,30,5,8,20,100,0.05,'High','10-14 months','Freshwater','Feeds on aquatic vegetation; good for lake conditions.'),
-  ('Mamali','Hypophthalmichthys nobilis',6.5,8.5,22,30,4,8,20,120,0.05,'Medium','8-12 months','Freshwater','Bighead carp suited to warm freshwater ponds and natural plankton feeding.'),
-  ('Snakehead','Channa striata',6.0,8.0,24,32,3,8,20,150,0.10,'High','8-12 months','Freshwater','Highly tolerant; popular in local markets.'),
-  ('Red Tilapia','Oreochromis sp. hybrid',6.5,8.5,25,32,5,8,25,100,0.05,'High','5-7 months','Freshwater','Premium market variant of Tilapia; high demand.')
+  ('Milkfish (Bangus)','Chanos chanos',7.0,8.5,26,32,4,8,20,100,0.06,'High','6-8 months','Brackish','National fish of the Philippines; thrives near Laguna Lake.')
 ON DUPLICATE KEY UPDATE name = VALUES(name);
+
+INSERT IGNORE INTO fish_species (name) VALUES ('Mamali');
 
 INSERT INTO admin_settings (setting_key, setting_val)
 VALUES ('admin_pin', 'admin2024')
