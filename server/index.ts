@@ -14,6 +14,7 @@ import { planningRouter } from './routes/planning';
 import { archiveRecommendations, planningContext } from './services/PlanningService';
 import { sendDailySms } from './services/PlanningSms';
 import { migrateFishpenSms } from './migrations/fishpenSms';
+import { migrateActiveFishSpecies } from './migrations/activeFishSpecies';
 import { fishpenSmsRouter } from './routes/fishpenSms';
 import { drainWaterSms, queueWaterSms, sensorSmsMeasurements } from './services/FishpenSms';
 import { parameters, type Measurements } from '../src/lib/recommendations';
@@ -1427,6 +1428,7 @@ try {
   await ensureAdminStorage();
   if (pool) await migratePlanning(pool);
   if (pool) await migrateFishpenSms(pool);
+  if (pool) await migrateActiveFishSpecies(pool);
   void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
 } catch (error) {
   console.warn("PondSense API started without MySQL migrations. Start XAMPP MySQL, then restart npm run dev.", error);

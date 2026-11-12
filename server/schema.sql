@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS corrective_action_log (
 CREATE TABLE IF NOT EXISTS fish_species (
   id INT AUTO_INCREMENT PRIMARY KEY,
   name VARCHAR(100) NOT NULL UNIQUE,
+  is_active BOOLEAN NOT NULL DEFAULT TRUE,
   scientific_name VARCHAR(150),
   optimal_ph_min DECIMAL(4,2),
   optimal_ph_max DECIMAL(4,2),

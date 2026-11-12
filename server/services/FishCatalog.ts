@@ -26,6 +26,6 @@ export function buildCatalog(rows: Record<string, unknown>[]) {
   return { fish, profiles };
 }
 export async function loadFishCatalog(pool: Pool) {
-  const [rows] = await pool.query<RowDataPacket[]>('SELECT * FROM fish_species ORDER BY id');
+  const [rows] = await pool.query<RowDataPacket[]>('SELECT * FROM fish_species WHERE is_active = TRUE ORDER BY id');
   return buildCatalog(rows);
 }
