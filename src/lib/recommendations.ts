@@ -14,6 +14,9 @@ export type Recommendation = {
 // Existing application reference ranges, not a biological growth prediction.
 export const referenceThresholds: Thresholds = { ph: [6.5, 8.5], temperature: [25, 32], dissolvedOxygen: [5, 8], turbidity: [25, 100], ammonia: [0, 0.05] };
 export const measurementMaxAge = { sensor: 30_000, manual: 24 * 60 * 60 * 1000 };
+const physicalLimits: Record<Parameter, [number, number]> = {
+  ph: [0, 14], temperature: [-10, 60], dissolvedOxygen: [0, 30], turbidity: [0, 1000], ammonia: [0, 10]
+};
 export function recommend(measurements: Measurements, ranges: Thresholds, now = Date.now()): Recommendation[] {
   const items = parameters.map((parameter): Recommendation => {
     const m = measurements[parameter];
@@ -22,6 +25,8 @@ export function recommend(measurements: Measurements, ranges: Thresholds, now = 
       state: 'missing', priority: 'WATCH', range: ranges[parameter], rule: 'missing-v1' };
     if (m?.unavailable) return { ...result, state: 'unavailable', rule: 'sensor-unavailable-v1' };
     if (value === null || !Number.isFinite(value)) return result;
+    const [physicalMin, physicalMax] = physicalLimits[parameter];
+    if (value < physicalMin || value > physicalMax) return { ...result, state: 'unverified', rule: 'invalid-physical-value-v1' };
     const age = now - Date.parse(m?.recordedAt || '');
     if (!Number.isFinite(age) || age < -5000 || age > measurementMaxAge[m!.source]) return { ...result, state: 'stale', rule: 'freshness-v1' };
     if (m?.estimated) return { ...result, state: 'unverified', rule: 'calibration-required-v1' };

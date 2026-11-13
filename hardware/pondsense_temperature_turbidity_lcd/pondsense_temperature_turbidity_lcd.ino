@@ -16,12 +16,15 @@ constexpr int TURBIDITY_PIN = 34;
 constexpr int TEMPERATURE_PIN = 4;
 constexpr int SENSOR_SAMPLE_COUNT = 10;
 constexpr unsigned long SEND_INTERVAL_MS = 5000;
+constexpr unsigned long WIFI_RETRY_MS = 15000;
+constexpr uint16_t HTTP_TIMEOUT_MS = 60000;
 
 LiquidCrystal_I2C lcd(0x27, 20, 4);
 OneWire oneWire(TEMPERATURE_PIN);
 DallasTemperature temperatureSensor(&oneWire);
 WiFiClientSecure secureClient;
 unsigned long lastSentAt = 0;
+unsigned long lastWifiAttemptAt = 0;
 
 void showLine(int row, const String& message) {
   lcd.setCursor(0, row);
@@ -46,50 +49,61 @@ float readTemperatureC() {
 
 void connectWifi() {
   if (WiFi.status() == WL_CONNECTED) return;
-  showLine(3, "WiFi connecting...");
+  if (lastWifiAttemptAt && millis() - lastWifiAttemptAt < WIFI_RETRY_MS) return;
+  lastWifiAttemptAt = millis();
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
-  for (int attempt = 0; attempt < 20 && WiFi.status() != WL_CONNECTED; attempt++) delay(500);
-  if (WiFi.status() == WL_CONNECTED) configTime(0, 0, "pool.ntp.org");
 }
 
-void sendTelemetry(int rawValue, float voltage, float temperatureC) {
+String makeSample(int rawValue, float voltage, float temperatureC) {
+  JsonDocument payload;
+  char readingId[40];
+  snprintf(readingId, sizeof(readingId), "%llX-%08lX-%08lX", ESP.getEfuseMac(), millis(), esp_random());
+  payload["clientReadingId"] = readingId;
+  if (time(nullptr) >= 1700000000) {
+    time_t sampledAt = time(nullptr);
+    struct tm utcTime;
+    gmtime_r(&sampledAt, &utcTime);
+    char timestamp[25];
+    strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", &utcTime);
+    payload["sampledAt"] = timestamp;
+  }
+  JsonArray verified = payload["verifiedParameters"].to<JsonArray>();
+  if (!isnan(temperatureC)) verified.add("temperature");
+  payload["rawValue"] = rawValue;
+  payload["voltage"] = voltage;
+  if (isnan(temperatureC)) payload["temperatureC"] = nullptr;
+  else payload["temperatureC"] = temperatureC;
+  String body;
+  serializeJson(payload, body);
+  return body;
+}
+
+bool sendTelemetry(const String& body) {
   if (WiFi.status() != WL_CONNECTED) {
-    showLine(3, "WiFi disconnected");
-    return;
+    showLine(3, "WiFi offline");
+    return false;
   }
 
   if (time(nullptr) < 1700000000) {
     showLine(3, "Waiting for clock");
-    return;
+    return false;
   }
   secureClient.setCACert(DEFAULT_API_CA_CERT);
   HTTPClient http;
   if (!http.begin(secureClient, API_URL)) {
     showLine(3, "Server URL error");
-    return;
+    return false;
   }
-  http.setTimeout(10000);
+  http.setConnectTimeout(15000);
+  http.setTimeout(HTTP_TIMEOUT_MS);
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-Key", SENSOR_API_KEY);
 
-  JsonDocument payload;
-  time_t sampledAt = time(nullptr);
-  struct tm utcTime;
-  gmtime_r(&sampledAt, &utcTime);
-  char timestamp[25];
-  strftime(timestamp, sizeof(timestamp), "%Y-%m-%dT%H:%M:%SZ", &utcTime);
-  payload["sampledAt"] = timestamp;
-  JsonArray verified = payload["verifiedParameters"].to<JsonArray>();
-  if (!isnan(temperatureC)) verified.add("temperature");
-  payload["rawValue"] = rawValue;
-  payload["voltage"] = voltage;
-  // Keep NTU absent until the probe has been calibrated against reference water samples.
-  if (isnan(temperatureC)) payload["temperatureC"] = nullptr;
-  else payload["temperatureC"] = temperatureC;
-  String body;
-  serializeJson(payload, body);
+  showLine(3, "Server: Sending...");
   int statusCode = http.POST(body);
-  String response = http.getString();
+  String response = statusCode > 0 ? http.getString() : "";
+  Serial.printf("Sensor upload HTTP status: %d (%s)\n", statusCode, http.errorToString(statusCode).c_str());
+  if (statusCode > 0 && statusCode != 201) Serial.println(response);
   JsonDocument confirmation;
   bool validResponse = deserializeJson(confirmation, response) == DeserializationError::Ok;
 
@@ -100,10 +114,14 @@ void sendTelemetry(int rawValue, float voltage, float temperatureC) {
     showLine(3, "Server: Key invalid");
   } else if (statusCode == 409) {
     showLine(3, "Server: Not assigned");
+  } else if (statusCode == HTTPC_ERROR_READ_TIMEOUT) {
+    showLine(3, "Server: Timed out");
   } else {
     showLine(3, "Server: Error " + String(statusCode));
   }
   http.end();
+  return statusCode == 201 && validResponse && confirmation["saved"] == true &&
+    confirmation["assigned"] == true && confirmation["telemetryId"].as<int>() > 0;
 }
 
 void setup() {
@@ -116,6 +134,7 @@ void setup() {
   lcd.backlight();
   showLine(0, "PondSense of Us");
   connectWifi();
+  configTime(0, 0, "pool.ntp.org");
 }
 
 void loop() {
@@ -135,8 +154,13 @@ void loop() {
   showLine(2, "Turb: ~" + String(estimatedNtu) + " NTU est");
 
   if (lastSentAt == 0 || millis() - lastSentAt >= SEND_INTERVAL_MS) {
-    sendTelemetry(rawValue, voltage, temperatureC);
     lastSentAt = millis();
+    String body = makeSample(rawValue, voltage, temperatureC);
+    if (WiFi.status() == WL_CONNECTED) {
+      sendTelemetry(body);
+    } else {
+      showLine(3, "WiFi offline");
+    }
   }
   delay(500);
 }

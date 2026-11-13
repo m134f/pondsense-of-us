@@ -23,6 +23,17 @@ export const fishDatabase: FishSpecies[] = [
     guide: "Maintain stable water quality and avoid feeding during poor oxygen conditions.",
     ranges: { ph: [7, 8.5], temperature: [26, 32], dissolvedOxygen: [5, 8], turbidity: [20, 100], ammonia: [0, 0.04] }
   },
+  {
+    id: "mamali",
+    name: "Mamali",
+    scientificName: "Hypophthalmichthys nobilis",
+    category: "Freshwater",
+    marketValue: "Medium",
+    harvestTime: "8-12 months",
+    description: "Bighead carp raised in freshwater fishpens.",
+    guide: "Check water conditions and fish behavior before feeding or handling.",
+    ranges: { ph: [NaN, NaN], temperature: [NaN, NaN], dissolvedOxygen: [NaN, NaN], turbidity: [NaN, NaN], ammonia: [NaN, NaN] }
+  },
 ];
 
 export const activeSpecies = [

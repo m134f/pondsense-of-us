@@ -31,6 +31,7 @@ import {
 } from "recharts";
 import { activeSpecies, fishDatabase } from "./data/fish";
 import { analyzeWaterQuality, detectRisks, feedingAdvice } from "./lib/decisionEngine";
+import { rankPartialFish } from "./lib/partialFish";
 import { daysUntilHarvest, estimatedRemainingStock, harvestReminderDue, harvestStage, recentMortality, csvCell } from "./lib/harvest";
 import { RecommendedActions, type WaterContext } from "./components/RecommendedActions";
 import { HarvestReview } from "./components/HarvestReview";
@@ -598,11 +599,11 @@ export default function App() {
   const [lang, setLangState] = useState<Lang>(storage.language());
   const [tab, setTab] = useState<AppTab>("analysis");
   const [params, setParams] = useState<WaterParams>(defaultParams);
-  const [fishDb, setFishDb] = useState<FishSpecies[]>([]);
+  const [fishDb, setFishDb] = useState<FishSpecies[]>(fishDatabase.filter(fish => fish.id !== "mamali"));
   useEffect(() => {
     let active = true;
     const refresh = () => { void apiJson<{ profiles?: FishSpecies[] }>("/api/fish-species").then(({data}) => {
-      if (active && Array.isArray(data?.profiles)) setFishDb(data.profiles);
+      if (active && Array.isArray(data?.profiles) && data.profiles.length) setFishDb(data.profiles);
     }); };
     refresh();
     window.addEventListener("focus", refresh);
@@ -952,6 +953,17 @@ export default function App() {
     );
   }
 
+  if (!currentUser) {
+    const tl = lang === "tl";
+    return <main className="mx-auto max-w-2xl space-y-5 px-4 py-8">
+      <header className="flex items-center justify-between"><h1 className="text-xl font-black">PondSense of Us</h1><button className="soft-button" onClick={() => setLang(tl ? "en" : "tl")}>{tl ? "English" : "Filipino"}</button></header>
+      <section className="card space-y-3 p-5"><h2 className="text-lg font-bold">{tl ? "Kalidad ng tubig sa Cuyab" : "Water monitoring in Cuyab"}</h2>
+        <strong>{tl ? "Walang pampublikong datos" : "No public data"}</strong>
+        <p>{tl ? "Wala pang aprubadong pampublikong sukat. Hindi ito nangangahulugang ligtas ang tubig." : "No readings have been published for public viewing. This does not mean the water is safe."}</p>
+        <p className="text-sm">{tl ? "Huling pampublikong sukat: wala" : "Last public measurement: none"}</p>
+      </section><button className="soft-button" onClick={() => navigate("/login")}>{tl ? "Mag-login sa iyong fishpen" : "Log in to your fishpen"}</button>
+    </main>;
+  }
   if (path === "/profile") {
     return <ProfilePage currentUser={currentUser} navigate={navigate} />;
   }
@@ -1420,11 +1432,21 @@ function AnalysisPage({
       {sensorFresh && sensorTelemetry ? (
         <aside className="card h-fit space-y-3 p-5">
           <h2 className="font-black">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
-          {activeSpecies.map(species => {
-            const profile = fishDb.find(f => f.id === species.id);
-            const readings = [["pH", sensorTelemetry.ph, profile?.ranges.ph], [lang === "tl" ? "Temperatura" : "Temperature", sensorTelemetry.temperatureC, profile?.ranges.temperature], [lang === "tl" ? "Labo" : "Turbidity", sensorTelemetry.turbidityNtu, profile?.ranges.turbidity]] as const;
-            return <section key={species.id} className="border-t py-2"><strong>{species.name}</strong>{!profile ? <p>{lang === "tl" ? "Hinihintay ang beripikadong saklaw." : "Threshold validation pending."}</p> : readings.map(([label,value,range]) => <p key={label}>{label}: {value == null || !Number.isFinite(value) || !range ? "--" : value >= range[0] && value <= range[1] ? (lang === "tl" ? "Pasok sa saklaw" : "Within range") : (lang === "tl" ? "Labas sa saklaw" : "Outside range")}</p>)}</section>;
-          })}
+          {(() => {
+            const readings = { ph: sensorTelemetry.ph, temperature: sensorTelemetry.temperatureC, turbidity: sensorTelemetry.turbidityNtu };
+            const measured = Object.entries(readings).filter(([, value]) => value !== null && Number.isFinite(value));
+            const ranked = rankPartialFish(fishDb.filter(fish => activeSpecies.some(species => species.id === fish.id)), readings);
+            if (!measured.length) return <p className="text-sm text-slate-600">{lang === "tl" ? "Wala pang beripikadong sukat para ihambing ang isda." : "No verified measurements yet for fish comparison."}</p>;
+            return <>
+              <p className="text-sm text-amber-800">{lang === "tl" ? `Batay lamang sa ${measured.length} sukat. Hindi pa kumpirmadong angkop ang isda hangga't kulang ang ibang sukat.` : `Based on ${measured.length} measured parameter${measured.length === 1 ? "" : "s"} only. This is not a full suitability recommendation.`}</p>
+              {ranked.length && ranked.every(item => item.matches.length === 0) && <p className="rounded-md bg-red-50 p-2 text-sm font-semibold text-red-800">{lang === "tl" ? "Walang isdang nasa saklaw ng kasalukuyang sukat. Ang nasa itaas ay pinakamalapit lamang." : "No fish is within the measured range. The top fish is only the closest match."}</p>}
+              {ranked.map((item, index) => <section key={item.fish.id} className="border-t border-slate-200 py-3">
+                <div className="flex items-center gap-2"><span className="text-sm font-bold text-slate-500">#{index + 1}</span><img src={fishImageSrc(item.fish.id)} alt="" className="h-10 w-10 rounded-md object-cover" /><strong>{item.fish.name}</strong></div>
+                <p className="mt-1 text-xs text-slate-600">{lang === "tl" ? `${item.matches.length} sa ${measured.length} nasukat ay pasok sa saklaw` : `${item.matches.length} of ${measured.length} measured parameters within range`}</p>
+              </section>)}
+              {activeSpecies.filter(species => !fishDb.some(fish => fish.id === species.id)).map(species => <p key={species.id} className="text-xs text-slate-500">{species.name}: {lang === "tl" ? "kailangan ng kumpletong saklaw sa database" : "complete database thresholds needed"}</p>)}
+            </>;
+          })()}
         </aside>
       ) : showManualResults ? (
         <>
@@ -1488,7 +1510,8 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Activity size={20} className="text-teal-600" /> {lang === "tl" ? "Live na Trend ng Kalidad ng Tubig" : "Live Water Quality Trends"}</h2>
-          <p className="mt-1 text-xs font-semibold text-slate-500">{telemetry.deviceName} · {new Date(telemetry.recordedAt).toLocaleString("en-PH")}</p>
+          <p className="mt-1 text-sm text-slate-600">{lang === "tl" ? "Pinagmulan" : "Source"}: {telemetry.deviceName}</p>
+          <p className="text-xs text-slate-500">{lang === "tl" ? "Huling sukat" : "Last measurement"}: {new Date(telemetry.recordedAt).toLocaleString("en-PH", { timeZone: "Asia/Manila" })} (PHT)</p>
         </div>
         <span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : connectionState === "stale" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{connectionState === "live" ? "Live" : connectionState === "stale" ? (lang === "tl" ? "Luma" : "Stale") : "Offline"}</span>
       </div>

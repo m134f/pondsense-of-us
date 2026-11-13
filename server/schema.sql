@@ -113,8 +113,11 @@ CREATE TABLE IF NOT EXISTS sensor_telemetry (
   turbidity_ntu DECIMAL(8,2) NULL,
   temperature_c DECIMAL(5,2) NULL,
   ph DECIMAL(4,2) NULL,
+  client_reading_id VARCHAR(80) NULL,
+  sampled_at DATETIME NULL,
   recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX sensor_telemetry_device_recorded_index (device_id, recorded_at),
+  UNIQUE KEY sensor_device_reading_unique (device_id, client_reading_id),
   INDEX sensor_owner_recorded_index (owner_user_id, recorded_at),
   FOREIGN KEY (device_id) REFERENCES sensor_devices(id) ON DELETE CASCADE
 );

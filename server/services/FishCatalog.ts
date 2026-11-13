@@ -18,10 +18,10 @@ export function buildCatalog(rows: Record<string, unknown>[]) {
   const profiles: FishSpecies[] = [];
   const fish = activeSpecies.map(s => {
     const row = rows.find(r => speciesId(String(r.name)) === s.id);
-    if (!row || s.id === 'mamali') return { id: row?.id ?? s.id, name: s.name, validationPending: true };
+    if (!row) return { id: s.id, name: s.name, validationPending: true };
     const profile = configuredProfile(row);
     if (profile) profiles.push(profile);
-    return { ...row, name: s.name };
+    return { ...row, name: s.name, validationPending: !profile };
   });
   return { fish, profiles };
 }

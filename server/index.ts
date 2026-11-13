@@ -259,12 +259,18 @@ async function ensureAdminStorage() {
       turbidity_voltage DECIMAL(5,3) NOT NULL,
       turbidity_ntu DECIMAL(8,2) NULL,
       temperature_c DECIMAL(5,2) NULL,
+      client_reading_id VARCHAR(80) NULL,
+      sampled_at DATETIME NULL,
       recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       INDEX sensor_telemetry_device_recorded_index (device_id, recorded_at),
+      UNIQUE KEY sensor_device_reading_unique (device_id, client_reading_id),
       FOREIGN KEY (device_id) REFERENCES sensor_devices(id) ON DELETE CASCADE
     )
   `);
   await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN temperature_c DECIMAL(5,2) NULL");
+  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN client_reading_id VARCHAR(80) NULL");
+  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN sampled_at DATETIME NULL");
+  await safeExecute("ALTER TABLE sensor_telemetry ADD UNIQUE KEY sensor_device_reading_unique (device_id, client_reading_id)");
   const [ownerColumns] = await pool.execute<RowDataPacket[]>(
     "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sensor_telemetry' AND COLUMN_NAME = 'owner_user_id' LIMIT 1"
   );
@@ -562,19 +568,19 @@ app.post("/api/logout", (_req, res) => {
 });
 
 app.post("/api/readings", async (req, res) => {
+  const auth = verifyAuthToken(req);
+  if (!auth) return res.status(401).json({ message: "Login required." });
   const reading = req.body ?? {};
   const validation = validateReadingPayload(reading);
   if (validation.error || !validation.values) return res.status(400).json({ message: validation.error });
   if (!pool) {
-    return res.json({ saved: true, demo: true, reading });
+    return res.status(503).json({ message: "Reading could not be saved." });
   }
 
   try {
-    const fallbackGuestId = await getGuestUserId();
-    const auth = verifyAuthToken(req);
-    const numericUserId = auth?.sub;
+    const numericUserId = auth.sub;
     const isRegisteredUser = Boolean(auth);
-    const userId = auth ? auth.sub : fallbackGuestId;
+    const userId = auth.sub;
     if (!userId) return res.status(500).json({ message: "Unable to resolve user for reading." });
 
     const analysis = decisionSupport.analyze(validation.values, (await loadFishCatalog(pool)).profiles);
@@ -586,7 +592,7 @@ app.post("/api/readings", async (req, res) => {
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       [
         userId,
-        reading.inputMode ?? "manual",
+        "manual",
         validation.values.ph,
         validation.values.temperature,
         validation.values.turbidity,
@@ -727,7 +733,7 @@ app.get("/api/sensors/latest", async (req, res) => {
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
       `SELECT telemetry.id, telemetry.device_id, telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
-              telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, device.device_name
+              telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, telemetry.sampled_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
        WHERE telemetry.owner_user_id = ?
@@ -749,7 +755,8 @@ app.get("/api/sensors/latest", async (req, res) => {
         turbidityNtu: latest.turbidity_ntu === null ? null : Number(latest.turbidity_ntu),
         temperatureC: latest.temperature_c === null ? null : Number(latest.temperature_c),
         ph: latest.ph === null ? null : Number(latest.ph),
-        recordedAt: latest.recorded_at
+        recordedAt: latest.sampled_at ?? latest.recorded_at,
+        receivedAt: latest.recorded_at
       }
     });
   } catch (error) {
@@ -764,7 +771,7 @@ app.get("/api/sensors/trend", async (req, res) => {
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
       `SELECT telemetry.id, telemetry.device_id, telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
-              telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, device.device_name
+              telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, telemetry.sampled_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
        WHERE telemetry.owner_user_id = ?
@@ -780,7 +787,8 @@ app.get("/api/sensors/trend", async (req, res) => {
       turbidityNtu: row.turbidity_ntu === null ? null : Number(row.turbidity_ntu),
       temperatureC: row.temperature_c === null ? null : Number(row.temperature_c),
       ph: row.ph === null ? null : Number(row.ph),
-      recordedAt: row.recorded_at
+      recordedAt: row.sampled_at ?? row.recorded_at,
+      receivedAt: row.recorded_at
     })) });
   } catch (error) {
     console.error("Sensor trend error:", error);
@@ -795,6 +803,16 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
 
   const telemetry = validateTurbidityTelemetry(req.body ?? {});
   if (telemetry.error || !telemetry.values) return res.status(400).json({ message: telemetry.error });
+  const clientReadingId = req.body?.clientReadingId;
+  if (clientReadingId !== undefined && (typeof clientReadingId !== "string" || !/^[A-Za-z0-9-]{1,80}$/.test(clientReadingId))) {
+    return res.status(400).json({ message: "Invalid client reading ID." });
+  }
+  const sampledAtInput = req.body?.sampledAt;
+  const sampledAtMs = typeof sampledAtInput === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/.test(sampledAtInput)
+    ? Date.parse(sampledAtInput) : NaN;
+  if (sampledAtInput !== undefined && (!Number.isFinite(sampledAtMs) || sampledAtMs > Date.now() + 5 * 60_000)) {
+    return res.status(400).json({ message: "Invalid sample timestamp." });
+  }
 
   try {
     const device = await authenticateSensorDevice(providedKey);
@@ -802,23 +820,36 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
     if (!device.ownerUserId) return res.status(409).json({ message: "Device has no assigned farmer. Contact the administrator." });
 
     const [result] = await pool.execute<ResultSetHeader>(
-      `INSERT INTO sensor_telemetry (device_id, owner_user_id, turbidity_raw, turbidity_voltage, turbidity_ntu, temperature_c, ph)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC, telemetry.values.ph]
+      `INSERT INTO sensor_telemetry (device_id, owner_user_id, turbidity_raw, turbidity_voltage, turbidity_ntu, temperature_c, ph, client_reading_id, sampled_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+       ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
+      [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC, telemetry.values.ph,
+        clientReadingId ?? null, Number.isFinite(sampledAtMs) ? new Date(sampledAtMs) : null]
     );
-    await archiveRecommendations(pool, device.ownerUserId, 'sensor', result.insertId).catch(error => { console.error('Recommendation archive:', error); });
-    await queueWaterSms(pool, { owner: device.ownerUserId, deviceId: device.id, sourceId: result.insertId, sourceKind: 'telemetry',
-      measurements: sensorSmsMeasurements({ temperature: telemetry.values.temperatureC, ph: telemetry.values.ph, turbidity: telemetry.values.ntu }, req.body)
-    }).catch(() => console.error('Water alert could not be queued. Reading was saved.'));
-    void flushWaterSms();
+    const duplicate = result.affectedRows !== 1;
+    if (!duplicate) {
+      if ((clientReadingId === undefined && !Number.isFinite(sampledAtMs)) ||
+          (Number.isFinite(sampledAtMs) && Date.now() - sampledAtMs < 60_000)) {
+        await queueWaterSms(pool, { owner: device.ownerUserId, deviceId: device.id, sourceId: result.insertId, sourceKind: 'telemetry',
+          measurements: sensorSmsMeasurements({ temperature: telemetry.values.temperatureC, ph: telemetry.values.ph, turbidity: telemetry.values.ntu }, req.body)
+        }).catch(() => console.error('Water alert could not be queued. Reading was saved.'));
+        void flushWaterSms();
+      }
+    }
 
     res.status(201).json({
       saved: true,
       telemetryId: result.insertId,
       deviceId: device.id,
       assigned: true,
+      duplicate,
       recordedAt: new Date().toISOString()
     });
+    if (!duplicate) {
+      void archiveRecommendations(pool, device.ownerUserId, 'sensor', result.insertId).catch(error => {
+        console.error('Recommendation archive:', error);
+      });
+    }
   } catch (error) {
     console.error("Turbidity telemetry database error:", error);
     res.status(503).json({ message: "Unable to save the turbidity sensor reading." });

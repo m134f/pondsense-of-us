@@ -34,6 +34,32 @@ test('complete measured values preserve all five parameters without redistributi
   assert.equal(waterSummary(items), 'safe');
   assert.deepEqual(completeMeasuredValues(items), values);
 });
+test('impossible sensor values cannot produce a safe assessment or full score', () => {
+  const values: Measurements = {
+    ph: measurement(16), temperature: measurement(28), dissolvedOxygen: measurement(-1),
+    turbidity: measurement(50), ammonia: measurement(.02)
+  };
+  const items = recommend(values, referenceThresholds, now);
+  assert.equal(items.find(i => i.parameter === 'ph')?.state, 'unverified');
+  assert.equal(items.find(i => i.parameter === 'dissolvedOxygen')?.state, 'unverified');
+  assert.equal(waterSummary(items), 'incomplete');
+  assert.equal(completeMeasuredValues(items), null);
+});
+test('pH extremes, low oxygen and abnormal temperature are reported independently', () => {
+  for (const ph of [5.5, 9.5]) {
+    const items = recommend({
+      ph: measurement(ph), temperature: measurement(35), dissolvedOxygen: measurement(2),
+      turbidity: { ...measurement(120), estimated: true }
+    }, referenceThresholds, now);
+    assert.equal(items.find(i => i.parameter === 'ph')?.state, 'critical');
+    assert.equal(items.find(i => i.parameter === 'temperature')?.state, 'warning');
+    assert.equal(items.find(i => i.parameter === 'dissolvedOxygen')?.state, 'critical');
+    assert.equal(items.find(i => i.parameter === 'turbidity')?.state, 'unverified');
+    assert.equal(items.find(i => i.parameter === 'ammonia')?.state, 'missing');
+    assert.equal(waterSummary(items), 'critical');
+    assert.equal(completeMeasuredValues(items), null);
+  }
+});
 test('7-day, 1-day, due and overdue reminders; dates never complete a batch', () => {
   for (const target of ['2026-11-13', '2026-11-07', '2026-11-06', '2026-11-05']) assert.equal(harvestReminderDue(target, '2026-11-06'), true);
   assert.equal(harvestReminderDue('2026-11-08', '2026-11-06'), false);
