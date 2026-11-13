@@ -598,6 +598,7 @@ export default function App() {
   const savedUser = storage.currentUser();
   const [lang, setLangState] = useState<Lang>(storage.language());
   const [tab, setTab] = useState<AppTab>("analysis");
+  const [loginDestination, setLoginDestination] = useState<UserPath>("/dashboard");
   const [params, setParams] = useState<WaterParams>(defaultParams);
   const [fishDb, setFishDb] = useState<FishSpecies[]>(fishDatabase.filter(fish => fish.id !== "mamali"));
   useEffect(() => {
@@ -947,7 +948,8 @@ export default function App() {
           setSensorAnalysis(null);
           setSessions(storage.sessions(user));
           setSms(message);
-          navigate(user.role === "admin" ? "/admin/dashboard" : "/dashboard");
+          navigate(user.role === "admin" ? "/admin/dashboard" : loginDestination);
+          setLoginDestination("/dashboard");
         }}
       />
     );
@@ -955,13 +957,19 @@ export default function App() {
 
   if (!currentUser) {
     const tl = lang === "tl";
-    return <main className="mx-auto max-w-2xl space-y-5 px-4 py-8">
-      <header className="flex items-center justify-between"><h1 className="text-xl font-black">PondSense of Us</h1><button className="soft-button" onClick={() => setLang(tl ? "en" : "tl")}>{tl ? "English" : "Filipino"}</button></header>
-      <section className="card space-y-3 p-5"><h2 className="text-lg font-bold">{tl ? "Kalidad ng tubig sa Cuyab" : "Water monitoring in Cuyab"}</h2>
-        <strong>{tl ? "Walang pampublikong datos" : "No public data"}</strong>
-        <p>{tl ? "Wala pang aprubadong pampublikong sukat. Hindi ito nangangahulugang ligtas ang tubig." : "No readings have been published for public viewing. This does not mean the water is safe."}</p>
-        <p className="text-sm">{tl ? "Huling pampublikong sukat: wala" : "Last public measurement: none"}</p>
-      </section><button className="soft-button" onClick={() => navigate("/login")}>{tl ? "Mag-login sa iyong fishpen" : "Log in to your fishpen"}</button>
+    const harvest = path === "/harvest";
+    const history = path === "/history";
+    const profile = path === "/profile";
+    const personal = harvest || history || profile;
+    const title = harvest ? (tl ? "Mga ani" : "Harvests") : history ? (tl ? "Mga nakaraang sukat" : "Reading history") : profile ? (tl ? "Aking account" : "My account") : (tl ? "Kalidad ng tubig sa Cuyab" : "Cuyab water monitoring");
+    const enter = (route: "/login" | "/register") => { setLoginDestination(personal ? path as UserPath : "/dashboard"); navigate(route); };
+    return <main className="min-h-screen bg-white text-slate-900">
+      <header className="border-b border-slate-200"><div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-5 py-4"><div className="flex items-center gap-3"><img src="/logofishpond.png" alt="" className="h-11 w-11 rounded-lg object-contain"/><strong className="text-lg">PondSense of Us</strong></div><button className="soft-button min-h-11" onClick={() => setLang(tl ? "en" : "tl")}>{tl ? "English" : "Filipino"}</button></div></header>
+      <div className="relative isolate overflow-hidden bg-teal-950"><img src="/laguna-de-bay-enhanced.jpg" alt="" className="absolute inset-0 -z-10 h-full w-full object-cover object-center opacity-55"/><div className="mx-auto max-w-5xl px-5 py-12 text-white sm:py-16"><p className="font-semibold">Cuyab · Laguna de Bay</p><h1 className="mt-2 text-4xl font-bold">{title}</h1></div></div>
+      <section className="mx-auto max-w-5xl px-5 py-8"><h2 className="text-2xl font-bold">{harvest ? (tl ? "Talaan ng iyong ani" : "Your harvest records") : personal ? title : (tl ? "Wala pang pampublikong sukat" : "No public readings yet")}</h2>
+        <p className="mt-3 max-w-xl text-base leading-relaxed text-slate-700">{harvest ? (tl ? "Mag-login para makita ang mga alagang isda, susunod na petsa ng ani, at mga naitalang ani sa iyong fishpen." : "Log in to see your fish batches, upcoming harvest dates, and past harvests.") : personal ? (tl ? "Mag-login para makita ang iyong pribadong tala." : "Log in to view your private records.") : (tl ? "Wala pang inilalathalang sukat. Mag-login para makita ang datos ng sarili mong fishpen." : "No water measurements have been published here. Log in to check your own fishpen.")}</p>
+        <div className="mt-6 flex flex-wrap gap-3"><button className="primary-button min-h-12 px-5" onClick={() => enter("/login")}>{tl ? "Mag-login" : "Farmer login"}</button><button className="soft-button min-h-12 px-5" onClick={() => enter("/register")}>{tl ? "Gumawa ng account" : "Create account"}</button></div>
+      </section>
     </main>;
   }
   if (path === "/profile") {
