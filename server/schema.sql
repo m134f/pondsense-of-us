@@ -115,6 +115,7 @@ CREATE TABLE IF NOT EXISTS sensor_telemetry (
   ph DECIMAL(4,2) NULL,
   client_reading_id VARCHAR(80) NULL,
   sampled_at DATETIME NULL,
+  water_contact_confirmed BOOLEAN NOT NULL DEFAULT FALSE,
   recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
   INDEX sensor_telemetry_device_recorded_index (device_id, recorded_at),
   UNIQUE KEY sensor_device_reading_unique (device_id, client_reading_id),

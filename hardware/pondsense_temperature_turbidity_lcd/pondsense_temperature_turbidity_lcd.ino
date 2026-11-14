@@ -56,6 +56,7 @@ void connectWifi() {
 
 String makeSample(int rawValue, float voltage, float temperatureC) {
   JsonDocument payload;
+  payload["waterContactConfirmed"] = true;
   char readingId[40];
   snprintf(readingId, sizeof(readingId), "%llX-%08lX-%08lX", ESP.getEfuseMac(), millis(), esp_random());
   payload["clientReadingId"] = readingId;
@@ -126,6 +127,8 @@ bool sendTelemetry(const String& body) {
 
 void setup() {
   Serial.begin(115200);
+  // Dry-contact float switch at probe height: closed to GND only when submerged.
+  pinMode(27, INPUT_PULLUP);
   analogReadResolution(12);
   analogSetPinAttenuation(TURBIDITY_PIN, ADC_11db);
   temperatureSensor.begin();
@@ -139,9 +142,21 @@ void setup() {
 
 void loop() {
   connectWifi();
+  static unsigned long wetSince = 0;
+  if (digitalRead(27) != LOW) {
+    wetSince = 0;
+    showLine(1, "Waiting for water");
+    showLine(2, "No water sample");
+    showLine(3, "Upload paused");
+    delay(200);
+    return;
+  }
+  if (!wetSince) wetSince = millis();
+  if (millis() - wetSince < 2000) { delay(100); return; }
   int rawValue = readTurbidityRaw();
   float voltage = rawValue * (3.3f / 4095.0f);
   float temperatureC = readTemperatureC();
+  if (digitalRead(27) != LOW) { wetSince = 0; return; }
 
   showLine(0, "PondSense of Us");
   if (isnan(temperatureC)) {

@@ -270,6 +270,7 @@ async function ensureAdminStorage() {
   await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN temperature_c DECIMAL(5,2) NULL");
   await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN client_reading_id VARCHAR(80) NULL");
   await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN sampled_at DATETIME NULL");
+  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN water_contact_confirmed BOOLEAN NOT NULL DEFAULT FALSE");
   await safeExecute("ALTER TABLE sensor_telemetry ADD UNIQUE KEY sensor_device_reading_unique (device_id, client_reading_id)");
   const [ownerColumns] = await pool.execute<RowDataPacket[]>(
     "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sensor_telemetry' AND COLUMN_NAME = 'owner_user_id' LIMIT 1"
@@ -736,7 +737,7 @@ app.get("/api/sensors/latest", async (req, res) => {
               telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, telemetry.sampled_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE telemetry.owner_user_id = ?
+       WHERE telemetry.owner_user_id = ? AND telemetry.water_contact_confirmed = TRUE
        ORDER BY telemetry.id DESC
        LIMIT 1`,
       [auth.sub]
@@ -774,7 +775,7 @@ app.get("/api/sensors/trend", async (req, res) => {
               telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, telemetry.sampled_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE telemetry.owner_user_id = ?
+       WHERE telemetry.owner_user_id = ? AND telemetry.water_contact_confirmed = TRUE
        ORDER BY telemetry.id DESC LIMIT 60`,
       [auth.sub]
     );
@@ -818,10 +819,11 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
     const device = await authenticateSensorDevice(providedKey);
     if (!device) return res.status(401).json({ message: "Invalid or inactive sensor device." });
     if (!device.ownerUserId) return res.status(409).json({ message: "Device has no assigned farmer. Contact the administrator." });
+    if (req.body.waterContactConfirmed !== true) return res.status(422).json({ saved: false, message: "Water contact not confirmed. Check probe placement and firmware." });
 
     const [result] = await pool.execute<ResultSetHeader>(
-      `INSERT INTO sensor_telemetry (device_id, owner_user_id, turbidity_raw, turbidity_voltage, turbidity_ntu, temperature_c, ph, client_reading_id, sampled_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO sensor_telemetry (device_id, owner_user_id, turbidity_raw, turbidity_voltage, turbidity_ntu, temperature_c, ph, client_reading_id, sampled_at, water_contact_confirmed)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
        ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
       [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC, telemetry.values.ph,
         clientReadingId ?? null, Number.isFinite(sampledAtMs) ? new Date(sampledAtMs) : null]

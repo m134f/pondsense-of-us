@@ -1391,7 +1391,7 @@ function AnalysisPage({
       </aside>
 
       <section className="space-y-5">
-        {sensorTelemetry && <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} />}
+        {sensorFresh && sensorTelemetry ? <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} /> : <section className="card p-5"><h2 className="font-bold">{lang === "tl" ? "Naghihintay ng sukat mula sa tubig" : "Waiting for a water sample"}</h2><p className="mt-2 text-sm text-slate-600">{lang === "tl" ? "Wala pang bagong kumpirmadong sukat. Suriin ang pagkakalubog ng probe at koneksyon ng ESP32." : "No recent confirmed water sample. Check probe placement and the ESP32 connection."}</p></section>}
         {ownerId && <RecommendedActions lang={lang} refreshKey={`${sensorTelemetry?.id || 0}:${sessions[0]?.id || ""}`} />}
         {sensorFresh ? null : showManualResults ? (
           <>

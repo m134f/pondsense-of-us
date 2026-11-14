@@ -69,7 +69,7 @@ void sendTelemetry(int rawValue, float voltage) {
   http.addHeader("Content-Type", "application/json");
   http.addHeader("X-API-Key", SENSOR_API_KEY);
 
-  const String body = "{\"rawValue\":" + String(rawValue) + ",\"voltage\":" + String(voltage, 3) + "}";
+  const String body = "{\"waterContactConfirmed\":true,\"rawValue\":" + String(rawValue) + ",\"voltage\":" + String(voltage, 3) + "}";
   const int statusCode = http.POST(body);
   JsonDocument confirmation;
   const bool validResponse = deserializeJson(confirmation, http.getString()) == DeserializationError::Ok;
@@ -90,6 +90,7 @@ void sendTelemetry(int rawValue, float voltage) {
 
 void setup() {
   Serial.begin(115200);
+  pinMode(27, INPUT_PULLUP);
   analogReadResolution(12);
   analogSetPinAttenuation(TURBIDITY_PIN, ADC_11db);
 
@@ -104,8 +105,20 @@ void setup() {
 
 void loop() {
   connectWifi();
+  static unsigned long wetSince = 0;
+  if (digitalRead(27) != LOW) {
+    wetSince = 0;
+    showLine(1, "Waiting for water");
+    showLine(2, "No water sample");
+    showLine(3, "Upload paused");
+    delay(200);
+    return;
+  }
+  if (!wetSince) wetSince = millis();
+  if (millis() - wetSince < 2000) { delay(100); return; }
 
   const int rawValue = readStableTurbidityRaw();
+  if (digitalRead(27) != LOW) { wetSince = 0; return; }
   const float voltage = rawValue * (3.3f / 4095.0f);
   // Prototype estimate only; calibrate the probe before treating this as measured NTU.
   const int turbidityNtu = constrain((int)roundf((3.3f - voltage) * (250.0f / 3.3f)), 0, 250);
