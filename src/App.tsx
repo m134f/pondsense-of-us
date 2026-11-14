@@ -37,6 +37,7 @@ import { RecommendedActions, type WaterContext } from "./components/RecommendedA
 import { HarvestReview } from "./components/HarvestReview";
 import { FishpenSmsSettings, manualSmsPenKey } from "./components/FishpenSmsSettings";
 import { WaterSmsLogs } from "./components/WaterSmsLogs";
+import { ManualWaterForm } from "./components/ManualWaterForm";
 import { simpleHash, storage, type AppUser } from "./lib/storage";
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
 
@@ -792,6 +793,7 @@ export default function App() {
     if (!analysisBest) { setSms(lang === "tl" ? "Hindi pa handa ang mga saklaw ng isda." : "Fish thresholds are not available yet."); return; }
     const analysisStatus = overallStatus(analysisParams);
 
+    setParams({ ...analysisParams });
     setHasAnalyzed(true);
     setSelectedFishId(analysisBest.fish.id);
 
@@ -977,7 +979,7 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-100">
+    <div className="farmer-shell min-h-screen bg-slate-100">
       {sms && (
         <button
           className="fixed inset-x-3 bottom-4 z-50 rounded-2xl bg-slate-950 px-4 py-3 text-left text-sm font-medium text-white shadow-2xl sm:inset-x-auto sm:right-5 sm:max-w-sm sm:px-5 sm:py-4"
@@ -1048,7 +1050,7 @@ export default function App() {
       )}
 
       {tab === "history" && (
-        <HistoryPage sessions={sessions} onExport={exportCsv} text={text} />
+        <HistoryPage sessions={sessions} onExport={exportCsv} text={text} lang={lang} />
       )}
 
       {tab === "harvest" && <HarvestPage currentUser={currentUser} lang={lang} fishDb={fishDb} navigate={navigate} />}
@@ -1113,9 +1115,23 @@ function Header({
   useEffect(() => {
     if (!menuOpen) return;
     const previousOverflow = document.body.style.overflow;
+    const previousFocus = document.activeElement as HTMLElement | null;
+    const focusable = () => Array.from(document.querySelectorAll<HTMLElement>('.farmer-menu button, .farmer-menu a, .farmer-menu input, .farmer-menu select')).filter(element => !element.hasAttribute('disabled'));
+    focusable()[0]?.focus();
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setMenuOpen(false);
+      if (event.key !== 'Tab') return;
+      const items = focusable();
+      const first = items[0]; const last = items[items.length - 1];
+      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+    };
+    document.addEventListener('keydown', onKey);
     document.body.style.overflow = "hidden";
     return () => {
       document.body.style.overflow = previousOverflow;
+      document.removeEventListener('keydown', onKey);
+      previousFocus?.focus();
     };
   }, [menuOpen]);
 
@@ -1177,8 +1193,7 @@ function Header({
             aria-label="Close menu"
             onClick={() => setMenuOpen(false)}
           />
-          <div className="fixed inset-x-0 bottom-0 z-[60] max-h-[86dvh] overflow-y-auto rounded-t-[28px] border border-white/70 bg-white px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl md:hidden">
-            <div className="mx-auto mb-3 h-1.5 w-12 rounded-full bg-slate-200" />
+          <div className="farmer-menu fixed inset-y-0 right-0 z-[60] w-full max-w-sm overflow-y-auto border-l border-slate-200 bg-white p-5 shadow-xl md:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
             <div className="mb-4 flex items-center justify-between gap-3">
               <div className="flex min-w-0 items-center gap-3">
                 <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-2xl bg-white ring-1 ring-teal-100">
@@ -1198,11 +1213,11 @@ function Header({
               </button>
             </div>
 
-            <div className="grid grid-cols-3 gap-2">
+            <div className="grid gap-2">
               {mobileTabs.map(({ id, label, icon: Icon }) => (
                 <button
                   key={id}
-                  className={`flex min-h-20 flex-col items-center justify-center gap-2 rounded-2xl border px-2 text-center text-xs font-black transition ${
+                  className={`flex min-h-12 items-center gap-3 rounded-lg border px-3 text-left text-base font-semibold transition ${
                     activeTab === id
                       ? "border-teal-200 bg-teal-50 text-teal-800 shadow-sm"
                       : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
@@ -1268,7 +1283,7 @@ function Tabs({ active, onChange, text }: { active: AppTab; onChange: (tab: AppT
 
   return (
     <nav className="mx-auto hidden max-w-[1500px] gap-2 overflow-x-auto px-3 py-3 sm:px-6 sm:py-4 md:flex">
-      <div className="grid min-w-full grid-cols-4 gap-1 rounded-2xl bg-slate-200/70 p-1 shadow-inner sm:inline-flex sm:min-w-0 sm:flex-wrap">
+      <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-2">
         {tabs.map(({ id, label, icon: Icon }) => (
           <button
             key={id}
@@ -1351,7 +1366,7 @@ function AnalysisPage({
   best: FishScore;
   currentStatus: AlertLevel;
   hasAnalyzed: boolean;
-  onAnalyze: () => void;
+  onAnalyze: (values: WaterParams) => void | Promise<void>;
   onTestSms: () => void;
   onSelectFish: (id: string) => void;
   text: typeof ui.en;
@@ -1359,24 +1374,39 @@ function AnalysisPage({
   const [showParameterDetails, setShowParameterDetails] = useState(false);
   const [showAllActions, setShowAllActions] = useState(false);
   const sensorFresh = sensorConnectionState(sensorTelemetry, now) === "live";
-  const showManual = !sensorFresh;
-  const showManualResults = hasAnalyzed && scores.length > 0 && showManual;
+  const [mode, setMode] = useState<"monitoring" | "manual">("monitoring");
+  const showManual = mode === "manual";
+  const [partialManual, setPartialManual] = useState<Partial<WaterParams> | null>(null);
+  const showManualResults = hasAnalyzed && scores.length > 0 && showManual && !partialManual;
+  const submitManual = async (values: Partial<WaterParams>) => {
+    if (Object.keys(values).length === 5) {
+      await onAnalyze(values as WaterParams);
+      setPartialManual(null);
+    } else {
+      setPartialManual({ ...values });
+    }
+  };
 
   return (
-    <main className="mx-auto grid max-w-[1500px] grid-cols-1 gap-4 px-3 pb-6 sm:gap-5 sm:px-6 sm:pb-8 lg:grid-cols-[minmax(280px,25%)_minmax(460px,1fr)_minmax(330px,25%)]">
-      <aside className="space-y-5">
-        <ConnectEsp32 lang={lang} telemetry={sensorTelemetry} now={now} />
-        {ownerId && <FishpenSmsSettings key={ownerId} ownerId={ownerId} lang={lang} />}
-        <WaterParametersPanel
+    <main className={`farmer-analysis ${showManual ? "manual-mode" : "monitoring-mode"} mx-auto grid max-w-[1500px] grid-cols-1 gap-5 px-4 pb-8 sm:px-6`}>
+      <div className="analysis-heading flex flex-wrap items-center justify-between gap-4 py-4">
+        <div><h1 className="text-2xl font-bold">{lang === "tl" ? "Kalagayan ng tubig" : "Water monitoring"}</h1><p className="mt-1 text-sm text-slate-600">{lang === "tl" ? "Mga sukat at susunod na hakbang para sa iyong palaisdaan." : "Measurements and next steps for your fishpen."}</p></div>
+        <div className="flex rounded-lg border border-slate-300 bg-white p-1" aria-label="Analysis mode">
+          {(["monitoring", "manual"] as const).map(value => <button key={value} aria-pressed={mode === value} onClick={() => setMode(value)} className={`min-h-11 rounded-md px-4 text-sm font-semibold ${mode === value ? "bg-teal-700 text-white" : "text-slate-600"}`}>{value === "monitoring" ? (lang === "tl" ? "Mga sensor" : "Monitoring") : (lang === "tl" ? "Manu-mano" : "Manual test")}</button>)}
+        </div>
+      </div>
+      <aside className="analysis-inputs space-y-5">
+        {showManual ? <ManualWaterForm lang={lang} onAnalyze={submitManual} /> : <WaterParametersPanel
           lang={lang}
           params={params}
           setParams={setParams}
           sensorTelemetry={sensorTelemetry}
           sensorFresh={sensorFresh}
-          showManual={showManual}
-          onAnalyze={() => { if (window.confirm(lang === 'tl' ? 'Kumpirmadong aktuwal at bagong sukat ang lahat ng limang value? Huwag gamitin ang panimulang halimbawa bilang sukat.' : 'Are all five values actual, recent measurements? Do not use the starting examples as measurements.')) onAnalyze(); }}
+          showManual={false}
+          onAnalyze={() => {}}
           text={text}
-        />
+        />}
+        <details className="card p-4"><summary className="cursor-pointer py-2 font-semibold">{lang === "tl" ? "Mga setting ng device at SMS" : "Device & SMS settings"}</summary><div className="mt-4 space-y-4"><ConnectEsp32 lang={lang} telemetry={sensorTelemetry} now={now} />{ownerId && <FishpenSmsSettings key={ownerId} ownerId={ownerId} lang={lang} />}</div></details>
         {showManualResults && (
           <>
             <FeedingCard params={params} lang={lang} text={text} />
@@ -1390,10 +1420,25 @@ function AnalysisPage({
         )}
       </aside>
 
-      <section className="space-y-5">
-        {sensorFresh && sensorTelemetry ? <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} /> : <section className="card p-5"><h2 className="font-bold">{lang === "tl" ? "Naghihintay ng sukat mula sa tubig" : "Waiting for a water sample"}</h2><p className="mt-2 text-sm text-slate-600">{lang === "tl" ? "Wala pang bagong kumpirmadong sukat. Suriin ang pagkakalubog ng probe at koneksyon ng ESP32." : "No recent confirmed water sample. Check probe placement and the ESP32 connection."}</p></section>}
-        {ownerId && <RecommendedActions lang={lang} refreshKey={`${sensorTelemetry?.id || 0}:${sessions[0]?.id || ""}`} />}
-        {sensorFresh ? null : showManualResults ? (
+      <section className="analysis-results min-w-0 space-y-5">
+        {!showManual && (sensorTelemetry ? <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} /> : <section className="card p-5"><h2 className="text-lg font-bold">{lang === "tl" ? "Wala pang sukat ng tubig" : "No water measurement yet"}</h2><p className="mt-2 text-base text-slate-600">{lang === "tl" ? "Hindi pa matutukoy ang kalagayan ng tubig. Suriin ang sensor o gumamit ng manu-manong pagsusuri." : "Water condition is not yet known. Check your sensor or enter a manual water test."}</p></section>)}
+        {ownerId && !showManual && <RecommendedActions lang={lang} refreshKey={`${sensorTelemetry?.id || 0}:${sessions[0]?.id || ""}`} />}
+        {showManual && partialManual && <section className="card space-y-4 p-5" aria-live="polite">
+          <h2 className="text-lg font-bold">{lang === "tl" ? "Bahagyang manu-manong pagsusuri" : "Partial manual assessment"}</h2>
+          <p className="text-sm text-amber-800">{lang === "tl" ? "Batay lamang sa mga isinumiteng sukat. Hindi nito kinukumpirma na ligtas ang tubig." : "Based only on submitted measurements. This does not confirm overall water safety."}</p>
+          {parameterMeta.filter(meta => partialManual[meta.key] !== undefined).map(meta => {
+            const value = partialManual[meta.key]!;
+            const status = statusFor(meta.key, value);
+            return <div key={meta.key} className={`rounded-lg border p-4 ${levelClasses(status)}`}>
+              <h3 className="font-semibold">{meta.key === "ph" ? "pH" : meta.key === "dissolvedOxygen" ? "Dissolved oxygen" : meta.key}</h3>
+              <p className="text-xl font-bold">{value} {meta.key === "temperature" ? "°C" : meta.key === "turbidity" ? "NTU" : meta.key === "ph" ? "" : "mg/L"}</p>
+              <p>{status === "safe" ? (lang === "tl" ? "Pasok sa saklaw para sa sukat na ito" : "Within range for this parameter") : localize(status === "critical" ? "Critical Water Condition" : "Water Quality Warning", lang)}</p>
+              {status !== "safe" && <p className="mt-2 text-sm">{lang === "tl" ? "Ulitin ang pagsukat, obserbahan ang isda, at kumonsulta sa BFAR/LGU kung may senyales ng stress." : "Recheck the measurement, observe the fish, and consult BFAR/LGU if fish show distress."}</p>}
+            </div>;
+          })}
+          <p className="text-sm text-slate-600">{lang === "tl" ? "Hindi nasukat ang mga blangkong field. Ang bahagyang pagsusuri ay hindi pa sine-save sa kasaysayan at hindi nagpapadala ng SMS." : "Blank fields are unmeasured. Partial assessments are not yet saved to history and do not send SMS."}</p>
+        </section>}
+        {!showManual || partialManual ? null : showManualResults ? (
           <>
             <p className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm font-semibold text-sky-900">{lang === "tl" ? "Manu-manong analysis ito, hindi galing sa ESP32." : "Manual analysis only. These values did not come from the ESP32."}</p>
             <AlertBanner alert={alerts[0]} lang={lang} />
@@ -1427,17 +1472,15 @@ function AnalysisPage({
               <CorrectiveActions alerts={alerts} status={currentStatus} lang={lang} text={text} />
             </CollapsiblePanel>
           </>
-        ) : sensorTelemetry ? (
-          <section className="card p-6">
-            <h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Naghihintay ng bagong sensor reading" : "Waiting for a new sensor reading"}</h2>
-            <p className="mt-2 text-sm text-slate-600">{lang === "tl" ? "Luma na ang huling sukat. Suriin ang koneksyon at makipag-ugnayan sa administrator kung patuloy na hindi nag-a-update." : "The last measurement is stale. Check the connection and contact your administrator if updates do not resume."}</p>
-          </section>
         ) : (
-          <AnalysisEmptyState sensorAnalysis={sensorAnalysis} hasSensor={false} />
+          <section className="card p-6">
+            <h2 className="text-lg font-bold text-slate-950">{lang === "tl" ? "Wala pang resulta ng pagsusuri" : "No manual test submitted"}</h2>
+            <p className="mt-2 text-base text-slate-600">{lang === "tl" ? "Ilagay ang aktuwal na sukat mula sa iyong water test." : "Enter your measured water test values to see an analysis."}</p>
+          </section>
         )}
       </section>
 
-      {sensorFresh && sensorTelemetry ? (
+      {!showManual && sensorFresh && sensorTelemetry ? (
         <aside className="card h-fit space-y-3 p-5">
           <h2 className="font-black">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
           {(() => {
@@ -1456,7 +1499,20 @@ function AnalysisPage({
             </>;
           })()}
         </aside>
-      ) : showManualResults ? (
+      ) : showManual && partialManual ? (
+        <aside className="card h-fit space-y-4 p-5">
+          <h2 className="text-lg font-bold">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
+          <p className="text-sm text-amber-800">{lang === "tl" ? "Batay lamang sa nasukat; hindi kumpletong rekomendasyon sa pag-aalaga." : "Measured parameters only; not a complete stocking recommendation."}</p>
+          {fishDb.filter(fish => activeSpecies.some(species => species.id === fish.id)).map(fish => <section key={fish.id} className="border-t border-slate-200 pt-3">
+            <div className="flex items-center gap-3"><img src={fishImageSrc(fish.id)} alt="" className="h-12 w-12 rounded-md object-cover" /><h3 className="font-bold">{fish.name}</h3></div>
+            {Object.entries(partialManual).map(([key, value]) => {
+              const range = fish.ranges[key as keyof WaterParams];
+              const matches = value >= range[0] && value <= range[1];
+              return <p key={key} className="mt-2 text-sm">{key}: {matches ? (lang === "tl" ? "Pasok sa saklaw" : "Within range") : (lang === "tl" ? "Labas sa saklaw" : "Outside range")} ({range.join(" - ")})</p>;
+            })}
+          </section>)}
+        </aside>
+      ) : showManual && showManualResults ? (
         <>
           <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} lang={lang} text={text} />
           <p className="text-sm">Mamali: {lang === "tl" ? "hinihintay ang beripikadong saklaw" : "threshold validation pending"}.</p>
@@ -1469,7 +1525,7 @@ function AnalysisPage({
           <p className="mt-3 text-sm font-medium leading-6 text-slate-600">
             {sensorFresh
               ? "Fish comparison is paused until the turbidity sensor is submerged and calibrated. A signal in air is not a valid water measurement."
-              : "No fish ranking yet. Enter measured values for all five parameters and run a manual analysis."}
+              : "No fish ranking yet. Enter at least one measured value and run a manual analysis."}
           </p>
         </aside>
       )}
@@ -1792,6 +1848,7 @@ function WaterParametersPanel({
   onAnalyze: () => void;
   text: typeof ui.en;
 }) {
+  if (!showManual && !sensorTelemetry) return <section className="card p-5"><h2 className="mb-4 text-lg font-bold">{text.waterParameters}</h2><dl className="divide-y divide-slate-100">{parameterMeta.map(meta => <div key={meta.key} className="flex flex-wrap justify-between gap-2 py-3 text-sm"><dt>{meta.label[lang]}</dt><dd className="text-slate-500">{lang === "tl" ? "Wala pang sukat" : "No measurement"}</dd></div>)}</dl></section>;
   return (
     <section className="card h-fit p-4 sm:p-5">
       <h2 className="mb-5 flex items-center gap-2 text-lg font-black text-slate-950">
@@ -2329,7 +2386,7 @@ function DashboardTrends({
   );
 }
 
-function HistoryPage({ sessions, onExport, text }: { sessions: SessionRecord[]; onExport: () => void; text: typeof ui.en }) {
+function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionRecord[]; onExport: () => void; text: typeof ui.en; lang: Lang }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const counts = sessions.reduce(
@@ -2363,12 +2420,14 @@ function HistoryPage({ sessions, onExport, text }: { sessions: SessionRecord[]; 
             <input
               className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
               placeholder="Search fish, date, status..."
+              aria-label={lang === "tl" ? "Hanapin ang tala" : "Search records"}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
             <select
               className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-black text-slate-600"
               value={statusFilter}
+              aria-label={lang === "tl" ? "Salain ayon sa kalagayan" : "Filter by status"}
               onChange={(event) => setStatusFilter(event.target.value)}
             >
               <option value="all">All status</option>
@@ -2381,7 +2440,16 @@ function HistoryPage({ sessions, onExport, text }: { sessions: SessionRecord[]; 
             <Download size={16} /> {text.exportCsv}
           </button>
         </div>
-        <div className="mt-5 overflow-x-auto">
+        <div className="mt-5 space-y-3 sm:hidden">
+          {filteredSessions.map(row => <article key={row.id} className="rounded-lg border border-slate-200 p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">{row.timestamp}</h3><span className={`rounded px-2 py-1 text-sm ${badgeClasses(overallStatus(row))}`}>{overallStatus(row)}</span></div>
+            <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
+              {[["pH", row.ph], ["Temperature", `${row.temperature} °C`], ["DO", `${row.dissolvedOxygen} mg/L`], ["Turbidity", `${row.turbidity} NTU`], ["Ammonia", `${row.ammonia} mg/L`]].map(([label, value]) => <div key={label}><dt className="text-slate-600">{label}</dt><dd className="font-semibold">{value ?? "--"}</dd></div>)}
+            </dl><p className="mt-3 border-t border-slate-100 pt-3 font-semibold">{row.bestFish} · {row.score}%</p>
+          </article>)}
+          {!filteredSessions.length && <p className="py-6 text-sm text-slate-600">{text.noHistory}</p>}
+        </div>
+        <div className="mt-5 hidden overflow-x-auto sm:block">
           <table className="min-w-full text-left text-sm">
             <thead>
               <tr className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500">
@@ -2646,8 +2714,8 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
   }).sort((a, b) => a.targetHarvestDate.localeCompare(b.targetHarvestDate));
   const overdue = records.filter(row => !row.actualHarvestDate && daysUntilHarvest(row.targetHarvestDate, today) < 0);
   const recentHarvests = records.flatMap(row => row.harvestEvents.map(event => ({ ...event, species: row.species, fishpen: row.fishpenName }))).sort((a, b) => b.harvestDate.localeCompare(a.harvestDate) || b.id - a.id).slice(0, 5);
-  return <main className="mx-auto max-w-[1500px] space-y-5 px-3 pb-8 sm:px-6">
-    <div><h1 className="text-2xl font-black text-slate-950">{lang === "tl" ? "Pagpaplano at Pagsubaybay sa Ani" : "Harvest Planning and Decision Support"}</h1><p className="text-sm text-slate-600">{lang === "tl" ? "Ang petsa ng ani ay plano mo, hindi hula ng paglaki o dami ng isda." : "Harvest dates are your plans, not predictions of fish growth or yield."}</p></div>
+  return <main className="farmer-harvest mx-auto max-w-[1500px] space-y-5 px-3 pb-8 sm:px-6">
+    <div><h1 className="text-2xl font-black text-slate-950">{lang === "tl" ? "Mga Ani" : "Harvests"}</h1><p className="mt-2 text-sm text-slate-600">{lang === "tl" ? "Ang petsa ng ani ay plano mo, hindi hula ng paglaki o dami ng isda." : "Harvest dates are your plans, not predictions of fish growth or yield."}</p></div>
     {!currentUser ? <section className="card p-5"><p className="text-sm text-slate-700">{lang === "tl" ? "Mag-login upang ma-save ang tala ng ani." : "Log in to save your harvest records."}</p><button className="primary-button mt-3" onClick={() => navigate("/login")}>{lang === "tl" ? "Mag-login" : "Login"}</button></section> : <>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5"><AdminStat label={lang === "tl" ? "Aktibong alaga" : "Active batches"} value={records.length - completed.length} /><AdminStat label={lang === "tl" ? "Malapit nang anihin" : "Upcoming (7 days)"} value={upcoming.length} /><AdminStat label={lang === "tl" ? "Natapos na ani" : "Completed batches"} value={completed.length} /><AdminStat label={lang === "tl" ? "Kabuuang ani (kg)" : "Harvested (kg)"} value={totalKg.toFixed(2)} /><AdminStat label={lang === "tl" ? "Tinatayang kabuuang benta" : "Estimated gross sales"} value={`₱${grossSales.toFixed(2)}`} /></div>
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 pb-3">{(["batch", "harvest", "sample", "mortality"] as const).map((item) => <button key={item} className={`rounded-md px-4 py-2 text-sm font-bold ${action === item ? "bg-teal-700 text-white" : "text-slate-700 hover:bg-slate-100"}`} onClick={() => { setAction(item); setShowForm(item !== "batch"); setMessage(""); }}>{item === "batch" ? (lang === "tl" ? "Mga Batch" : "Batches") : item === "harvest" ? (lang === "tl" ? "Magtala ng Ani" : "Record Harvest") : item === "sample" ? (lang === "tl" ? "Sukat ng Isda" : "Sampling") : (lang === "tl" ? "Namatay na Isda" : "Mortality")}</button>)}</div>

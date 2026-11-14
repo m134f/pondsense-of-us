@@ -2,6 +2,59 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Farmer website styles are isolated from the administration and login screens. */
+.farmer-shell {
+  font-family: Arial, Helvetica, sans-serif;
+  background: #f5f8f9;
+  line-height: 1.55;
+  letter-spacing: 0;
+}
+.farmer-shell .card { border-radius: 8px; box-shadow: 0 2px 5px #142f3810; }
+.farmer-shell .font-black { font-weight: 700; }
+.farmer-shell .text-xs { font-size: 0.875rem; line-height: 1.5; }
+.farmer-shell .text-\[10px\], .farmer-shell .text-\[11px\] { font-size: 0.8125rem; }
+.farmer-shell button, .farmer-menu button { min-height: 44px; }
+.farmer-shell input:not([type="checkbox"]):not([type="radio"]),
+.farmer-shell select, .farmer-shell textarea { min-height: 44px; max-width: 100%; font-size: 1rem; }
+.farmer-shell button:focus-visible, .farmer-shell input:focus-visible,
+.farmer-shell select:focus-visible, .farmer-shell summary:focus-visible,
+.farmer-menu button:focus-visible { outline: 3px solid #0d9488; outline-offset: 3px; }
+.farmer-shell .primary-button, .farmer-shell .soft-button { border-radius: 6px; }
+.farmer-shell .primary-button:hover:not(:disabled) { transform: none; box-shadow: none; }
+.farmer-shell main > *, .farmer-shell .grid > * { min-width: 0; }
+.farmer-shell summary { min-height: 44px; cursor: pointer; }
+.farmer-shell h1 { line-height: 1.25; }
+.farmer-shell h2 { line-height: 1.35; }
+.farmer-shell p { overflow-wrap: anywhere; }
+.farmer-shell table { font-size: 0.875rem; }
+.farmer-shell th { white-space: nowrap; }
+.farmer-shell td { padding-top: 14px; padding-bottom: 14px; }
+.analysis-heading { grid-column: 1 / -1; }
+.monitoring-mode .analysis-results { order: 1; }
+.monitoring-mode .analysis-inputs { order: 2; }
+.farmer-analysis > aside:last-child { order: 3; }
+.analysis-heading { order: 0; }
+.farmer-menu { font-family: Arial, Helvetica, sans-serif; }
+.farmer-shell .farmer-harvest { padding-top: 24px; }
+.farmer-harvest > .grid > div { border-radius: 8px; }
+@media (min-width: 1100px) {
+  .farmer-analysis { grid-template-columns: minmax(250px, 0.8fr) minmax(0, 1.7fr) minmax(240px, 0.8fr); align-items: start; }
+  .monitoring-mode .analysis-inputs { order: 1; }
+  .monitoring-mode .analysis-results { order: 2; }
+}
+@media (max-width: 639px) {
+  .farmer-shell main { padding-left: 16px; padding-right: 16px; }
+  .farmer-shell .card { padding: 16px; }
+  .farmer-shell header .card { padding: 0; }
+  .farmer-shell .recharts-wrapper { max-width: 100%; }
+  .farmer-shell .grid-cols-5 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .farmer-shell .grid-cols-3 { grid-template-columns: 1fr; }
+  .farmer-shell h1 { font-size: 1.5rem; }
+  .farmer-harvest > .grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .farmer-harvest > .grid > div { padding: 14px; }
+  .farmer-harvest > .grid > div:last-child { grid-column: 1 / -1; }
+}
+
 @layer base {
   html {
     min-height: 100%;

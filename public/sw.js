@@ -33,6 +33,9 @@ self.addEventListener("fetch", (event) => {
   const { request } = event;
   const url = new URL(request.url);
 
+  // Never serve cached Vite source modules during local development.
+  if (["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return;
+
   if (request.method !== "GET" || url.pathname.startsWith("/api/")) {
     return;
   }
