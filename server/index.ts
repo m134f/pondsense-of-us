@@ -1,4 +1,6 @@
 import { loadFishCatalog } from "./services/FishCatalog";
+import { migratePublicMonitoring } from './migrations/publicMonitoring';
+import { publicMonitoringRouter } from './routes/publicMonitoring';
 import { validateManual } from '../src/lib/manualValidation';
 import { migratePartialManual } from './migrations/partialManual';
 import "dotenv/config";
@@ -65,6 +67,7 @@ app.use(cors({
   }
 }));
 app.use(express.json());
+app.use('/api', publicMonitoringRouter(pool));
 app.use('/api', planningRouter(pool));
 app.use('/api', fishpenSmsRouter(pool));
 
@@ -1482,6 +1485,7 @@ async function sendDueHarvestReminders() {
 
 try {
   await ensureAdminStorage();
+  if (pool) await migratePublicMonitoring(pool);
   if (pool) await migratePartialManual(pool);
   if (pool) await migratePlanning(pool);
   if (pool) await migrateFishpenSms(pool);

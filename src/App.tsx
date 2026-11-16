@@ -38,6 +38,7 @@ import { HarvestReview } from "./components/HarvestReview";
 import { FishpenSmsSettings, manualSmsPenKey } from "./components/FishpenSmsSettings";
 import { WaterSmsLogs } from "./components/WaterSmsLogs";
 import { ManualWaterForm } from "./components/ManualWaterForm";
+import { PublicMonitoring } from './components/PublicMonitoring';
 import { measuredStatus, parameterStatus } from './lib/measurementStatus';
 import { simpleHash, storage, type AppUser } from "./lib/storage";
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
@@ -980,8 +981,8 @@ export default function App() {
     return <main className="min-h-screen bg-white text-slate-900">
       <header className="border-b border-slate-200"><div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-5 py-4"><div className="flex items-center gap-3"><img src="/logofishpond.png" alt="" className="h-11 w-11 rounded-lg object-contain"/><strong className="text-lg">PondSense of Us</strong></div><button className="soft-button min-h-11" onClick={() => setLang(tl ? "en" : "tl")}>{tl ? "English" : "Filipino"}</button></div></header>
       <div className="relative isolate overflow-hidden bg-teal-950"><img src="/laguna-de-bay-enhanced.jpg" alt="" className="absolute inset-0 -z-10 h-full w-full object-cover object-center opacity-55"/><div className="mx-auto max-w-5xl px-5 py-12 text-white sm:py-16"><p className="font-semibold">Cuyab · Laguna de Bay</p><h1 className="mt-2 text-4xl font-bold">{title}</h1></div></div>
-      <section className="mx-auto max-w-5xl px-5 py-8"><h2 className="text-2xl font-bold">{harvest ? (tl ? "Talaan ng iyong ani" : "Your harvest records") : personal ? title : (tl ? "Wala pang pampublikong sukat" : "No public readings yet")}</h2>
-        <p className="mt-3 max-w-xl text-base leading-relaxed text-slate-700">{harvest ? (tl ? "Mag-login para makita ang mga alagang isda, susunod na petsa ng ani, at mga naitalang ani sa iyong fishpen." : "Log in to see your fish batches, upcoming harvest dates, and past harvests.") : personal ? (tl ? "Mag-login para makita ang iyong pribadong tala." : "Log in to view your private records.") : (tl ? "Wala pang inilalathalang sukat. Mag-login para makita ang datos ng sarili mong fishpen." : "No water measurements have been published here. Log in to check your own fishpen.")}</p>
+      <section className="mx-auto max-w-5xl px-5 py-8">{!personal && <PublicMonitoring lang={lang} />}<h2 className="mt-5 text-2xl font-bold">{harvest ? (tl ? "Talaan ng iyong ani" : "Your harvest records") : personal ? title : (tl ? "Aking fishpen" : "My fishpen")}</h2>
+        <p className="mt-3 max-w-xl text-base leading-relaxed text-slate-700">{tl ? 'Mag-login para makita at pamahalaan ang pribadong tala ng iyong fishpen.' : 'Log in to view and manage your private fishpen records.'}</p>
         <div className="mt-6 flex flex-wrap gap-3"><button className="primary-button min-h-12 px-5" onClick={() => enter("/login")}>{tl ? "Mag-login" : "Farmer login"}</button><button className="soft-button min-h-12 px-5" onClick={() => enter("/register")}>{tl ? "Gumawa ng account" : "Create account"}</button></div>
       </section>
     </main>;
@@ -3418,6 +3419,12 @@ function AdminDevicesPage() {
     setMessage(result.error || "Device assigned. Its next readings will appear in that farmer's dashboard.");
     if (!result.error) void refresh();
   };
+  const [publicDevice, setPublicDevice] = useState('');
+  const publish = async () => {
+    if (!confirm('Publish only water measurements from this device to all website visitors?')) return;
+    const result = await apiJson('/api/admin/public-monitoring', { method: 'PUT', body: JSON.stringify({ deviceId: publicDevice ? Number(publicDevice) : null }) });
+    setMessage(result.error || (publicDevice ? 'Public water monitoring enabled.' : 'Public monitoring disabled.'));
+  };
   const issueCode = async (deviceId: number) => {
     setPairingCode("");
     const result = await postJson<{ code: string }>(`/api/admin/devices/${deviceId}/pairing-code`, {});
@@ -3427,6 +3434,7 @@ function AdminDevicesPage() {
   };
   return <section className="card p-5"><h2 className="text-xl font-black text-slate-950">Sensor devices</h2><p className="mt-1 text-sm text-slate-600">Assign existing devices without changing their keys. New keys are visible to admins once only.</p>
     <div className="mt-4 flex flex-wrap gap-2"><input className="min-h-11 rounded-lg border border-slate-300 px-3" aria-label="Device name" value={deviceName} onChange={(event) => setDeviceName(event.target.value)} /><select className="min-h-11 rounded-lg border border-slate-300 px-3" aria-label="Farmer account" value={ownerUserId} onChange={(event) => setOwnerUserId(event.target.value)}><option value="">Unassigned (pair later)</option>{users.map((user) => <option key={user.id} value={user.id}>{user.fullName} ({user.phone})</option>)}</select><button className="primary-button" onClick={create}>Create device</button></div>
+    <div className="mt-4 border-t pt-4"><h3 className="font-bold">Public water monitoring</h3><div className="mt-2 flex flex-wrap gap-2"><select aria-label="Public monitoring device" className="min-h-11 rounded-lg border px-3" value={publicDevice} onChange={e => setPublicDevice(e.target.value)}><option value="">Disable public monitoring</option>{devices.map(d => <option key={d.id} value={d.id}>{d.device_name} #{d.id} - {d.owner_name || 'Unassigned'}</option>)}</select><button className="soft-button" onClick={() => void publish()}>Save publication</button></div></div>
     {newKey && <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><p className="font-bold text-amber-900">One-time device key</p><code className="mt-1 block break-all text-slate-900">{newKey}</code><button className="soft-button mt-2" onClick={() => { void navigator.clipboard.writeText(newKey); }}>Copy key</button><button className="soft-button mt-2 ml-2" onClick={() => setNewKey("")}>Hide key</button></div>}
     {pairingCode && <div className="mt-3 rounded-lg border border-teal-300 bg-teal-50 p-3 text-sm"><p className="font-bold text-teal-900">One-time farmer pairing code (15 minutes)</p><code className="mt-1 block text-lg font-bold tracking-wider text-slate-900">{pairingCode}</code><button className="soft-button mt-2" onClick={() => { void navigator.clipboard.writeText(pairingCode); }}>Copy code</button><button className="soft-button ml-2 mt-2" onClick={() => setPairingCode("")}>Hide code</button></div>}
     {message && <p className="mt-3 text-sm font-semibold text-slate-700" role="status">{message}</p>}
