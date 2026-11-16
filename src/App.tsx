@@ -38,6 +38,7 @@ import { HarvestReview } from "./components/HarvestReview";
 import { FishpenSmsSettings, manualSmsPenKey } from "./components/FishpenSmsSettings";
 import { WaterSmsLogs } from "./components/WaterSmsLogs";
 import { ManualWaterForm } from "./components/ManualWaterForm";
+import { measuredStatus, parameterStatus } from './lib/measurementStatus';
 import { simpleHash, storage, type AppUser } from "./lib/storage";
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
 
@@ -437,11 +438,7 @@ function valueText(key: keyof WaterParams, value: number) {
 }
 
 function statusFor(key: keyof WaterParams, value: number): AlertLevel {
-  if (key === "ph") return value < 6 || value > 9 ? "critical" : value < 6.5 || value > 8.5 ? "warning" : "safe";
-  if (key === "temperature") return value < 20 || value > 34 ? "warning" : value < 25 || value > 32 ? "warning" : "safe";
-  if (key === "dissolvedOxygen") return value < 3 ? "critical" : value < 5 ? "warning" : "safe";
-  if (key === "turbidity") return value > 200 ? "critical" : value > 100 ? "warning" : "safe";
-  return value > 0.1 ? "critical" : value > 0.05 ? "warning" : "safe";
+  return parameterStatus(key, value);
 }
 
 function overallStatus(params: { [K in keyof WaterParams]: number | null }): AlertLevel {
@@ -452,7 +449,11 @@ function overallStatus(params: { [K in keyof WaterParams]: number | null }): Ale
 }
 
 function historyStatus(row: SessionRecord) {
-  return parameterMeta.some(meta => row[meta.key] == null) ? 'partial' : overallStatus(row);
+  return measuredStatus(row);
+}
+
+function isPartialSession(row: SessionRecord) {
+  return parameterMeta.some(meta => row[meta.key] == null);
 }
 
 function levelClasses(level: AlertLevel) {
@@ -913,7 +914,7 @@ export default function App() {
 
   const exportCsv = () => {
     const rows = [
-      ["Date/Time", "pH", "Temp", "DO", "Turbidity", "Ammonia", "Best Fish", "Score", "Status"],
+      ["Date/Time", "pH", "Temp", "DO", "Turbidity", "Ammonia", "Best Fish", "Score", "Measured Parameter Status", "Coverage"],
       ...sessions.map((row) => [
         row.timestamp,
         row.ph,
@@ -923,7 +924,8 @@ export default function App() {
         row.ammonia,
         row.bestFish,
         row.score,
-        historyStatus(row)
+        historyStatus(row),
+        isPartialSession(row) ? 'Partial - measured parameters only' : 'Complete'
       ])
     ];
     const csv = rows.map(row => row.map(value => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
@@ -1443,12 +1445,13 @@ function AnalysisPage({
             const status = statusFor(meta.key, value);
             return <div key={meta.key} className={`rounded-lg border p-4 ${levelClasses(status)}`}>
               <h3 className="font-semibold">{meta.key === "ph" ? "pH" : meta.key === "dissolvedOxygen" ? "Dissolved oxygen" : meta.key}</h3>
+              <span className={`inline-block rounded px-2 py-1 text-sm font-semibold ${badgeClasses(status)}`}>{lang === 'tl' ? (status === 'safe' ? 'Ligtas sa saklaw' : status === 'warning' ? 'Babala' : 'Kritikal') : status === 'safe' ? 'Safe' : status === 'warning' ? 'Warning' : 'Critical'}</span>
               <p className="text-xl font-bold">{value} {meta.key === "temperature" ? "°C" : meta.key === "turbidity" ? "NTU" : meta.key === "ph" ? "" : "mg/L"}</p>
               <p>{status === "safe" ? (lang === "tl" ? "Pasok sa saklaw para sa sukat na ito" : "Within range for this parameter") : localize(status === "critical" ? "Critical Water Condition" : "Water Quality Warning", lang)}</p>
               {status !== "safe" && <p className="mt-2 text-sm">{lang === "tl" ? "Ulitin ang pagsukat, obserbahan ang isda, at kumonsulta sa BFAR/LGU kung may senyales ng stress." : "Recheck the measurement, observe the fish, and consult BFAR/LGU if fish show distress."}</p>}
             </div>;
           })}
-          <p className="text-sm text-slate-600">{lang === "tl" ? "Hindi nasukat ang mga blangkong field. Ang bahagyang pagsusuri ay hindi pa sine-save sa kasaysayan at hindi nagpapadala ng SMS." : "Blank fields are unmeasured. Partial assessments are not yet saved to history and do not send SMS."}</p>
+          <p className="text-sm text-slate-600">{lang === "tl" ? "Nai-save sa Session History. Hindi nasukat ang mga blangkong field. Walang SMS na ipinadala para sa bahagyang pagsusuring ito." : "Saved to Session History. Blank fields are unmeasured. No SMS was sent for this partial assessment."}</p>
         </section>}
         {!showManual || partialManual ? null : showManualResults ? (
           <>
@@ -2411,7 +2414,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
   const filteredSessions = sessions.filter((row) => {
     const status = historyStatus(row);
     const haystack = `${row.timestamp} ${row.bestFish} ${status}`.toLowerCase();
-    return haystack.includes(query.toLowerCase()) && (statusFilter === "all" || status === statusFilter);
+    return haystack.includes(query.toLowerCase()) && (statusFilter === "all" || statusFilter === 'partial' && isPartialSession(row) || status === statusFilter);
   });
   return (
     <main className="mx-auto max-w-[1500px] space-y-5 px-4 pb-8 sm:px-6">
@@ -2425,9 +2428,10 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
             <span className="rounded-xl bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-700">Safe {counts.safe}</span>
             <span className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-700">Warning {counts.warning}</span>
             <span className="rounded-xl bg-red-50 px-3 py-2 text-sm font-black text-red-700">Critical {counts.critical}</span>
-            <span className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-black text-slate-700">Partial {counts.partial}</span>
+            <span className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-black text-slate-700">Partial {sessions.filter(isPartialSession).length}</span>
           </div>
         </div>
+        <p className="mt-3 text-sm text-slate-600">{lang === 'tl' ? 'Ang Safe, Warning, at Critical ay para lamang sa mga sinukat na parameter. Hindi kinukumpirma ng bahagyang pagsusuri na ligtas ang buong tubig.' : 'Safe, Warning, and Critical describe measured parameters only. A partial test does not confirm overall water safety.'}</p>
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-col gap-2 sm:flex-row">
             <input
@@ -2458,6 +2462,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
           {filteredSessions.map(row => <article key={row.id} className="rounded-lg border border-slate-200 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">{row.timestamp}</h3><span className={`rounded px-2 py-1 text-sm ${badgeClasses(historyStatus(row))}`}>{historyStatus(row)}</span></div>
             <p className="text-sm text-slate-600">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : ''}</p>
+            {isPartialSession(row) && <p className="text-sm text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri - sinukat na values lamang' : 'Partial test - measured values only'}</p>}
             <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
               {[["pH", row.ph], ["Temperature", row.temperature == null ? '--' : `${row.temperature} °C`], ["DO", row.dissolvedOxygen == null ? '--' : `${row.dissolvedOxygen} mg/L`], ["Turbidity", row.turbidity == null ? '--' : `${row.turbidity} NTU`], ["Ammonia", row.ammonia == null ? '--' : `${row.ammonia} mg/L`]].map(([label, value]) => <div key={label}><dt className="text-slate-600">{label}</dt><dd className="font-semibold">{value ?? "--"}</dd></div>)}
             </dl><p className="mt-3 border-t border-slate-100 pt-3 font-semibold">{row.bestFish || '--'} · {row.score == null ? '--' : `${row.score}%`}</p>
@@ -2494,6 +2499,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
                     <td className="px-4 py-3 font-black text-teal-700">{row.score == null ? '--' : `${row.score}%`}</td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-2.5 py-1 text-xs font-black ring-1 ${badgeClasses(status)}`}>{status}</span>
+                      {isPartialSession(row) && <span className="mt-1 block text-xs text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri - sinukat lamang' : 'Partial test - measured only'}</span>}
                     </td>
                   </tr>
                 );
