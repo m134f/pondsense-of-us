@@ -475,6 +475,11 @@ function confidenceLevel(score: number): FishScore["confidence"] {
   return "Low";
 }
 
+function measurementBadge(status: AlertLevel | 'partial') {
+  const color = status === 'critical' ? 'bg-red-700 text-white' : status === 'warning' ? 'bg-amber-200 text-amber-950' : status === 'safe' ? 'bg-emerald-700 text-white' : 'bg-slate-200 text-slate-900';
+  return `inline-flex items-center rounded-md px-3 py-1.5 text-sm font-bold capitalize ${color}`;
+}
+
 function progressColor(score: number) {
   if (score >= 85) return "bg-emerald-500";
   if (score >= 65) return "bg-amber-400";
@@ -1445,7 +1450,7 @@ function AnalysisPage({
             const status = statusFor(meta.key, value);
             return <div key={meta.key} className={`rounded-lg border p-4 ${levelClasses(status)}`}>
               <h3 className="font-semibold">{meta.key === "ph" ? "pH" : meta.key === "dissolvedOxygen" ? "Dissolved oxygen" : meta.key}</h3>
-              <span className={`inline-block rounded px-2 py-1 text-sm font-semibold ${badgeClasses(status)}`}>{lang === 'tl' ? (status === 'safe' ? 'Ligtas sa saklaw' : status === 'warning' ? 'Babala' : 'Kritikal') : status === 'safe' ? 'Safe' : status === 'warning' ? 'Warning' : 'Critical'}</span>
+              <span className={measurementBadge(status)}>{lang === 'tl' ? (status === 'safe' ? 'Ligtas sa saklaw' : status === 'warning' ? 'Babala' : 'Kritikal') : status === 'safe' ? 'Safe' : status === 'warning' ? 'Warning' : 'Critical'}</span>
               <p className="text-xl font-bold">{value} {meta.key === "temperature" ? "°C" : meta.key === "turbidity" ? "NTU" : meta.key === "ph" ? "" : "mg/L"}</p>
               <p>{status === "safe" ? (lang === "tl" ? "Pasok sa saklaw para sa sukat na ito" : "Within range for this parameter") : localize(status === "critical" ? "Critical Water Condition" : "Water Quality Warning", lang)}</p>
               {status !== "safe" && <p className="mt-2 text-sm">{lang === "tl" ? "Ulitin ang pagsukat, obserbahan ang isda, at kumonsulta sa BFAR/LGU kung may senyales ng stress." : "Recheck the measurement, observe the fish, and consult BFAR/LGU if fish show distress."}</p>}
@@ -2460,7 +2465,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
         </div>
         <div className="mt-5 space-y-3 sm:hidden">
           {filteredSessions.map(row => <article key={row.id} className="rounded-lg border border-slate-200 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">{row.timestamp}</h3><span className={`rounded px-2 py-1 text-sm ${badgeClasses(historyStatus(row))}`}>{historyStatus(row)}</span></div>
+            <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">{row.timestamp}</h3><span className={measurementBadge(historyStatus(row))}>{historyStatus(row)}</span></div>
             <p className="text-sm text-slate-600">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : ''}</p>
             {isPartialSession(row) && <p className="text-sm text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri - sinukat na values lamang' : 'Partial test - measured values only'}</p>}
             <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
@@ -2498,7 +2503,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
                     <td className="px-4 py-3 font-bold">{row.bestFish || '--'}</td>
                     <td className="px-4 py-3 font-black text-teal-700">{row.score == null ? '--' : `${row.score}%`}</td>
                     <td className="px-4 py-3">
-                      <span className={`rounded-full px-2.5 py-1 text-xs font-black ring-1 ${badgeClasses(status)}`}>{status}</span>
+                      <span className={measurementBadge(status)}>{status}</span>
                       {isPartialSession(row) && <span className="mt-1 block text-xs text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri - sinukat lamang' : 'Partial test - measured only'}</span>}
                     </td>
                   </tr>
