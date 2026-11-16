@@ -13,6 +13,7 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [edited, setEdited] = useState(false);
+  const [saved, setSaved] = useState(false);
   const [review, setReview] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof WaterParams, string>>>({});
@@ -20,6 +21,7 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
   const warnings = manualWarnings(validation.values, fish);
   return <form noValidate className="card space-y-4 p-5" onSubmit={async event => {
     event.preventDefault();
+    setSaved(false);
     setFieldErrors(validation.errors);
     if (Object.keys(validation.errors).length) return;
     const values: Partial<WaterParams> = {};
@@ -40,7 +42,7 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
     if (!review) { setReview(true); setError(''); return; }
     if (warnings.length && !confirmed) return;
     setBusy(true); setError("");
-    try { await onAnalyze(values); setEdited(false); }
+    try { await onAnalyze(values); setEdited(false); setSaved(true); setReview(false); setConfirmed(false); }
     catch { setError(lang === "tl" ? "Hindi naisumite. Subukan muli." : "Could not submit. Please try again."); }
     finally { setBusy(false); }
   }}>
@@ -50,12 +52,13 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
       {field.label} {field.unit && <span className="font-normal text-slate-500">({field.unit})</span>}
       <input id={`manual-${field.key}`} type="text" inputMode="decimal" disabled={busy || review} aria-invalid={!!fieldErrors[field.key]} aria-describedby={`manual-error-${field.key}`}
         className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-base focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
-        value={draft[field.key] ?? ""} onChange={event => { setDraft({ ...draft, [field.key]: event.target.value }); setEdited(true); setConfirmed(false); }} />
+        value={draft[field.key] ?? ""} onChange={event => { setDraft({ ...draft, [field.key]: event.target.value }); setEdited(true); setConfirmed(false); setSaved(false); }} />
       {fieldErrors[field.key] && <span id={`manual-error-${field.key}`} role="alert" className="mt-1 block text-red-700">{lang === 'tl' ? 'Maglagay ng numero sa pagitan ng' : 'Enter a number between'} {fieldErrors[field.key]} {field.unit}.</span>}
       {review && warnings.includes(field.key) && <span className="mt-1 block text-amber-800">{lang === 'tl' ? 'Babala: Labas ito sa inirerekomendang saklaw ng ilang isda. Suriin muli ang sukat.' : 'Warning: Outside the recommended range for some fish species. Please check your measurement.'}</span>}
     </label>)}
     {review && <div className="space-y-3 border-t pt-3"><p className="font-semibold">{lang === 'tl' ? 'Suriin ang mga sukat sa itaas bago magpatuloy.' : 'Review the measurements above before continuing.'}</p>{warnings.length > 0 && <label className="flex min-h-11 items-center gap-3"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />{lang === 'tl' ? 'Sinuri ko muli ang mga sukat na may babala.' : 'I have checked the measurements with warnings.'}</label>}<button type="button" className="soft-button" disabled={busy} onClick={() => { setReview(false); setConfirmed(false); }}>{lang === 'tl' ? 'Itama ang mga sukat' : 'Edit measurements'}</button></div>}
     {edited && <p className="text-sm text-amber-800">{lang === "tl" ? "Hindi pa naisumite ang mga pagbabago." : "Changes have not been submitted."}</p>}
+    {saved && <p role="status" className="text-sm text-teal-800">{lang === 'tl' ? 'Nai-save ang manual test sa Session History.' : 'Manual test saved to Session History.'}</p>}
     {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
     <button disabled={busy || (review && warnings.length > 0 && !confirmed)} className="primary-button w-full disabled:opacity-60">{busy ? <LoaderCircle size={18} className="animate-spin" /> : <Activity size={18} />}{busy ? (lang === "tl" ? "Sinusuri…" : "Analyzing…") : review ? (lang === "tl" ? "Kumpirmahin at suriin" : "Confirm and analyze") : (lang === "tl" ? "Suriin ang mga inilagay" : "Review measurements")}</button>
   </form>;

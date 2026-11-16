@@ -40,9 +40,10 @@ export type AlertItem = {
   actions: string[];
 };
 
-export type SessionRecord = WaterParams & {
+export type SessionRecord = { [K in keyof WaterParams]: number | null } & {
+  inputMode?: 'manual' | 'sensor';
   id: string;
   timestamp: string;
   bestFish: string;
-  score: number;
+  score: number | null;
 };

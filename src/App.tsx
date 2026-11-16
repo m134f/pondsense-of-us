@@ -444,11 +444,15 @@ function statusFor(key: keyof WaterParams, value: number): AlertLevel {
   return value > 0.1 ? "critical" : value > 0.05 ? "warning" : "safe";
 }
 
-function overallStatus(params: WaterParams): AlertLevel {
-  const statuses = parameterMeta.map((meta) => statusFor(meta.key, params[meta.key]));
+function overallStatus(params: { [K in keyof WaterParams]: number | null }): AlertLevel {
+  const statuses = parameterMeta.filter(meta => params[meta.key] !== null).map((meta) => statusFor(meta.key, params[meta.key]!));
   if (statuses.includes("critical")) return "critical";
   if (statuses.includes("warning")) return "warning";
   return "safe";
+}
+
+function historyStatus(row: SessionRecord) {
+  return parameterMeta.some(meta => row[meta.key] == null) ? 'partial' : overallStatus(row);
 }
 
 function levelClasses(level: AlertLevel) {
@@ -457,7 +461,8 @@ function levelClasses(level: AlertLevel) {
   return "border-emerald-200 bg-emerald-50 text-emerald-800";
 }
 
-function badgeClasses(level: AlertLevel | FishScore["confidence"]) {
+function badgeClasses(level: AlertLevel | FishScore["confidence"] | 'partial') {
+  if (level === 'partial') return 'bg-slate-100 text-slate-700 ring-slate-200';
   if (level === "critical" || level === "Low") return "bg-red-100 text-red-700 ring-red-200";
   if (level === "warning" || level === "Medium") return "bg-amber-100 text-amber-700 ring-amber-200";
   return "bg-emerald-100 text-emerald-700 ring-emerald-200";
@@ -918,10 +923,10 @@ export default function App() {
         row.ammonia,
         row.bestFish,
         row.score,
-        overallStatus(row)
+        historyStatus(row)
       ])
     ];
-    const csv = rows.map((row) => row.join(",")).join("\n");
+    const csv = rows.map(row => row.map(value => `"${String(value ?? '').replace(/"/g, '""')}"`).join(',')).join('\n');
     const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
     const a = document.createElement("a");
     a.href = url;
@@ -1043,6 +1048,7 @@ export default function App() {
           currentStatus={currentStatus}
           hasAnalyzed={hasAnalyzed}
           onAnalyze={runAnalysis}
+          onManualSaved={record => { setSessions(previous => { const next = [record, ...previous].slice(0, 10); storage.saveSessions(next, currentUser); return next; }); }}
           onTestSms={testSms}
           onSelectFish={setSelectedFishId}
           text={text}
@@ -1328,6 +1334,7 @@ function ConnectEsp32({ lang, telemetry, now }: { lang: Lang; telemetry: SensorT
 }
 
 function AnalysisPage({
+  onManualSaved,
   ownerId,
   lang,
   params,
@@ -1350,6 +1357,7 @@ function AnalysisPage({
   onSelectFish,
   text
 }: {
+  onManualSaved: (record: SessionRecord) => void;
   ownerId?: string;
   lang: Lang;
   params: WaterParams;
@@ -1384,6 +1392,9 @@ function AnalysisPage({
       await onAnalyze(values as WaterParams);
       setPartialManual(null);
     } else {
+      const result = await postJson<{ saved: boolean; session: SessionRecord }>('/api/readings', { ...values, partialManual: true });
+      if (result.error || !result.data?.saved) throw new Error(result.error || 'Manual test was not saved.');
+      onManualSaved(result.data.session);
       setPartialManual({ ...values });
     }
   };
@@ -2392,13 +2403,13 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
   const [statusFilter, setStatusFilter] = useState("all");
   const counts = sessions.reduce(
     (acc, row) => {
-      acc[overallStatus(row)] += 1;
+      acc[historyStatus(row)] += 1;
       return acc;
     },
-    { safe: 0, warning: 0, critical: 0 }
+    { safe: 0, warning: 0, critical: 0, partial: 0 }
   );
   const filteredSessions = sessions.filter((row) => {
-    const status = overallStatus(row);
+    const status = historyStatus(row);
     const haystack = `${row.timestamp} ${row.bestFish} ${status}`.toLowerCase();
     return haystack.includes(query.toLowerCase()) && (statusFilter === "all" || status === statusFilter);
   });
@@ -2414,6 +2425,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
             <span className="rounded-xl bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-700">Safe {counts.safe}</span>
             <span className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-700">Warning {counts.warning}</span>
             <span className="rounded-xl bg-red-50 px-3 py-2 text-sm font-black text-red-700">Critical {counts.critical}</span>
+            <span className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-black text-slate-700">Partial {counts.partial}</span>
           </div>
         </div>
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
@@ -2435,6 +2447,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
               <option value="safe">Safe</option>
               <option value="warning">Warning</option>
               <option value="critical">Critical</option>
+              <option value="partial">Partial</option>
             </select>
           </div>
           <button className="soft-button" onClick={onExport}>
@@ -2443,10 +2456,11 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
         </div>
         <div className="mt-5 space-y-3 sm:hidden">
           {filteredSessions.map(row => <article key={row.id} className="rounded-lg border border-slate-200 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">{row.timestamp}</h3><span className={`rounded px-2 py-1 text-sm ${badgeClasses(overallStatus(row))}`}>{overallStatus(row)}</span></div>
+            <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">{row.timestamp}</h3><span className={`rounded px-2 py-1 text-sm ${badgeClasses(historyStatus(row))}`}>{historyStatus(row)}</span></div>
+            <p className="text-sm text-slate-600">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : ''}</p>
             <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
-              {[["pH", row.ph], ["Temperature", `${row.temperature} °C`], ["DO", `${row.dissolvedOxygen} mg/L`], ["Turbidity", `${row.turbidity} NTU`], ["Ammonia", `${row.ammonia} mg/L`]].map(([label, value]) => <div key={label}><dt className="text-slate-600">{label}</dt><dd className="font-semibold">{value ?? "--"}</dd></div>)}
-            </dl><p className="mt-3 border-t border-slate-100 pt-3 font-semibold">{row.bestFish} · {row.score}%</p>
+              {[["pH", row.ph], ["Temperature", row.temperature == null ? '--' : `${row.temperature} °C`], ["DO", row.dissolvedOxygen == null ? '--' : `${row.dissolvedOxygen} mg/L`], ["Turbidity", row.turbidity == null ? '--' : `${row.turbidity} NTU`], ["Ammonia", row.ammonia == null ? '--' : `${row.ammonia} mg/L`]].map(([label, value]) => <div key={label}><dt className="text-slate-600">{label}</dt><dd className="font-semibold">{value ?? "--"}</dd></div>)}
+            </dl><p className="mt-3 border-t border-slate-100 pt-3 font-semibold">{row.bestFish || '--'} · {row.score == null ? '--' : `${row.score}%`}</p>
           </article>)}
           {!filteredSessions.length && <p className="py-6 text-sm text-slate-600">{text.noHistory}</p>}
         </div>
@@ -2467,17 +2481,17 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
             </thead>
             <tbody>
               {filteredSessions.map((row) => {
-                const status = overallStatus(row);
+                const status = historyStatus(row);
                 return (
                   <tr key={row.id} className="border-b border-slate-100">
-                    <td className="px-4 py-3 font-semibold text-slate-700">{row.timestamp}</td>
-                    <td className="px-4 py-3">{row.ph}</td>
-                    <td className="px-4 py-3">{row.temperature}</td>
-                    <td className="px-4 py-3">{row.dissolvedOxygen}</td>
-                    <td className="px-4 py-3">{row.turbidity}</td>
-                    <td className="px-4 py-3">{row.ammonia}</td>
-                    <td className="px-4 py-3 font-bold">{row.bestFish}</td>
-                    <td className="px-4 py-3 font-black text-teal-700">{row.score}%</td>
+                    <td className="px-4 py-3 font-semibold text-slate-700">{row.timestamp}<span className="block text-xs font-normal">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : ''}</span></td>
+                    <td className="px-4 py-3">{row.ph ?? '--'}</td>
+                    <td className="px-4 py-3">{row.temperature ?? '--'}</td>
+                    <td className="px-4 py-3">{row.dissolvedOxygen ?? '--'}</td>
+                    <td className="px-4 py-3">{row.turbidity ?? '--'}</td>
+                    <td className="px-4 py-3">{row.ammonia ?? '--'}</td>
+                    <td className="px-4 py-3 font-bold">{row.bestFish || '--'}</td>
+                    <td className="px-4 py-3 font-black text-teal-700">{row.score == null ? '--' : `${row.score}%`}</td>
                     <td className="px-4 py-3">
                       <span className={`rounded-full px-2.5 py-1 text-xs font-black ring-1 ${badgeClasses(status)}`}>{status}</span>
                     </td>
@@ -3517,7 +3531,7 @@ function AdminPanel({
           <div className="mt-6 grid gap-4 sm:grid-cols-4">
             <AdminStat label={text.totalUsers} value={users.length} />
             <AdminStat label={text.totalAnalyses} value={sessions.length} />
-            <AdminStat label={text.averageScore} value={`${Math.round(sessions.reduce((sum, row) => sum + row.score, 0) / Math.max(1, sessions.length))}%`} />
+            <AdminStat label={text.averageScore} value={`${Math.round(sessions.reduce((sum, row) => sum + (row.score ?? 0), 0) / Math.max(1, sessions.filter(row => row.score !== null).length))}%`} />
             <AdminStat label={text.criticalCount} value={criticalCount} />
           </div>
         )}

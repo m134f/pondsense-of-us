@@ -41,6 +41,27 @@ test('planning HTTP, database isolation, history, stock locks and SMS deduplicat
     const hash = await bcrypt.hash('test-password-only', 4);
     const [u] = await scoped.execute<ResultSetHeader>("INSERT INTO users(full_name,phone,password_hash,role) VALUES ('Test Farmer A','+639111111111',?,'farmer'),('Test Farmer B','+639222222222',?,'farmer')", [hash, hash]);
     const a = u.insertId, b = a + 1;
+    await t.test('partial manual tests persist with nulls and owner isolation', async () => {
+      assert.equal((await request('/readings', 0, 'POST', { partialManual: true, ph: 7.2 })).status, 401);
+      for (const values of [{}, { ph: 15 }, { temperature: -1 }, { ph: true }]) {
+        assert.equal((await request('/readings', a, 'POST', { partialManual: true, ...values })).status, 400);
+      }
+      for (const values of [{ ph: 7.2 }, { temperature: 28 }, { ph: 9.2, temperature: 29 }]) {
+        const saved = await request('/readings', a, 'POST', { partialManual: true, userId: b, ...values });
+        assert.equal(saved.status, 200, JSON.stringify(saved));
+        const session = saved.data.session;
+        assert.equal(session.dissolvedOxygen, null);
+        assert.equal(session.score, null);
+        const history = await request('/readings', a);
+        assert.deepEqual(history.data.sessions.find((r: { id: string }) => r.id === session.id), session);
+        assert.ok(!(await request('/readings', b)).data.sessions.some((r: { id: string }) => r.id === session.id));
+        const [rows] = await scoped.query<RowDataPacket[]>('SELECT * FROM water_readings WHERE id = ?', [session.id]);
+        assert.equal(rows[0].user_id, a);
+        assert.equal(rows[0].status, null);
+        assert.equal(rows[0].turbidity, null);
+        await scoped.query('DELETE FROM water_readings WHERE id = ?', [session.id]);
+      }
+    });
     const deviceKey = 'isolated-test-device-key';
     const [d] = await scoped.execute<ResultSetHeader>('INSERT INTO sensor_devices(device_name,api_key_hash,owner_user_id) VALUES (?,?,?),(?,?,?)', ['Test Pen A device', await bcrypt.hash(deviceKey, 4), a, 'Test Pen B device', hash, a]);
     const today = new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' });

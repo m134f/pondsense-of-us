@@ -1,4 +1,6 @@
 import { loadFishCatalog } from "./services/FishCatalog";
+import { validateManual } from '../src/lib/manualValidation';
+import { migratePartialManual } from './migrations/partialManual';
 import "dotenv/config";
 import crypto from "node:crypto";
 import express from "express";
@@ -542,7 +544,7 @@ app.get("/api/readings", async (req, res) => {
   if (!auth || !pool) return res.status(401).json({ message: "Login required." });
 
   const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id, recorded_at, ph, temperature, dissolved_oxygen, turbidity, ammonia, best_fish, best_score
+    `SELECT id, input_mode, recorded_at, ph, temperature, dissolved_oxygen, turbidity, ammonia, best_fish, best_score
      FROM water_readings
      WHERE user_id = ?
      ORDER BY recorded_at DESC
@@ -554,13 +556,14 @@ app.get("/api/readings", async (req, res) => {
     sessions: rows.map((row) => ({
       id: String(row.id),
       timestamp: row.recorded_at ? new Date(row.recorded_at).toLocaleString("en-PH") : "",
-      ph: Number(row.ph),
-      temperature: Number(row.temperature),
-      dissolvedOxygen: Number(row.dissolved_oxygen),
-      turbidity: Number(row.turbidity),
-      ammonia: Number(row.ammonia),
+      inputMode: row.input_mode,
+      ph: row.ph === null ? null : Number(row.ph),
+      temperature: row.temperature === null ? null : Number(row.temperature),
+      dissolvedOxygen: row.dissolved_oxygen === null ? null : Number(row.dissolved_oxygen),
+      turbidity: row.turbidity === null ? null : Number(row.turbidity),
+      ammonia: row.ammonia === null ? null : Number(row.ammonia),
       bestFish: String(row.best_fish || ""),
-      score: Number(row.best_score || 0)
+      score: row.best_score === null ? null : Number(row.best_score)
     }))
   });
 });
@@ -574,6 +577,24 @@ app.post("/api/readings", async (req, res) => {
   const auth = verifyAuthToken(req);
   if (!auth) return res.status(401).json({ message: "Login required." });
   const reading = req.body ?? {};
+  if (reading.partialManual === true) {
+    const checked = validateManual(reading);
+    if (checked.empty || Object.keys(checked.errors).length || Object.keys(checked.values).some(key => key !== 'ph' && key !== 'temperature')) {
+      return res.status(400).json({ message: 'Enter valid pH and/or temperature measurements.', errors: checked.errors });
+    }
+    if (!pool) return res.status(503).json({ message: 'Reading could not be saved.' });
+    try {
+      const [result] = await pool.execute<ResultSetHeader>(
+        `INSERT INTO water_readings (user_id, input_mode, ph, temperature, dissolved_oxygen, turbidity, ammonia, best_fish, best_score, confidence, status)
+         VALUES (?, 'manual', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL)`,
+        [auth.sub, checked.values.ph ?? null, checked.values.temperature ?? null]);
+      const [rows] = await pool.execute<RowDataPacket[]>('SELECT recorded_at FROM water_readings WHERE id = ? AND user_id = ?', [result.insertId, auth.sub]);
+      return res.json({ saved: true, session: { id: String(result.insertId), inputMode: 'manual', timestamp: new Date(rows[0].recorded_at).toLocaleString('en-PH'), ph: checked.values.ph ?? null, temperature: checked.values.temperature ?? null, dissolvedOxygen: null, turbidity: null, ammonia: null, bestFish: '', score: null } });
+    } catch (error) {
+      console.error('Partial manual save failed:', error);
+      return res.status(503).json({ message: 'Manual test was not saved. Please try again.' });
+    }
+  }
   const validation = validateReadingPayload(reading);
   if (validation.error || !validation.values) return res.status(400).json({ message: validation.error });
   if (!pool) {
@@ -1461,6 +1482,7 @@ async function sendDueHarvestReminders() {
 
 try {
   await ensureAdminStorage();
+  if (pool) await migratePartialManual(pool);
   if (pool) await migratePlanning(pool);
   if (pool) await migrateFishpenSms(pool);
   if (pool) await migrateActiveFishSpecies(pool);
