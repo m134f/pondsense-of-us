@@ -547,12 +547,18 @@ app.get("/api/readings", async (req, res) => {
   if (!auth || !pool) return res.status(401).json({ message: "Login required." });
 
   const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT id, input_mode, recorded_at, ph, temperature, dissolved_oxygen, turbidity, ammonia, best_fish, best_score
-     FROM water_readings
-     WHERE user_id = ?
-     ORDER BY recorded_at DESC
-     LIMIT 10`,
-    [auth.sub]
+    `SELECT * FROM (
+       (SELECT CAST(id AS CHAR) AS id, input_mode, recorded_at, ph, temperature,
+        dissolved_oxygen, turbidity, ammonia, best_fish, best_score, 0 AS turbidity_estimated
+        FROM water_readings WHERE user_id = ? ORDER BY recorded_at DESC, id DESC LIMIT 50)
+       UNION ALL
+       (SELECT CONCAT('sensor-', id) AS id, 'sensor' AS input_mode, recorded_at, ph,
+        temperature_c AS temperature, NULL AS dissolved_oxygen, turbidity_ntu AS turbidity,
+        NULL AS ammonia, NULL AS best_fish, NULL AS best_score, 1 AS turbidity_estimated
+        FROM sensor_telemetry WHERE owner_user_id = ? AND water_contact_confirmed = TRUE
+        ORDER BY recorded_at DESC, id DESC LIMIT 50)
+     ) AS history ORDER BY recorded_at DESC, id DESC LIMIT 100`,
+    [auth.sub, auth.sub]
   );
 
   res.json({
@@ -560,6 +566,7 @@ app.get("/api/readings", async (req, res) => {
       id: String(row.id),
       timestamp: row.recorded_at ? new Date(row.recorded_at).toLocaleString("en-PH") : "",
       inputMode: row.input_mode,
+      turbidityEstimated: Boolean(row.turbidity_estimated),
       ph: row.ph === null ? null : Number(row.ph),
       temperature: row.temperature === null ? null : Number(row.temperature),
       dissolvedOxygen: row.dissolved_oxygen === null ? null : Number(row.dissolved_oxygen),
@@ -592,7 +599,7 @@ app.post("/api/readings", async (req, res) => {
          VALUES (?, 'manual', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL)`,
         [auth.sub, checked.values.ph ?? null, checked.values.temperature ?? null]);
       const [rows] = await pool.execute<RowDataPacket[]>('SELECT recorded_at FROM water_readings WHERE id = ? AND user_id = ?', [result.insertId, auth.sub]);
-      return res.json({ saved: true, session: { id: String(result.insertId), inputMode: 'manual', timestamp: new Date(rows[0].recorded_at).toLocaleString('en-PH'), ph: checked.values.ph ?? null, temperature: checked.values.temperature ?? null, dissolvedOxygen: null, turbidity: null, ammonia: null, bestFish: '', score: null } });
+      return res.json({ saved: true, session: { id: String(result.insertId), inputMode: 'manual', turbidityEstimated: false, timestamp: new Date(rows[0].recorded_at).toLocaleString('en-PH'), ph: checked.values.ph ?? null, temperature: checked.values.temperature ?? null, dissolvedOxygen: null, turbidity: null, ammonia: null, bestFish: '', score: null } });
     } catch (error) {
       console.error('Partial manual save failed:', error);
       return res.status(503).json({ message: 'Manual test was not saved. Please try again.' });

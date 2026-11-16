@@ -450,7 +450,7 @@ function overallStatus(params: { [K in keyof WaterParams]: number | null }): Ale
 }
 
 function historyStatus(row: SessionRecord) {
-  return measuredStatus(row);
+  return measuredStatus(row.turbidityEstimated ? { ...row, turbidity: null } : row);
 }
 
 function isPartialSession(row: SessionRecord) {
@@ -682,7 +682,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [currentUser?.id, currentUser?.phone]);
+  }, [currentUser?.id, currentUser?.phone, path]);
 
   useEffect(() => {
     let active = true;
@@ -1501,15 +1501,17 @@ function AnalysisPage({
         )}
       </section>
 
-      {!showManual && sensorFresh && sensorTelemetry ? (
+      {!showManual && sensorTelemetry ? (
         <aside className="card h-fit space-y-3 p-5">
           <h2 className="font-black">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
+          {!sensorFresh && <p className="rounded-md bg-amber-50 p-3 text-sm font-semibold text-amber-900">{lang === 'tl' ? 'Batay sa huling sukat, hindi live. Kumuha ng bagong sukat bago magpasya.' : 'Based on the last reading, not live. Obtain fresh measurements before making decisions.'}</p>}
           {(() => {
-            const readings = { ph: sensorTelemetry.ph, temperature: sensorTelemetry.temperatureC, turbidity: sensorTelemetry.turbidityNtu };
+            const readings = { ph: sensorTelemetry.ph, temperature: sensorTelemetry.temperatureC, turbidity: null };
             const measured = Object.entries(readings).filter(([, value]) => value !== null && Number.isFinite(value));
             const ranked = rankPartialFish(fishDb.filter(fish => activeSpecies.some(species => species.id === fish.id)), readings);
             if (!measured.length) return <p className="text-sm text-slate-600">{lang === "tl" ? "Wala pang beripikadong sukat para ihambing ang isda." : "No verified measurements yet for fish comparison."}</p>;
             return <>
+              {sensorTelemetry.turbidityNtu !== null && <p className="text-sm text-slate-600">{lang === 'tl' ? 'Hindi kasama ang tantyang turbidity sa paghahambing; kailangan muna ng calibration.' : 'Estimated turbidity is excluded from comparison until calibrated.'}</p>}
               <p className="text-sm text-amber-800">{lang === "tl" ? `Batay lamang sa ${measured.length} sukat. Hindi pa kumpirmadong angkop ang isda hangga't kulang ang ibang sukat.` : `Based on ${measured.length} measured parameter${measured.length === 1 ? "" : "s"} only. This is not a full suitability recommendation.`}</p>
               {ranked.length && ranked.every(item => item.matches.length === 0) && <p className="rounded-md bg-red-50 p-2 text-sm font-semibold text-red-800">{lang === "tl" ? "Walang isdang nasa saklaw ng kasalukuyang sukat. Ang nasa itaas ay pinakamalapit lamang." : "No fish is within the measured range. The top fish is only the closest match."}</p>}
               {ranked.map((item, index) => <section key={item.fish.id} className="border-t border-slate-200 py-3">
@@ -1611,7 +1613,7 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Labo ng tubig" : "Turbidity"}</p>
           <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? "" : "~"}{value} <span className="text-base">NTU</span></strong>
           {calibrated && live ? <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span> : <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-900">{calibrated ? "Last reading" : live ? (lang === "tl" ? "Live na tantiya" : "Live estimate") : (lang === "tl" ? "Huling tantiya" : "Last estimate")}</span>}
-          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "Tantiya ito mula sa live sensor signal; i-calibrate muna bago gamiting opisyal na NTU." : "This is a live estimate from the sensor signal; calibrate the probe before using it as an official NTU value."}</p>}
+          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "Tantiya mula sa sensor signal; kailangan ng calibration bago gamiting opisyal na NTU." : "Estimate from the sensor signal; calibration is required before use as an official NTU value."}</p>}
         </div>
       </div>
       {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Hindi live ang sukat na ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This reading is not live. Check device connectivity or contact the administrator."}</p>}
@@ -2467,7 +2469,8 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
         <div className="mt-5 space-y-3 sm:hidden">
           {filteredSessions.map(row => <article key={row.id} className="rounded-lg border border-slate-200 p-4">
             <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">{row.timestamp}</h3><span className={measurementBadge(historyStatus(row))}>{historyStatus(row)}</span></div>
-            <p className="text-sm text-slate-600">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : ''}</p>
+            <p className="text-sm text-slate-600">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : (lang === 'tl' ? 'Tala ng sensor' : 'Sensor Reading')}</p>
+            {row.turbidityEstimated && row.turbidity !== null && <p className="text-sm text-amber-800">{lang === 'tl' ? 'Tantya lamang ang turbidity; hindi kasama sa status.' : 'Turbidity is an estimate; excluded from status.'}</p>}
             {isPartialSession(row) && <p className="text-sm text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri - sinukat na values lamang' : 'Partial test - measured values only'}</p>}
             <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
               {[["pH", row.ph], ["Temperature", row.temperature == null ? '--' : `${row.temperature} °C`], ["DO", row.dissolvedOxygen == null ? '--' : `${row.dissolvedOxygen} mg/L`], ["Turbidity", row.turbidity == null ? '--' : `${row.turbidity} NTU`], ["Ammonia", row.ammonia == null ? '--' : `${row.ammonia} mg/L`]].map(([label, value]) => <div key={label}><dt className="text-slate-600">{label}</dt><dd className="font-semibold">{value ?? "--"}</dd></div>)}
@@ -2495,11 +2498,11 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
                 const status = historyStatus(row);
                 return (
                   <tr key={row.id} className="border-b border-slate-100">
-                    <td className="px-4 py-3 font-semibold text-slate-700">{row.timestamp}<span className="block text-xs font-normal">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : ''}</span></td>
+                    <td className="px-4 py-3 font-semibold text-slate-700">{row.timestamp}<span className="block text-xs font-normal">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : (lang === 'tl' ? 'Tala ng sensor' : 'Sensor Reading')}</span></td>
                     <td className="px-4 py-3">{row.ph ?? '--'}</td>
                     <td className="px-4 py-3">{row.temperature ?? '--'}</td>
                     <td className="px-4 py-3">{row.dissolvedOxygen ?? '--'}</td>
-                    <td className="px-4 py-3">{row.turbidity ?? '--'}</td>
+                    <td className="px-4 py-3">{row.turbidity == null ? '--' : row.turbidityEstimated ? `~${row.turbidity} (est.)` : row.turbidity}</td>
                     <td className="px-4 py-3">{row.ammonia ?? '--'}</td>
                     <td className="px-4 py-3 font-bold">{row.bestFish || '--'}</td>
                     <td className="px-4 py-3 font-black text-teal-700">{row.score == null ? '--' : `${row.score}%`}</td>

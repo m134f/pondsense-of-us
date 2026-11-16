@@ -42,6 +42,7 @@ export type AlertItem = {
 
 export type SessionRecord = { [K in keyof WaterParams]: number | null } & {
   inputMode?: 'manual' | 'sensor';
+  turbidityEstimated?: boolean;
   id: string;
   timestamp: string;
   bestFish: string;

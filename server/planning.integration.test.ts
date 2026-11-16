@@ -82,6 +82,14 @@ test('planning HTTP, database isolation, history, stock locks and SMS deduplicat
     await t.test('actual temperature/turbidity together; no phantom DO/ammonia; fishpen isolation', async () => {
       const result = await request('/v1/sensors/measurements', 0, 'POST', { rawValue: 2000, voltage: 1.6, temperatureC: 28.5, turbidityNtu: 65, ph: 7.2 }, { 'X-API-Key': deviceKey });
       assert.equal(result.status, 201, JSON.stringify(result)); assert.equal(result.data.saved, true);
+      const sensorHistory = (await request('/readings', a)).data.sessions;
+      const sensorRow = sensorHistory.find((row: { id: string }) => row.id === `sensor-${result.data.telemetryId}`);
+      assert.ok(sensorRow, 'Sensor telemetry appears in session history');
+      assert.equal(sensorRow.inputMode, 'sensor');
+      assert.equal(sensorRow.temperature, 28.5);
+      assert.equal(sensorRow.dissolvedOxygen, null);
+      assert.equal(sensorRow.score, null);
+      assert.equal((await request('/readings', b)).data.sessions.length, 0);
       const context = await planningContext(scoped, a, id);
       assert.equal(context?.recommendations.find(r => r.parameter === 'temperature')?.value, 28.5);
       assert.equal(context?.recommendations.find(r => r.parameter === 'turbidity')?.value, 65);
