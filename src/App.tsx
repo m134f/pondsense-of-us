@@ -1316,9 +1316,10 @@ function ConnectEsp32({ lang, telemetry, now }: { lang: Lang; telemetry: SensorT
     setDevices(result.data?.devices || []);
     if (!result.data?.devices.length) setMessage(lang === "tl" ? "Wala pang ESP32 na naka-assign sa account mo. Ipa-assign ito sa administrator." : "No ESP32 is assigned to your account yet. Ask your administrator to assign it.");
   };
+  useEffect(() => { void connect(); }, []);
   const live = sensorConnectionState(telemetry, now) === "live";
   return <section className="card p-4 sm:p-5">
-    <div className="flex items-center justify-between gap-3"><div><h2 className="text-base font-black text-slate-950">ESP32</h2><p className="text-xs text-slate-600">{lang === "tl" ? "Mga sensor ng account mo" : "Your account's sensors"}</p></div><button className="soft-button" onClick={() => void connect()} disabled={busy}>{busy ? (lang === "tl" ? "Hinahanap..." : "Checking...") : (lang === "tl" ? "Ikonekta ang ESP32" : "Connect ESP32")}</button></div>
+    <div><h2 className="text-base font-black text-slate-950">{lang === 'tl' ? 'Kalagayan ng sensor' : 'Sensor status'}</h2><p className="text-xs text-slate-600">{busy ? (lang === 'tl' ? 'Sinusuri...' : 'Checking...') : (lang === 'tl' ? 'Mga sensor ng account mo' : "Your account's sensors")}</p></div>
     {checked && <div className="mt-3 border-t border-slate-100 pt-3">
       {devices.length > 0 && <><p className="mb-2 text-xs font-semibold text-slate-500">{devices.length} {lang === "tl" ? "naka-assign na ESP32" : "assigned ESP32 device(s)"}</p><ul className="space-y-2 text-sm text-slate-700">{devices.map((device) => <li key={device.id} className="flex items-center justify-between gap-2"><span className="font-semibold">{device.deviceName} <span className="text-slate-500">#{device.id}</span></span><span className={`rounded-full px-2 py-1 text-xs font-bold ${live && telemetry?.deviceId === device.id ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{live && telemetry?.deviceId === device.id ? "Live" : (lang === "tl" ? "Walang bagong reading" : "No recent reading")}</span></li>)}</ul></>}
       {message && <p className="text-sm font-semibold text-slate-700" role="status">{message}</p>}
@@ -1396,7 +1397,7 @@ function AnalysisPage({
         </div>
       </div>
       <aside className="analysis-inputs space-y-5">
-        {showManual ? <ManualWaterForm lang={lang} onAnalyze={submitManual} /> : <WaterParametersPanel
+        {showManual ? <ManualWaterForm lang={lang} fish={fishDb} onAnalyze={submitManual} /> : <WaterParametersPanel
           lang={lang}
           params={params}
           setParams={setParams}
