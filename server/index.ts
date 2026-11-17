@@ -1,5 +1,7 @@
 import { loadFishCatalog } from "./services/FishCatalog";
 import { migrateAccountStatus } from './migrations/accountStatus';
+import { migrateAdminWebauthn } from './migrations/adminWebauthn';
+import { adminWebauthnRouter, passwordVerifiedFlow, allowAdminAttempt } from './routes/adminWebauthn';
 import { migratePublicMonitoring } from './migrations/publicMonitoring';
 import { publicMonitoringRouter } from './routes/publicMonitoring';
 import { validateManual } from '../src/lib/manualValidation';
@@ -12,7 +14,7 @@ import bcrypt from "bcryptjs";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { hasDbConfig, pool } from "./db";
 import { isSmsConfigured, sendSms } from "./sms";
-import { clearAuthSession, createAuthSession, requireAdmin, verifyAuthToken, type AuthRequest } from "./auth";
+import { authorizedAdminDevice, clearAuthSession, createAuthSession, requireAdmin, verifyAuthToken, type AuthRequest } from "./auth";
 import { DecisionSupportService, type AlertResult } from "./services/DecisionSupportService";
 import { migratePlanning } from './migrations/planning';
 import { planningRouter } from './routes/planning';
@@ -80,10 +82,12 @@ app.use('/api', async (req, res, next) => {
       clearAuthSession(res);
       return res.status(403).json({ message: 'Your account is not active. Contact the administrator.' });
     }
+    if (auth.role === 'admin' && !req.path.startsWith('/admin/security/') && !await authorizedAdminDevice(auth)) return res.status(403).json({ message: 'Administrator device verification required.' });
     next();
   } catch { res.status(503).json({ message: 'Unable to verify account access.' }); }
 });
 app.use('/api', publicMonitoringRouter(pool));
+app.use('/api', adminWebauthnRouter(pool));
 app.use('/api', planningRouter(pool));
 app.use('/api', fishpenSmsRouter(pool));
 
@@ -101,7 +105,7 @@ app.get("/api/health", async (_req, res) => {
     return res.json({
       ok: true,
       name: "PondSense API",
-      authPhase: 1,
+      authPhase: 2,
       database: "local-demo-mode"
     });
   }
@@ -111,7 +115,7 @@ app.get("/api/health", async (_req, res) => {
     res.json({
       ok: true,
       name: "PondSense API",
-      authPhase: 1,
+      authPhase: 2,
       database: hasDbConfig() ? "mysql-connected" : "local-demo-mode"
     });
   } catch (error) {
@@ -1287,6 +1291,7 @@ app.post("/api/sms/test", async (req, res) => {
 });
 
 app.post("/api/admin/login", async (req, res) => {
+  if (!req.headers.origin || !allowedOrigins.includes(req.headers.origin) || !req.is('application/json')) return res.status(403).json({ message: 'Untrusted request origin.' });
   const { identifier, password, pin } = req.body ?? {};
   if (!identifier || !password || !pin) {
     return res.status(400).json({ message: "Username/email, password, and admin PIN are required." });
@@ -1294,6 +1299,7 @@ app.post("/api/admin/login", async (req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required for admin login." });
 
   try {
+    if (!await allowAdminAttempt(pool, 'admin-login', 30)) return res.status(429).json({ message: 'Too many admin login attempts. Wait five minutes.' });
     const [settings] = await pool.execute<RowDataPacket[]>(
       "SELECT setting_val FROM admin_settings WHERE setting_key = 'admin_pin' LIMIT 1"
     );
@@ -1316,9 +1322,14 @@ app.post("/api/admin/login", async (req, res) => {
     const valid = await bcrypt.compare(String(password), String(admin.password_hash));
     if (!valid) return res.status(401).json({ message: "Incorrect admin password." });
 
+    const [security] = await pool.query<RowDataPacket[]>('SELECT admin_id, enforced FROM admin_security WHERE id = 1');
+    if (Number(security[0]?.admin_id) !== Number(admin.id)) return res.status(403).json({ message: 'This is not the designated administrator account.' });
+    const token = await passwordVerifiedFlow(pool, Number(admin.id));
+    if (security[0].enforced) return res.json({ webauthnRequired: true, token });
+
     await pool.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [admin.id, 'admin_login', 'Password and configured PIN verified']);
     createAuthSession(res, Number(admin.id), "admin");
-    res.json({ admin: adminPublicUser(admin) });
+    res.json({ admin: adminPublicUser(admin), bootstrapRequired: true, token });
   } catch (error) {
     console.error("Admin login error:", error);
     res.status(503).json({ message: "Admin login failed. Check MySQL and admin schema." });
@@ -1541,6 +1552,7 @@ async function sendDueHarvestReminders() {
 try {
   await ensureAdminStorage();
   if (pool) await migrateAccountStatus(pool);
+  if (pool) await migrateAdminWebauthn(pool);
   if (pool) await migratePublicMonitoring(pool);
   if (pool) await migratePartialManual(pool);
   if (pool) await migratePlanning(pool);

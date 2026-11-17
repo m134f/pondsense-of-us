@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { AdminDeviceEnrollment, AdminDeviceSettings, verifyAdminDevice } from './components/AdminDeviceSecurity';
 import {
   Activity,
   AlertTriangle,
@@ -3026,6 +3027,7 @@ function AdminRouter({ path, navigate, text }: { path: AdminPath; navigate: (pat
 
         <section className="space-y-5">
           <AdminContent path={path} navigate={navigate} text={text} />
+          {path === '/admin/settings' && <AdminDeviceSettings />}
         </section>
       </main>
     </div>
@@ -3033,6 +3035,8 @@ function AdminRouter({ path, navigate, text }: { path: AdminPath; navigate: (pat
 }
 
 function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
+  const [deviceFlow, setDeviceFlow] = useState<{ token: string; bootstrap: boolean } | null>(null);
+  const [enrolling, setEnrolling] = useState(false);
   const [identifier, setIdentifier] = useState("admin");
   const [password, setPassword] = useState("");
   const [pin, setPin] = useState("");
@@ -3042,13 +3046,20 @@ function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
   const login = async () => {
     setError("");
     setSubmitting(true);
-    const result = await postJson<{ admin: AdminUser }>("/api/admin/login", { identifier, password, pin });
+    const result = await postJson<{ admin?: AdminUser; token?: string; webauthnRequired?: boolean; bootstrapRequired?: boolean }>("/api/admin/login", { identifier, password, pin });
     setSubmitting(false);
     if (result.error) {
       setError(result.error);
       return;
     }
-    navigate("/admin/dashboard");
+    if (result.data?.token) {
+      setPassword('');
+      setPin('');
+      setDeviceFlow({ token: result.data.token, bootstrap: Boolean(result.data.bootstrapRequired) });
+      setEnrolling(Boolean(result.data.bootstrapRequired));
+      return;
+    }
+    setError('Device verification could not start. Please try again.');
   };
 
   return (
@@ -3074,6 +3085,17 @@ function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
           <input className="auth-input w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold outline-none" type="password" placeholder="Admin password" value={password} onChange={(event) => setPassword(event.target.value)} />
           <input className="auth-input w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold outline-none" type="password" placeholder="Admin PIN" value={pin} onChange={(event) => setPin(event.target.value)} onKeyDown={(event) => event.key === "Enter" && login()} />
           {error && <p className="auth-message auth-error rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p>}
+          {deviceFlow && <div className="space-y-3">
+            {!deviceFlow.bootstrap && !enrolling && <button className="primary-button w-full" disabled={submitting} onClick={async () => {
+              setSubmitting(true); setError('');
+              try { await verifyAdminDevice(deviceFlow.token); navigate('/admin/dashboard'); }
+              catch (e) { setError((e as Error).message); setDeviceFlow(null); }
+              finally { setSubmitting(false); }
+            }}>Verify this authorized device</button>}
+            {!deviceFlow.bootstrap && !enrolling && <button className="soft-button w-full" onClick={() => setEnrolling(true)}>Request enrollment of a new device</button>}
+            {enrolling && <AdminDeviceEnrollment token={deviceFlow.token} bootstrap={deviceFlow.bootstrap} onDone={() => navigate('/admin/dashboard')} />}
+            {deviceFlow.bootstrap && <button className="soft-button w-full" onClick={() => navigate('/admin/dashboard')}>Continue existing admin access until setup</button>}
+          </div>}
           <button className="primary-button w-full disabled:cursor-not-allowed disabled:bg-slate-400" onClick={login} disabled={submitting}>
             {submitting && <span className="loading-spinner" />}
             {submitting ? "Logging in..." : "Login to Admin"}

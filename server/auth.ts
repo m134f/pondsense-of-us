@@ -22,6 +22,8 @@ type JwtPayload = {
   role: Role;
   exp: number;
   version?: number;
+  credentialId?: number;
+  verifiedAt?: number;
 };
 
 export type AuthRequest = Request & {
@@ -48,12 +50,13 @@ function readCookie(req: Request, name: string) {
     ?.slice(name.length + 1);
 }
 
-export function createAuthSession(res: Response, userId: number, role: Role, version = 0) {
+export function createAuthSession(res: Response, userId: number, role: Role, version = 0, credentialId?: number) {
   const header: JwtHeader = { alg: "HS256", typ: "JWT" };
   const payload: JwtPayload = {
     sub: userId,
     role,
     version,
+    ...(credentialId ? { credentialId, verifiedAt: Math.floor(Date.now() / 1000) } : {}),
     exp: Math.floor(Date.now() / 1000) + 60 * 60 * 8
   };
   const unsigned = `${base64urlJson(header)}.${base64urlJson(payload)}`;
@@ -105,6 +108,7 @@ export function requireRole(role: Role) {
       [payload.sub, role]
     );
     if (!rows.length) return res.status(403).json({ message: `${role} role required.` });
+    if (role === 'admin' && !await authorizedAdminDevice(payload)) return res.status(403).json({ message: 'Administrator device verification required. Please log in again.' });
 
     req.auth = payload;
     next();
@@ -113,3 +117,13 @@ export function requireRole(role: Role) {
 
 export const requireFarmer = requireRole("farmer");
 export const requireAdmin = requireRole("admin");
+
+export async function authorizedAdminDevice(payload: JwtPayload) {
+  if (!pool) return false;
+  const [security] = await pool.query<RowDataPacket[]>('SELECT admin_id, enforced FROM admin_security WHERE id = 1');
+  if (!security[0] || Number(security[0].admin_id) !== payload.sub) return false;
+  if (!security[0].enforced) return true;
+  if (!payload.credentialId) return false;
+  const [credentials] = await pool.execute<RowDataPacket[]>('SELECT id FROM admin_credentials WHERE id = ? AND admin_id = ? AND revoked_at IS NULL', [payload.credentialId, payload.sub]);
+  return credentials.length === 1;
+}
