@@ -37,6 +37,33 @@
 .farmer-menu { font-family: Arial, Helvetica, sans-serif; }
 .farmer-shell .farmer-harvest { padding-top: 24px; }
 .farmer-harvest > .grid > div { border-radius: 8px; }
+.harvest-overview { border-top: 1px solid #dce6e8; border-bottom: 1px solid #dce6e8; padding: 20px 0; }
+.harvest-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; }
+.harvest-metrics > div { min-width: 0; }
+.harvest-metrics dt { font-size: 0.875rem; color: #52656d; }
+.harvest-metrics dd { margin: 4px 0 0; font-size: 1.5rem; font-weight: 700; line-height: 1.3; color: #115e59; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
+.harvest-summary-footer { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 20px; }
+.harvest-summary-footer p { color: #52656d; font-size: 0.875rem; }
+.harvest-summary-footer strong { margin-left: 8px; color: #172b35; }
+.harvest-tabs { display: flex; gap: 4px; overflow-x: auto; border-bottom: 1px solid #dce6e8; padding-bottom: 4px; }
+.harvest-tabs button { flex: 0 0 auto; white-space: nowrap; padding: 10px 14px; border-bottom: 2px solid transparent; color: #52656d; font-size: 0.875rem; font-weight: 600; }
+.harvest-tabs button[aria-current="page"] { color: #0f766e; border-bottom-color: #0f766e; background: #edf8f5; }
+.harvest-tabs button:disabled { opacity: 0.5; cursor: not-allowed; }
+.harvest-empty { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 32px 20px; border: 1px dashed #c5d8d9; border-radius: 8px; text-align: center; }
+.harvest-empty-icon { display: grid; width: 56px; height: 56px; place-items: center; border-radius: 50%; background: #e7f4f1; color: #0f766e; }
+.harvest-empty h2 { font-size: 1.125rem; font-weight: 700; color: #172b35; }
+.harvest-empty p { max-width: 380px; color: #52656d; font-size: 0.9375rem; }
+.farmer-harvest label { min-width: 0; }
+.farmer-harvest input, .farmer-harvest select, .farmer-harvest textarea { min-width: 0; }
+@media (max-width: 639px) {
+  .harvest-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 24px 16px; }
+  .harvest-metrics dd { font-size: 1.25rem; }
+  .harvest-summary-footer { flex-direction: column; align-items: stretch; gap: 12px; }
+  .harvest-summary-footer .primary-button { width: 100%; min-height: 48px; }
+  .harvest-tabs { margin-right: -16px; padding-right: 16px; }
+  .harvest-tabs button { padding: 10px 12px; }
+  .harvest-empty { padding: 28px 16px; }
+}
 @media (min-width: 1100px) {
   .farmer-analysis { grid-template-columns: minmax(250px, 0.8fr) minmax(0, 1.7fr) minmax(240px, 0.8fr); align-items: start; }
   .monitoring-mode .analysis-inputs { order: 1; }
