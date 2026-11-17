@@ -2,6 +2,7 @@ import crypto from "node:crypto";
 import type { NextFunction, Request, Response } from "express";
 import type { RowDataPacket } from "mysql2";
 import { pool } from "./db";
+import type { Pool } from 'mysql2/promise';
 
 const cookieName = "pondsense_auth";
 const configuredSecret = process.env.SESSION_SECRET || process.env.JWT_SECRET;
@@ -96,19 +97,19 @@ export function verifyAuthToken(req: Request): JwtPayload | null {
   }
 }
 
-export function requireRole(role: Role) {
+export function requireRole(role: Role, database: Pool | null = pool) {
   return async (req: AuthRequest, res: Response, next: NextFunction) => {
     const payload = verifyAuthToken(req);
     if (!payload) return res.status(401).json({ message: "Login required." });
     if (payload.role !== role) return res.status(403).json({ message: `${role} role required.` });
-    if (!pool) return res.status(503).json({ message: "Database is required for authentication." });
+    if (!database) return res.status(503).json({ message: "Database is required for authentication." });
 
-    const [rows] = await pool.execute<RowDataPacket[]>(
+    const [rows] = await database.execute<RowDataPacket[]>(
       "SELECT id FROM users WHERE id = ? AND role = ? LIMIT 1",
       [payload.sub, role]
     );
     if (!rows.length) return res.status(403).json({ message: `${role} role required.` });
-    if (role === 'admin' && !await authorizedAdminDevice(payload)) return res.status(403).json({ message: 'Administrator device verification required. Please log in again.' });
+    if (role === 'admin' && !await authorizedAdminDevice(payload, database)) return res.status(403).json({ message: 'Administrator device verification required. Please log in again.' });
 
     req.auth = payload;
     next();
@@ -118,12 +119,12 @@ export function requireRole(role: Role) {
 export const requireFarmer = requireRole("farmer");
 export const requireAdmin = requireRole("admin");
 
-export async function authorizedAdminDevice(payload: JwtPayload) {
-  if (!pool) return false;
-  const [security] = await pool.query<RowDataPacket[]>('SELECT admin_id, enforced FROM admin_security WHERE id = 1');
+export async function authorizedAdminDevice(payload: JwtPayload, database: Pool | null = pool) {
+  if (!database) return false;
+  const [security] = await database.query<RowDataPacket[]>('SELECT admin_id, enforced FROM admin_security WHERE id = 1');
   if (!security[0] || Number(security[0].admin_id) !== payload.sub) return false;
   if (!security[0].enforced) return true;
   if (!payload.credentialId) return false;
-  const [credentials] = await pool.execute<RowDataPacket[]>('SELECT id FROM admin_credentials WHERE id = ? AND admin_id = ? AND revoked_at IS NULL', [payload.credentialId, payload.sub]);
+  const [credentials] = await database.execute<RowDataPacket[]>('SELECT id FROM admin_credentials WHERE id = ? AND admin_id = ? AND revoked_at IS NULL', [payload.credentialId, payload.sub]);
   return credentials.length === 1;
 }

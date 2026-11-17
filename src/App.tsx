@@ -1,5 +1,8 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { apiErrorMessage } from './lib/apiError';
+import { OwnerLogin, OwnerPasswordChange, sessionOwner, type OwnerSession } from './components/OwnerAuthentication';
+import { ProvisionOwner } from './components/ProvisionOwner';
 import { AdminDeviceEnrollment, AdminDeviceSettings, verifyAdminDevice } from './components/AdminDeviceSecurity';
 import { HarvestWorkspace } from './components/HarvestWorkspace';
 import { AdminFishpenAssignments } from './components/AdminFishpenAssignments';
@@ -44,7 +47,7 @@ import { WaterSmsLogs } from "./components/WaterSmsLogs";
 import { ManualWaterForm } from "./components/ManualWaterForm";
 import { PublicMonitoring } from './components/PublicMonitoring';
 import { measuredStatus, parameterStatus } from './lib/measurementStatus';
-import { simpleHash, storage, type AppUser } from "./lib/storage";
+import { clearLegacyBrowserCredentials, storage, type AppUser } from "./lib/storage";
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
 
 type AppTab = "analysis" | "history" | "harvest";
@@ -161,7 +164,7 @@ const ui = {
     subtitle: "Smart Fish Pond Monitoring — Laguna Lake",
     guest: "Guest Mode",
     print: "Print",
-    loginRegister: "Login / Register",
+    loginRegister: "Owner Login",
     logout: "Logout",
     analysis: "Analysis",
     history: "Session History",
@@ -217,7 +220,7 @@ const ui = {
     subtitle: "Smart Fish Pond Monitoring — Laguna Lake",
     guest: "Guest Mode",
     print: "I-print",
-    loginRegister: "Login / Register",
+    loginRegister: "Login ng May-ari",
     logout: "Logout",
     analysis: "Pagsusuri",
     history: "Kasaysayan ng Session",
@@ -589,7 +592,7 @@ async function postJson<T>(url: string, body: unknown): Promise<{ data: T | null
       body: JSON.stringify(body)
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) return { data: null, error: payload.message || "Request failed. Please try again.", status: response.status };
+    if (!response.ok) return { data: null, error: apiErrorMessage(response.status, payload.message), status: response.status };
     return { data: payload as T, error: null, status: response.status };
   } catch {
     return { data: null, error: "Cannot reach the server. Please check your connection and try again.", status: 0 };
@@ -607,7 +610,7 @@ async function apiJson<T>(url: string, options: RequestInit = {}): Promise<{ dat
       }
     });
     const payload = await response.json().catch(() => ({}));
-    if (!response.ok) return { data: null, error: payload.message || "Request failed. Please try again.", status: response.status };
+    if (!response.ok) return { data: null, error: apiErrorMessage(response.status, payload.message), status: response.status };
     return { data: payload as T, error: null, status: response.status };
   } catch {
     return { data: null, error: "Cannot reach the server. Please check your connection and try again.", status: 0 };
@@ -632,7 +635,8 @@ export default function App() {
   }, []);
   const [selectedFishId, setSelectedFishId] = useState("tilapia");
   const [sessions, setSessions] = useState<SessionRecord[]>(storage.sessions(savedUser));
-  const [currentUser, setCurrentUser] = useState<AppUser | null>(savedUser);
+  const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
+  const [sessionLoading, setSessionLoading] = useState(true);
   const [path, setPath] = useState(window.location.pathname);
   const [authOpen, setAuthOpen] = useState(false);
   const [sms, setSms] = useState("");
@@ -653,19 +657,23 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (!currentUser || path.startsWith("/admin")) return;
+    if (path.startsWith('/admin')) { setSessionLoading(false); return; }
     let active = true;
-    void apiJson<{ user: { id: number; role: "farmer" | "admin" } }>("/api/session").then((result) => {
+    setSessionLoading(true);
+    clearLegacyBrowserCredentials();
+    void apiJson<OwnerSession>("/api/session").then((result) => {
       if (!active) return;
-      const isWrongAccount = result.data?.user && (String(result.data.user.id) !== currentUser.id || result.data.user.role !== "farmer");
-      if (result.status === 401 || isWrongAccount) {
+      if (result.data?.user.role === 'farmer') {
+        const owner = sessionOwner(result.data); setCurrentUser(owner); storage.saveCurrentUser(owner);
+      } else {
         storage.saveCurrentUser(null);
         setCurrentUser(null);
-        setSms("Your farmer session is no longer active. Please log in again to connect your ESP32.");
+        setSensorTelemetry(null); setSensorTrend([]); setSessions([]);
       }
+      setSessionLoading(false);
     });
     return () => { active = false; };
-  }, [currentUser?.id, path]);
+  }, [path]);
 
   useEffect(() => {
     paramsRef.current = params;
@@ -722,7 +730,7 @@ export default function App() {
     let trendController: AbortController | undefined;
     let failures = 0;
 
-    if (!currentUser) {
+    if (!currentUser || currentUser.mustChangePassword || !currentUser.fishpenAssignment) {
       setSensorTelemetry(null);
       setSensorTrend([]);
       return () => { active = false; };
@@ -737,7 +745,7 @@ export default function App() {
       window.clearTimeout(timeout);
       latestController = undefined;
       if (!active) return;
-      if (result.status === 401 || result.status === 403) return;
+      if (result.status === 401 || result.status === 403) { setCurrentUser(null); storage.saveCurrentUser(null); setSensorTelemetry(null); setSensorTrend([]); setSessions([]); return; }
 
       if (result.data) {
         failures = 0;
@@ -936,7 +944,7 @@ export default function App() {
 
   const testSms = async () => {
     if (!currentUser?.phone) {
-      setSms("Login or register first so PondSense knows what phone number to text.");
+      setSms("Log in using your administrator-provided owner account.");
       navigate("/login");
       return;
     }
@@ -976,6 +984,7 @@ export default function App() {
   if (path.startsWith("/admin")) {
     return <AdminRouter path={path as AdminPath} navigate={navigate} text={text} />;
   }
+  if (sessionLoading) return <main className="p-8" role="status">Checking your session… / Sinusuri ang iyong login…</main>;
 
   if (path === "/login" || path === "/register") {
     return (
@@ -999,23 +1008,10 @@ export default function App() {
     );
   }
 
-  if (!currentUser) {
-    const tl = lang === "tl";
-    const harvest = path === "/harvest";
-    const history = path === "/history";
-    const profile = path === "/profile";
-    const personal = harvest || history || profile;
-    const title = harvest ? (tl ? "Mga ani" : "Harvests") : history ? (tl ? "Mga nakaraang sukat" : "Reading history") : profile ? (tl ? "Aking account" : "My account") : (tl ? "Kalidad ng tubig sa Cuyab" : "Cuyab water monitoring");
-    const enter = (route: "/login" | "/register") => { setLoginDestination(personal ? path as UserPath : "/dashboard"); navigate(route); };
-    return <main className="min-h-screen bg-white text-slate-900">
-      <header className="border-b border-slate-200"><div className="mx-auto flex max-w-5xl items-center justify-between gap-3 px-5 py-4"><div className="flex items-center gap-3"><img src="/logofishpond.png" alt="" className="h-11 w-11 rounded-lg object-contain"/><strong className="text-lg">PondSense of Us</strong></div><button className="soft-button min-h-11" onClick={() => setLang(tl ? "en" : "tl")}>{tl ? "English" : "Filipino"}</button></div></header>
-      <div className="relative isolate overflow-hidden bg-teal-950"><img src="/laguna-de-bay-enhanced.jpg" alt="" className="absolute inset-0 -z-10 h-full w-full object-cover object-center opacity-55"/><div className="mx-auto max-w-5xl px-5 py-12 text-white sm:py-16"><p className="font-semibold">Cuyab · Laguna de Bay</p><h1 className="mt-2 text-4xl font-bold">{title}</h1></div></div>
-      <section className="mx-auto max-w-5xl px-5 py-8">{!personal && <PublicMonitoring lang={lang} />}<h2 className="mt-5 text-2xl font-bold">{harvest ? (tl ? "Talaan ng iyong ani" : "Your harvest records") : personal ? title : (tl ? "Aking fishpen" : "My fishpen")}</h2>
-        <p className="mt-3 max-w-xl text-base leading-relaxed text-slate-700">{tl ? 'Mag-login para makita at pamahalaan ang pribadong tala ng iyong fishpen.' : 'Log in to view and manage your private fishpen records.'}</p>
-        <div className="mt-6 flex flex-wrap gap-3"><button className="primary-button min-h-12 px-5" onClick={() => enter("/login")}>{tl ? "Mag-login" : "Farmer login"}</button><button className="soft-button min-h-12 px-5" onClick={() => enter("/register")}>{tl ? "Gumawa ng account" : "Create account"}</button></div>
-      </section>
-    </main>;
-  }
+  if (currentUser?.mustChangePassword) return <OwnerPasswordChange onDone={() => window.location.assign('/dashboard')} onLogout={async () => { await postJson('/api/logout', {}); storage.saveCurrentUser(null); setCurrentUser(null); navigate('/login'); }} />;
+  if (currentUser && !currentUser.fishpenAssignment) return <main className="mx-auto max-w-lg space-y-4 p-6"><h1 className="text-xl font-bold">Fishpen assignment needed</h1><p>No fishpen is assigned to your account. Contact your administrator. / Ipa-assign muna sa administrator ang iyong fishpen.</p><button className="soft-button" onClick={() => window.location.reload()}>Check again</button><button className="soft-button" onClick={async () => { await postJson('/api/logout', {}); storage.saveCurrentUser(null); setCurrentUser(null); navigate('/login'); }}>Logout</button></main>;
+
+  if (!currentUser) return <OwnerLogin navigate={navigate} onLogin={(user, message) => { setCurrentUser(user); storage.saveCurrentUser(user); setSms(message); navigate('/dashboard'); }} />;
   if (path === "/profile") {
     return <ProfilePage currentUser={currentUser} navigate={navigate} />;
   }
@@ -2560,110 +2556,8 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
 }
 
 
-function AuthPage({
-  initialMode,
-  text,
-  navigate,
-  onLogin
-}: {
-  initialMode: "login" | "register";
-  text: typeof ui.en;
-  navigate: (path: string) => void;
-  onLogin: (user: AppUser, message: string) => void;
-}) {
-  const [mode, setMode] = useState<"login" | "register">(initialMode);
-  const [fullName, setFullName] = useState("");
-  const [phone, setPhone] = useState("+639");
-  const [password, setPassword] = useState("");
-  const [message, setMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const submit = async () => {
-    setMessage(null);
-    const cleanPhone = phone.trim();
-    if (!/^(\+639)\d{9}$/.test(cleanPhone)) return setMessage({ type: "error", text: "Use Philippine format: +639XXXXXXXXX." });
-    if (!password) return setMessage({ type: "error", text: "Please enter your password." });
-    if (mode === "register" && !fullName.trim()) return setMessage({ type: "error", text: "Please enter your full name." });
-
-    setIsSubmitting(true);
-    if (mode === "register") {
-      const result = await postJson<{ id: number | string; fullName: string; phone: string; role?: "farmer" | "admin" }>("/api/register", {
-        fullName: fullName.trim(),
-        phone: cleanPhone,
-        password
-      });
-      setIsSubmitting(false);
-      if (result.error) return setMessage({ type: "error", text: result.error });
-      setMessage({ type: "success", text: "Account submitted. Please wait for administrator approval before logging in. / Hintayin ang pag-apruba ng administrator." });
-      setMode("login");
-      navigate("/login");
-      return;
-    }
-
-    const result = await postJson<{ id: number | string; fullName: string; phone: string; createdAt?: string; role?: "farmer" | "admin" }>("/api/login", {
-      phone: cleanPhone,
-      password
-    });
-    if (result.error || !result.data) {
-      setIsSubmitting(false);
-      return setMessage({ type: "error", text: result.error || "Login failed." });
-    }
-    const session = await apiJson<{ user: { id: number; role: "farmer" | "admin" } }>("/api/session");
-    setIsSubmitting(false);
-    if (session.error || String(session.data?.user.id) !== String(result.data.id) || session.data?.user.role !== "farmer") {
-      return setMessage({ type: "error", text: "Login was not saved in this browser. Please refresh and try again." });
-    }
-
-    const user: AppUser = {
-      id: String(result.data.id),
-      fullName: result.data.fullName,
-      phone: result.data.phone,
-      passwordHash: simpleHash(password),
-      createdAt: result.data.createdAt ?? new Date().toISOString(),
-      role: result.data.role ?? "farmer"
-    };
-    storage.saveCurrentUser(user);
-    storage.saveUsers([user, ...storage.users().filter((item) => item.phone !== user.phone)]);
-    onLogin(user, "Login successful.");
-  };
-
-  return (
-    <div className="admin-login-shell relative grid min-h-screen place-items-center overflow-hidden p-4">
-      <div className="admin-water-glow" />
-      <div className="admin-ripple admin-ripple-one" />
-      <div className="admin-ripple admin-ripple-two" />
-      <section className="auth-card relative z-10 w-full max-w-md overflow-hidden rounded-2xl border border-white/25 bg-white shadow-2xl">
-        <div className="bg-gradient-to-br from-teal-500 to-emerald-600 p-6 text-white">
-          <div className="flex items-center gap-3">
-            <span className="grid h-11 w-11 place-items-center overflow-hidden rounded-xl bg-white/95 shadow">
-              <img src="/logofishpond.png?v=logo-20260612" alt="PondSense of Us logo" className="h-full w-full object-cover" />
-            </span>
-            <div>
-              <h1 className="text-2xl font-black">PondSense of Us</h1>
-              <p className="text-sm font-medium text-teal-50">{mode === "register" ? "Create your farmer account" : "Login to farmer dashboard"}</p>
-            </div>
-          </div>
-        </div>
-        <div className="p-6">
-          <div className="grid grid-cols-2 rounded-xl bg-slate-100 p-1">
-            <button className={`auth-subtle-button rounded-lg px-3 py-2 text-sm font-black ${mode === "login" ? "bg-white text-teal-700 shadow-sm" : "text-slate-500"}`} onClick={() => { setMode("login"); navigate("/login"); }}>Login</button>
-            <button className={`auth-subtle-button rounded-lg px-3 py-2 text-sm font-black ${mode === "register" ? "bg-white text-teal-700 shadow-sm" : "text-slate-500"}`} onClick={() => { setMode("register"); navigate("/register"); }}>Register</button>
-          </div>
-          {message && <p className={`auth-message mt-4 rounded-xl px-3 py-2 text-sm font-bold ${message.type === "error" ? "auth-error bg-red-50 text-red-700" : "bg-emerald-50 text-emerald-700"}`}>{message.text}</p>}
-          <div className="mt-4 space-y-3">
-            {mode === "register" && <input className="auth-input w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold outline-none" placeholder={text.fullName} value={fullName} onChange={(event) => setFullName(event.target.value)} />}
-            <input className="auth-input w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold outline-none" placeholder="+639XXXXXXXXX" value={phone} onChange={(event) => setPhone(event.target.value.replace(/\s/g, ""))} />
-            <input className="auth-input w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold outline-none" type="password" placeholder={text.password} value={password} onChange={(event) => setPassword(event.target.value)} onKeyDown={(event) => event.key === "Enter" && submit()} />
-          </div>
-          <button className="primary-button mt-5 w-full disabled:cursor-not-allowed disabled:bg-slate-400" onClick={submit} disabled={isSubmitting}>
-            {isSubmitting && <span className="loading-spinner" />}
-            {isSubmitting ? (mode === "register" ? "Creating account..." : "Logging in...") : mode === "register" ? text.createAccount : text.login}
-          </button>
-          <button className="auth-subtle-button mt-3 w-full rounded-xl px-4 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-100" onClick={() => navigate("/dashboard")}>Continue as Guest</button>
-        </div>
-      </section>
-    </div>
-  );
+function AuthPage({ navigate, onLogin }: { initialMode?: 'login' | 'register'; text: typeof ui.en; navigate: (path: string) => void; onLogin: (user: AppUser, message: string) => void }) {
+  return <OwnerLogin navigate={navigate} onLogin={onLogin} />;
 }
 
 function ProfilePage({ currentUser, navigate }: { currentUser: AppUser | null; navigate: (path: string) => void }) {
@@ -2799,135 +2693,8 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
     speciesFilter={speciesFilter} setSpeciesFilter={setSpeciesFilter} dateFilter={dateFilter} setDateFilter={setDateFilter} />;
 }
 
-function AuthModal({ text, onClose, onLogin }: { text: typeof ui.en; onClose: () => void; onLogin: (user: AppUser, message: string) => void }) {
-  const [mode, setMode] = useState<"login" | "register">("register");
-  const [fullName, setFullName] = useState("");
-  const [phone, setPhone] = useState("+639");
-  const [password, setPassword] = useState("");
-  const [message, setMessage] = useState<{ type: "error" | "success"; text: string } | null>(null);
-  const [isSubmitting, setIsSubmitting] = useState(false);
-
-  const submit = async () => {
-    setMessage(null);
-    const users = storage.users();
-    const cleanPhone = phone.trim();
-    if (!/^(\+639)\d{9}$/.test(cleanPhone)) {
-      return setMessage({ type: "error", text: "Use Philippine format: +639XXXXXXXXX. Example: +639929598628" });
-    }
-    if (!password) {
-      return setMessage({ type: "error", text: "Please enter your password." });
-    }
-
-    setIsSubmitting(true);
-    if (mode === "register") {
-      if (!fullName.trim()) {
-        setIsSubmitting(false);
-        return setMessage({ type: "error", text: "Please enter your full name." });
-      }
-      if (users.some((user) => user.phone === cleanPhone)) {
-        setIsSubmitting(false);
-        return setMessage({ type: "error", text: "This phone is already saved on this device. Switch to Login." });
-      }
-
-      const apiUser = await postJson<{ id: number | string; fullName: string; phone: string; role?: "farmer" | "admin" }>("/api/register", {
-        fullName: fullName.trim(),
-        phone: cleanPhone,
-        password
-      });
-      if (apiUser.error) {
-        setIsSubmitting(false);
-        return setMessage({ type: "error", text: apiUser.error });
-      }
-      const user: AppUser = {
-        id: String(apiUser.data?.id ?? crypto.randomUUID()),
-        fullName: apiUser.data?.fullName ?? fullName.trim(),
-        phone: apiUser.data?.phone ?? cleanPhone,
-        passwordHash: simpleHash(password),
-        createdAt: new Date().toISOString(),
-        role: apiUser.data?.role ?? "farmer"
-      };
-      storage.saveUsers([...users, user]);
-      storage.saveCurrentUser(user);
-      setIsSubmitting(false);
-      onLogin(user, `Welcome ${user.fullName}. SMS alerts are ready for water warnings.`);
-      onClose();
-    } else {
-      const apiUser = await postJson<{ id: number | string; fullName: string; phone: string; createdAt?: string; role?: "farmer" | "admin" }>("/api/login", {
-        phone: cleanPhone,
-        password
-      });
-      if (apiUser.data) {
-        const user: AppUser = {
-          id: String(apiUser.data.id),
-          fullName: apiUser.data.fullName,
-          phone: apiUser.data.phone,
-          passwordHash: simpleHash(password),
-          createdAt: apiUser.data.createdAt ?? new Date().toISOString(),
-          role: apiUser.data.role ?? "farmer"
-        };
-        storage.saveUsers([user, ...users.filter((item) => item.phone !== user.phone)]);
-        storage.saveCurrentUser(user);
-        setIsSubmitting(false);
-        onLogin(user, `Login successful. Water warning SMS alerts are active.`);
-        onClose();
-        return;
-      }
-
-      const localUser = users.find((item) => item.phone === cleanPhone && item.passwordHash === simpleHash(password));
-      if (!localUser) {
-        setIsSubmitting(false);
-        return setMessage({ type: "error", text: apiUser.error || "No account found. Please register first." });
-      }
-      storage.saveCurrentUser(localUser);
-      setIsSubmitting(false);
-      onLogin(localUser, `Local login successful. Backend SMS was not used for this local fallback account.`);
-      onClose();
-    }
-  };
-
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4">
-      <section className="w-full max-w-md overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="bg-gradient-to-br from-teal-500 to-emerald-600 p-6 text-white">
-          <div className="flex items-center justify-between gap-3">
-            <div>
-              <h2 className="text-2xl font-black">🐟 Fish Pond DSS</h2>
-              <p className="text-sm font-medium text-teal-50">{mode === "register" ? "Create your farmer account" : "Sign in to enable SMS alerts"}</p>
-            </div>
-            <button className="grid h-9 w-9 place-items-center rounded-full bg-white/15 text-white" onClick={onClose}>×</button>
-          </div>
-          <div className="mt-5 grid grid-cols-2 rounded-xl bg-white/15 p-1">
-            <button className={`rounded-lg px-3 py-2 text-sm font-black ${mode === "login" ? "bg-white text-teal-700 shadow-sm" : "text-white"}`} onClick={() => { setMode("login"); setMessage(null); }}>{text.login}</button>
-            <button className={`rounded-lg px-3 py-2 text-sm font-black ${mode === "register" ? "bg-white text-teal-700 shadow-sm" : "text-white"}`} onClick={() => { setMode("register"); setMessage(null); }}>{text.register}</button>
-          </div>
-        </div>
-        <div className="p-6">
-          <h3 className="text-sm font-black uppercase tracking-wide text-slate-500">{mode === "register" ? "New Account" : "Farmer Login"}</h3>
-          {message && (
-            <div className={`mt-4 rounded-xl border px-4 py-3 text-sm font-semibold ${
-              message.type === "error" ? "border-red-200 bg-red-50 text-red-700" : "border-emerald-200 bg-emerald-50 text-emerald-700"
-            }`}>
-              {message.text}
-            </div>
-          )}
-          <div className="mt-4 space-y-3">
-            {mode === "register" && <input className="w-full rounded-xl border border-slate-200 bg-slate-100 px-4 py-3" placeholder={text.fullName} value={fullName} onChange={(event) => setFullName(event.target.value)} />}
-            <input className="w-full rounded-xl border border-slate-200 bg-slate-100 px-4 py-3" placeholder="+639XXXXXXXXX" value={phone} onChange={(event) => setPhone(event.target.value.replace(/\s/g, ""))} />
-            <input className="w-full rounded-xl border border-slate-200 bg-slate-100 px-4 py-3" type="password" placeholder={text.password} value={password} onChange={(event) => setPassword(event.target.value)} />
-          </div>
-          <button className="primary-button mt-5 w-full disabled:cursor-not-allowed disabled:bg-slate-400" onClick={submit} disabled={isSubmitting}>
-            {isSubmitting ? "Please wait..." : mode === "register" ? text.createAccount : text.login}
-          </button>
-          {mode === "login" && (
-            <button className="mt-3 w-full text-center text-sm font-bold text-teal-700 hover:text-teal-800" onClick={() => { setMode("register"); setMessage(null); }}>
-              No account yet? Create one here.
-            </button>
-          )}
-          <p className="mt-4 text-center text-xs font-semibold text-slate-500">🔒 Local demo account only on this device</p>
-        </div>
-      </section>
-    </div>
-  );
+function AuthModal({ onClose, onLogin }: { text: typeof ui.en; onClose: () => void; onLogin: (user: AppUser, message: string) => void }) {
+  return <OwnerLogin navigate={() => onClose()} onLogin={onLogin} />;
 }
 
 function AdminRouter({ path, navigate, text }: { path: AdminPath; navigate: (path: string) => void; text: typeof ui.en }) {
@@ -3159,7 +2926,7 @@ function AdminDashboardPage() {
 
 function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
-  const [pendingOnly, setPendingOnly] = useState(false);
+  const [temporaryPassword, setTemporaryPassword] = useState('');
   const [busy, setBusy] = useState<number | null>(null);
   const [error, setError] = useState('');
   const refresh = async () => {
@@ -3181,14 +2948,13 @@ function AdminUsersPage() {
   }, []);
   const filteredUsers = users.filter((user) => {
     const value = `${user.fullName} ${user.username || ""} ${user.email || ""} ${user.phone || ""} ${user.role}`.toLowerCase();
-    return value.includes(query.toLowerCase()) && (!pendingOnly || user.accountStatus === 'PENDING');
+    return value.includes(query.toLowerCase());
   });
   return (
     <section className="card p-5">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h2 className="text-xl font-black text-slate-950">Registered Users</h2>
-          <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={pendingOnly} onChange={e => setPendingOnly(e.target.checked)} />Pending Registrations ({users.filter(user => user.accountStatus === 'PENDING').length})</label>
+          <h2 className="text-xl font-black text-slate-950">Owner Accounts</h2>
           {error && <p role="alert" className="text-red-700">{error}</p>}
           <p className="text-sm font-semibold text-slate-500">{filteredUsers.length} of {users.length} accounts shown</p>
         </div>
@@ -3199,6 +2965,8 @@ function AdminUsersPage() {
           onChange={(event) => setQuery(event.target.value)}
         />
       </div>
+      <ProvisionOwner onSaved={() => void refresh()} />
+      {temporaryPassword && <div className="mb-4 rounded-md bg-amber-50 p-4"><p>Temporary password — expires in 24 hours; provide privately.</p><code className="block break-all">{temporaryPassword}</code><button className="soft-button mt-2" onClick={() => setTemporaryPassword('')}>Hide password</button></div>}
       <div className="overflow-x-auto">
         <table className="w-full min-w-[760px] text-left text-sm">
           <thead className="bg-slate-50 text-xs uppercase text-slate-500">
@@ -3212,9 +2980,9 @@ function AdminUsersPage() {
                 <td className="px-4 py-3 text-slate-600">{user.phone || "-"}</td>
                 <td className="px-4 py-3"><span className={badgeClasses(user.role === "admin" ? "High" : "Medium")}>{user.role}</span>
                   {user.role === 'farmer' && <div className="mt-2 space-y-2"><strong>{user.accountStatus}</strong><div className="flex flex-wrap gap-2">
-                    {user.accountStatus !== 'ACTIVE' && <button disabled={busy !== null} className="soft-button" onClick={() => void updateStatus(user, 'ACTIVE')}>{user.accountStatus === 'PENDING' ? 'Approve' : 'Reactivate'}</button>}
-                    {user.accountStatus === 'PENDING' && <button disabled={busy !== null} className="soft-button" onClick={() => void updateStatus(user, 'REJECTED')}>Reject</button>}
+                    {user.accountStatus !== 'ACTIVE' && <button disabled={busy !== null} className="soft-button" onClick={() => void updateStatus(user, 'ACTIVE')}>Reactivate</button>}
                     {user.accountStatus === 'ACTIVE' && <button disabled={busy !== null} className="soft-button" onClick={() => void updateStatus(user, 'SUSPENDED')}>Suspend</button>}
+                    <button disabled={busy !== null} className="soft-button" onClick={async () => { if (!window.confirm(`Reset password for ${user.fullName}? Existing sessions will be invalidated.`)) return; setBusy(user.id); setError(''); setTemporaryPassword(''); const r = await apiJson<{ temporaryPassword: string }>(`/api/admin/owners/${user.id}/reset-password`, { method: 'POST', body: '{}' }); if (r.error) setError(r.error); else setTemporaryPassword(r.data!.temporaryPassword); setBusy(null); }}>Reset password</button>
                   </div></div>}
                 </td>
                 <td className="px-4 py-3 text-slate-600">{user.createdAt ? new Date(user.createdAt).toLocaleString("en-PH") : "-"}</td>
@@ -3469,7 +3237,6 @@ function AdminDevicesPage() {
   const [ownerUserId, setOwnerUserId] = useState("");
   const [deviceName, setDeviceName] = useState("PondSense ESP32");
   const [newKey, setNewKey] = useState("");
-  const [pairingCode, setPairingCode] = useState("");
   const [message, setMessage] = useState("");
   const refresh = async () => {
     const [deviceResult, userResult] = await Promise.all([
@@ -3494,214 +3261,16 @@ function AdminDevicesPage() {
     setMessage(result.error || "Device assigned. Its next readings will appear in that farmer's dashboard.");
     if (!result.error) void refresh();
   };
-  const [publicDevice, setPublicDevice] = useState('');
-  const publish = async () => {
-    if (!confirm('Publish only water measurements from this device to all website visitors?')) return;
-    const result = await apiJson('/api/admin/public-monitoring', { method: 'PUT', body: JSON.stringify({ deviceId: publicDevice ? Number(publicDevice) : null }) });
-    setMessage(result.error || (publicDevice ? 'Public water monitoring enabled.' : 'Public monitoring disabled.'));
-  };
-  const issueCode = async (deviceId: number) => {
-    setPairingCode("");
-    const result = await postJson<{ code: string }>(`/api/admin/devices/${deviceId}/pairing-code`, {});
-    if (result.error) return setMessage(result.error);
-    setPairingCode(result.data?.code || "");
-    setMessage("Share this one-time code with the farmer privately. It expires in 15 minutes.");
-  };
   return <section className="card p-5"><h2 className="text-xl font-black text-slate-950">Sensor devices</h2><p className="mt-1 text-sm text-slate-600">Assign existing devices without changing their keys. New keys are visible to admins once only.</p>
-    <div className="mt-4 flex flex-wrap gap-2"><input className="min-h-11 rounded-lg border border-slate-300 px-3" aria-label="Device name" value={deviceName} onChange={(event) => setDeviceName(event.target.value)} /><select className="min-h-11 rounded-lg border border-slate-300 px-3" aria-label="Farmer account" value={ownerUserId} onChange={(event) => setOwnerUserId(event.target.value)}><option value="">Unassigned (pair later)</option>{users.map((user) => <option key={user.id} value={user.id}>{user.fullName} ({user.phone})</option>)}</select><button className="primary-button" onClick={create}>Create device</button></div>
-    <div className="mt-4 border-t pt-4"><h3 className="font-bold">Public water monitoring</h3><div className="mt-2 flex flex-wrap gap-2"><select aria-label="Public monitoring device" className="min-h-11 rounded-lg border px-3" value={publicDevice} onChange={e => setPublicDevice(e.target.value)}><option value="">Disable public monitoring</option>{devices.map(d => <option key={d.id} value={d.id}>{d.device_name} #{d.id} - {d.owner_name || 'Unassigned'}</option>)}</select><button className="soft-button" onClick={() => void publish()}>Save publication</button></div></div>
+    <div className="mt-4 flex flex-wrap gap-2"><input className="min-h-11 rounded-lg border border-slate-300 px-3" aria-label="Device name" value={deviceName} onChange={(event) => setDeviceName(event.target.value)} /><select className="min-h-11 rounded-lg border border-slate-300 px-3" aria-label="Farmer account" value={ownerUserId} onChange={(event) => setOwnerUserId(event.target.value)}><option value="">Unassigned (administrator assigns)</option>{users.map((user) => <option key={user.id} value={user.id}>{user.fullName} ({user.phone})</option>)}</select><button className="primary-button" onClick={create}>Create device</button></div>
+    <p className="mt-4 text-sm text-slate-600">Monitoring is private. Owners see only their administrator-assigned fishpen.</p>
     {newKey && <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><p className="font-bold text-amber-900">One-time device key</p><code className="mt-1 block break-all text-slate-900">{newKey}</code><button className="soft-button mt-2" onClick={() => { void navigator.clipboard.writeText(newKey); }}>Copy key</button><button className="soft-button mt-2 ml-2" onClick={() => setNewKey("")}>Hide key</button></div>}
-    {pairingCode && <div className="mt-3 rounded-lg border border-teal-300 bg-teal-50 p-3 text-sm"><p className="font-bold text-teal-900">One-time farmer pairing code (15 minutes)</p><code className="mt-1 block text-lg font-bold tracking-wider text-slate-900">{pairingCode}</code><button className="soft-button mt-2" onClick={() => { void navigator.clipboard.writeText(pairingCode); }}>Copy code</button><button className="soft-button ml-2 mt-2" onClick={() => setPairingCode("")}>Hide code</button></div>}
     {message && <p className="mt-3 text-sm font-semibold text-slate-700" role="status">{message}</p>}
-    <div className="mt-4 space-y-2">{devices.map((device) => <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3" key={device.id}><div><p className="font-bold text-slate-900">{device.device_name} · #{device.id}</p><p className="text-xs text-slate-600">{device.owner_name || "Unassigned"} · Last upload: {device.last_reading_at ? new Date(device.last_reading_at).toLocaleString("en-PH") : "None"}</p></div><div className="flex flex-wrap gap-2">{device.owner_user_id === null && <button className="soft-button" onClick={() => void issueCode(device.id)}>Generate pairing code</button>}<select className="min-h-11 rounded-lg border border-slate-300 px-3 text-sm" aria-label={`Assign ${device.device_name}`} value={device.owner_user_id ?? ""} onChange={(event) => { if (event.target.value) void assign(device.id, Number(event.target.value)); }}><option value="">Unassigned</option>{users.map((user) => <option key={user.id} value={user.id}>{user.fullName} ({user.phone})</option>)}</select></div></div>)}</div>
+    <div className="mt-4 space-y-2">{devices.map((device) => <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3" key={device.id}><div><p className="font-bold text-slate-900">{device.device_name} · #{device.id}</p><p className="text-xs text-slate-600">{device.owner_name || "Unassigned"} · Last upload: {device.last_reading_at ? new Date(device.last_reading_at).toLocaleString("en-PH") : "None"}</p></div><div className="flex flex-wrap gap-2"><select className="min-h-11 rounded-lg border border-slate-300 px-3 text-sm" aria-label={`Assign ${device.device_name}`} value={device.owner_user_id ?? ""} onChange={(event) => { if (event.target.value) void assign(device.id, Number(event.target.value)); }}><option value="">Unassigned</option>{users.map((user) => <option key={user.id} value={user.id}>{user.fullName} ({user.phone})</option>)}</select></div></div>)}</div>
   </section>;
 }
 
-function PinModal({ text, onClose, onSuccess }: { text: typeof ui.en; onClose: () => void; onSuccess: () => void }) {
-  const [pin, setPin] = useState("");
-  const [error, setError] = useState("");
-  const unlock = () => {
-    if (pin === storage.adminPin()) {
-      setError("");
-      onSuccess();
-      return;
-    }
-    setError("Incorrect PIN. Please try again.");
-  };
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4">
-      <section className="w-full max-w-sm overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="border-b border-slate-200 bg-slate-50 px-6 py-5">
-          <h2 className="flex items-center gap-2 text-xl font-black text-slate-950"><Shield className="text-teal-600" /> {text.pinTitle}</h2>
-          <p className="mt-1 text-sm font-medium text-slate-500">{text.pinHelp}</p>
-        </div>
-        <div className="p-6">
-        <input
-          className="w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold outline-none transition focus:border-teal-400 focus:bg-white focus:ring-4 focus:ring-teal-100"
-          type="password"
-          value={pin}
-          onChange={(event) => {
-            setPin(event.target.value);
-            setError("");
-          }}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") unlock();
-          }}
-          placeholder="Enter admin PIN"
-        />
-        {error && <p className="mt-3 rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p>}
-        <div className="mt-6 flex justify-end gap-2">
-          <button className="soft-button" onClick={onClose}>{text.cancel}</button>
-          <button className="primary-button" onClick={unlock}>{text.unlock}</button>
-        </div>
-        </div>
-      </section>
-    </div>
-  );
-}
 
-function AdminPanel({
-  fishDb,
-  setFishDb,
-  sessions,
-  onExport,
-  onClose,
-  text
-}: {
-  fishDb: FishSpecies[];
-  setFishDb: (fish: FishSpecies[]) => void;
-  sessions: SessionRecord[];
-  onExport: () => void;
-  onClose: () => void;
-  text: typeof ui.en;
-}) {
-  const [adminTab, setAdminTab] = useState<AdminTab>("overview");
-  const [editingFishId, setEditingFishId] = useState(fishDb[0]?.id || "");
-  const users = storage.users();
-  const criticalCount = sessions.filter((record) => overallStatus(record) === "critical").length;
-  const selectedFish = fishDb.find((fish) => fish.id === editingFishId) || fishDb[0];
-
-  const updateFishRange = (key: keyof WaterParams, index: 0 | 1, value: number) => {
-    const next = fishDb.map((fish) => {
-      if (fish.id !== selectedFish.id) return fish;
-      const range = [...fish.ranges[key]] as [number, number];
-      range[index] = value;
-      return { ...fish, ranges: { ...fish.ranges, [key]: range } };
-    });
-    storage.saveFishOverrides(next);
-    setFishDb(next);
-  };
-
-  const adminTabs: Array<{ id: AdminTab; label: string; icon: typeof Shield }> = [
-    { id: "overview", label: text.overview, icon: BarChart3 },
-    { id: "users", label: text.users, icon: User },
-    { id: "fish", label: text.fishDatabase, icon: Fish },
-    { id: "records", label: text.allRecords, icon: Database },
-    { id: "settings", label: text.settings, icon: Settings }
-  ];
-
-  return (
-    <div className="fixed inset-0 z-50 grid place-items-center bg-slate-950/50 p-4">
-      <section className="max-h-[92vh] w-full max-w-6xl overflow-hidden rounded-2xl bg-white shadow-2xl">
-        <div className="border-b border-slate-200 bg-slate-950 px-6 py-5 text-white">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <div>
-              <h2 className="flex items-center gap-2 text-2xl font-black"><Shield /> {text.adminPanel}</h2>
-              <p className="text-sm font-medium text-slate-300">PondSense of Us - System Management Console</p>
-            </div>
-            <button className="grid h-9 w-9 place-items-center rounded-full bg-white/15 text-xl font-black" onClick={onClose}>×</button>
-          </div>
-        </div>
-        <div className="max-h-[calc(92vh-88px)] overflow-auto p-6">
-          <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-3">
-            {adminTabs.map((item) => (
-              <button key={item.id} className={`inline-flex items-center gap-2 rounded-xl px-3 py-2 text-sm font-black transition ${adminTab === item.id ? "bg-teal-100 text-teal-800 ring-1 ring-teal-200" : "text-slate-500 hover:bg-slate-100 hover:text-slate-900"}`} onClick={() => setAdminTab(item.id)}>
-                <item.icon size={16} /> {item.label}
-              </button>
-            ))}
-          </div>
-
-        {adminTab === "overview" && (
-          <div className="mt-6 grid gap-4 sm:grid-cols-4">
-            <AdminStat label={text.totalUsers} value={users.length} />
-            <AdminStat label={text.totalAnalyses} value={sessions.length} />
-            <AdminStat label={text.averageScore} value={`${Math.round(sessions.reduce((sum, row) => sum + (row.score ?? 0), 0) / Math.max(1, sessions.filter(row => row.score !== null).length))}%`} />
-            <AdminStat label={text.criticalCount} value={criticalCount} />
-          </div>
-        )}
-
-        {adminTab === "users" && (
-          <div className="mt-6 space-y-3">
-            {users.map((user) => (
-              <div key={user.id} className="rounded-2xl border border-slate-200 p-4">
-                <p className="font-black text-slate-950">{user.fullName}</p>
-                <p className="text-sm font-semibold text-slate-500">{user.phone}</p>
-              </div>
-            ))}
-          </div>
-        )}
-
-        {adminTab === "fish" && selectedFish && (
-          <div className="mt-6 grid gap-5 lg:grid-cols-[260px_1fr]">
-            <div className="space-y-2">
-              {fishDb.map((fish) => (
-                <button key={fish.id} className={`w-full rounded-2xl border p-3 text-left text-sm font-black ${fish.id === selectedFish.id ? "border-teal-400 bg-teal-50 text-teal-800" : "border-slate-200 bg-white text-slate-700"}`} onClick={() => setEditingFishId(fish.id)}>
-                  {fish.name}
-                </button>
-              ))}
-            </div>
-            <div className="rounded-2xl border border-slate-200 p-4">
-              <h3 className="text-xl font-black text-slate-950">{selectedFish.name}</h3>
-              <div className="mt-4 grid gap-3">
-                {parameterMeta.map((meta) => (
-                  <div key={meta.key} className="grid gap-3 rounded-2xl bg-slate-50 p-3 sm:grid-cols-[1fr_120px_120px] sm:items-center">
-                    <span className="font-bold text-slate-700">{meta.label.en}</span>
-                    <input className="rounded-xl border border-slate-200 px-3 py-2" type="number" step={meta.step} value={selectedFish.ranges[meta.key][0]} onChange={(event) => updateFishRange(meta.key, 0, Number(event.target.value))} />
-                    <input className="rounded-xl border border-slate-200 px-3 py-2" type="number" step={meta.step} value={selectedFish.ranges[meta.key][1]} onChange={(event) => updateFishRange(meta.key, 1, Number(event.target.value))} />
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
-
-        {adminTab === "records" && (
-          <div className="mt-6">
-            <button className="soft-button" onClick={onExport}><Download size={16} /> {text.exportCsv}</button>
-            <div className="mt-4 space-y-2">
-              {sessions.map((record) => (
-                <div key={record.id} className="rounded-2xl border border-slate-200 p-4">
-                  <p className="font-black text-slate-950">{record.timestamp}</p>
-                  <p className="text-sm font-semibold text-slate-500">{record.bestFish} - {record.score}% - {overallStatus(record)}</p>
-                </div>
-              ))}
-            </div>
-          </div>
-        )}
-
-        {adminTab === "settings" && (
-          <div className="mt-6 flex flex-wrap gap-3">
-            <button className="soft-button" onClick={() => {
-              const pin = prompt("New admin PIN");
-              if (pin) storage.saveAdminPin(pin);
-            }}>
-              <Settings size={16} /> {text.changePin}
-            </button>
-            <button className="inline-flex items-center justify-center gap-2 rounded-xl bg-red-600 px-4 py-3 text-sm font-bold text-white transition hover:bg-red-700" onClick={() => {
-              if (confirm("Reset all PondSense local data?")) {
-                storage.resetAll();
-                location.reload();
-              }
-            }}>
-              {text.resetAll}
-            </button>
-          </div>
-        )}
-        </div>
-      </section>
-    </div>
-  );
-}
 
 function AdminStat({ label, value }: { label: string; value: string | number }) {
   return (

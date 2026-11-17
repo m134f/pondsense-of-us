@@ -4,7 +4,8 @@ export type AppUser = {
   id: string;
   fullName: string;
   phone: string;
-  passwordHash: string;
+  mustChangePassword?: boolean;
+  fishpenAssignment?: { id: number; name: string; deviceId: number | null } | null;
   createdAt: string;
   role?: "farmer" | "admin";
 };
@@ -25,16 +26,12 @@ const sessionKey = (user?: AppUser | null) => {
 };
 
 export const storage = {
-  users: () => get<AppUser[]>("pondsense.users", []),
-  saveUsers: (users: AppUser[]) => set("pondsense.users", users),
   currentUser: () => get<AppUser | null>("pondsense.currentUser", null),
   saveCurrentUser: (user: AppUser | null) => set("pondsense.currentUser", user),
   sessions: (user?: AppUser | null) => get<SessionRecord[]>(sessionKey(user), []),
   saveSessions: (sessions: SessionRecord[], user?: AppUser | null) => set(sessionKey(user), sessions.slice(0, 10)),
   fishOverrides: () => get<FishSpecies[] | null>("pondsense.fishOverrides", null),
   saveFishOverrides: (fish: FishSpecies[]) => set("pondsense.fishOverrides", fish),
-  adminPin: () => localStorage.getItem("pondsense.adminPin") || "admin2024",
-  saveAdminPin: (pin: string) => localStorage.setItem("pondsense.adminPin", pin),
   language: () => (localStorage.getItem("pondsense.lang") as "en" | "tl") || "en",
   saveLanguage: (lang: "en" | "tl") => localStorage.setItem("pondsense.lang", lang),
   resetAll: () => {
@@ -44,8 +41,9 @@ export const storage = {
   }
 };
 
-export function simpleHash(value: string) {
-  let hash = 5381;
-  for (let i = 0; i < value.length; i += 1) hash = (hash * 33) ^ value.charCodeAt(i);
-  return (hash >>> 0).toString(16);
+export function clearLegacyBrowserCredentials() {
+  localStorage.removeItem('pondsense.users');
+  localStorage.removeItem('pondsense.adminPin');
+  const existing = get<AppUser & { passwordHash?: string } | null>('pondsense.currentUser', null);
+  if (existing) { const { passwordHash: _discard, ...metadata } = existing; set('pondsense.currentUser', metadata); }
 }

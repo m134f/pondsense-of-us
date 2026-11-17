@@ -1,6 +1,9 @@
 import { loadFishCatalog } from "./services/FishCatalog";
 import { migrateAccountStatus } from './migrations/accountStatus';
 import { migrateOwnerFishpen } from './migrations/ownerFishpen';
+import { migrateProvisionedOwners } from './migrations/provisionedOwners';
+import { ownerAccess } from './ownerAccess';
+import { ownerAccountsRouter } from './routes/ownerAccounts';
 import { assignedFishpen } from './services/OwnerFishpen';
 import { harvestAssignmentGuard } from './harvestAssignmentGuard';
 import { ownerFishpenRouter } from './routes/ownerFishpen';
@@ -90,6 +93,10 @@ app.use('/api', async (req, res, next) => {
     next();
   } catch { res.status(503).json({ message: 'Unable to verify account access.' }); }
 });
+app.use('/api', ownerAccess(pool));
+app.all('/api/public/monitoring', (_req, res) => res.status(410).json({ message: 'Public monitoring is disabled. Sign in to your owner dashboard.' }));
+app.all('/api/admin/public-monitoring', requireAdmin, (_req, res) => res.status(410).json({ message: 'Public publication is disabled for private owner accounts.' }));
+app.use('/api', ownerAccountsRouter(pool));
 app.use('/api/harvests', harvestAssignmentGuard(pool));
 app.use('/api', ownerFishpenRouter(pool));
 app.use('/api', publicMonitoringRouter(pool));
@@ -230,6 +237,7 @@ function adminPublicUser(row: RowDataPacket) {
     phone: row.phone,
     role: normalizeRole(row.role),
     accountStatus: row.account_status,
+    mustChangePassword: Boolean(row.must_change_password),
     createdAt: row.created_at
   };
 }
@@ -497,65 +505,44 @@ async function sendAccountSms(user: SmsRecipient, action: "register" | "login") 
   return sendSms(user.phone, message);
 }
 
-app.post("/api/register", async (req, res) => {
-  const { fullName, phone, email, password } = req.body ?? {};
-  if (!fullName || !/^(\+639)\d{9}$/.test(phone) || !password) {
-    return res.status(400).json({ message: "Full name, +639 phone number, and password are required." });
-  }
-
-  const passwordHash = await bcrypt.hash(password, 10);
-  if (!pool) {
-    return res.status(503).json({ message: 'Registration requires the database.' });
-  }
-
-  try {
-    const [result] = await pool.execute<ResultSetHeader>(
-      "INSERT INTO users (full_name, phone, email, password_hash, role, account_status) VALUES (?, ?, ?, ?, 'farmer', 'PENDING')",
-      [fullName, phone, email ?? null, passwordHash]
-    );
-    res.json({ id: result.insertId, fullName, phone, email: email ?? null, role: "farmer" });
-  } catch (error) {
-    const code = (error as { code?: string }).code;
-    if (code === "ER_DUP_ENTRY") {
-      return res.status(409).json({ message: "Phone number is already registered." });
-    }
-    console.error("Register database error:", error);
-    res.status(503).json({ message: "Database is not ready. Check XAMPP MySQL and schema import." });
-  }
-});
+app.all('/api/register', (_req, res) => res.status(410).json({ message: 'Public registration is disabled. Contact the administrator for an owner account.' }));
 
 app.post("/api/login", async (req, res) => {
+  if (!req.headers.origin || !allowedOrigins.includes(req.headers.origin) || !req.is('application/json')) return res.status(403).json({ message: 'Untrusted request origin.' });
   const { phone, password } = req.body ?? {};
   if (!/^(\+639)\d{9}$/.test(phone) || !password) {
     return res.status(400).json({ message: "Use Philippine phone format +639XXXXXXXXX and enter your password." });
   }
 
   if (!pool) {
-    return res.status(503).json({ message: "Database login is unavailable. Register/login works locally only in demo mode." });
+    return res.status(503).json({ message: "Login is temporarily unavailable. Please try again later." });
   }
 
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
-      "SELECT id, full_name, phone, password_hash, role, account_status, auth_version, created_at FROM users WHERE phone = ? AND role = 'farmer' LIMIT 1",
+      "SELECT id, full_name, phone, password_hash, role, account_status, auth_version, must_change_password, temporary_password_expires_at, created_at FROM users WHERE phone = ? AND role = 'farmer' LIMIT 1",
       [phone]
     );
+    if (!await allowAdminAttempt(pool, 'owner-login', 60)) return res.status(429).json({ message: 'Too many owner login attempts. Try again in five minutes.' });
     const user = rows[0];
     if (!user) {
-      return res.status(401).json({ message: "No account found for this phone number. Please register first." });
+      return res.status(401).json({ message: 'Unable to sign in. Check your credentials or contact the administrator.' });
     }
 
     const valid = await bcrypt.compare(password, String(user.password_hash));
     if (!valid) {
-      return res.status(401).json({ message: "Incorrect password. Please try again." });
+      return res.status(401).json({ message: 'Unable to sign in. Check your credentials or contact the administrator.' });
     }
 
-    if (user.account_status !== 'ACTIVE') return res.status(403).json({ message: `Account ${String(user.account_status).toLowerCase()}. Administrator approval is required.` });
+    if (user.account_status !== 'ACTIVE') return res.status(403).json({ message: 'This account is not active. Contact the administrator.' });
+    if (user.must_change_password && user.temporary_password_expires_at && new Date(user.temporary_password_expires_at).getTime() <= Date.now()) return res.status(403).json({ message: 'Temporary password expired. Contact the administrator for a reset.' });
     createAuthSession(res, Number(user.id), normalizeRole(user.role), Number(user.auth_version));
     res.json({
       id: user.id,
       fullName: user.full_name,
       phone: user.phone,
       role: normalizeRole(user.role),
+      mustChangePassword: Boolean(user.must_change_password),
       createdAt: user.created_at
     });
   } catch (error) {
@@ -568,11 +555,11 @@ app.get("/api/session", async (req, res) => {
   const auth = verifyAuthToken(req);
   if (!auth || !pool) return res.status(401).json({ message: "Login required." });
   const [rows] = await pool.execute<RowDataPacket[]>(
-    "SELECT id, full_name, username, email, phone, role, created_at FROM users WHERE id = ? LIMIT 1",
+    "SELECT id, full_name, username, email, phone, role, must_change_password, created_at FROM users WHERE id = ? LIMIT 1",
     [auth.sub]
   );
   if (!rows.length) return res.status(401).json({ message: "Login required." });
-  res.json({ user: adminPublicUser(rows[0]) });
+  res.json({ user: adminPublicUser(rows[0]), fishpenAssignment: auth.role === 'farmer' ? await assignedFishpen(pool, auth.sub) : null });
 });
 
 app.get("/api/readings", async (req, res) => {
@@ -680,7 +667,7 @@ app.post("/api/readings", async (req, res) => {
       const measurements: Measurements = Object.fromEntries(parameters.map(parameter => [parameter, {
         value: validation.values![parameter], source: 'manual', recordedAt: typeof reading.sampledAt === 'string' ? reading.sampledAt : null
       }]));
-      await queueWaterSms(pool, { owner: userId, fishpenId: reading.fishpenId, sourceId: readingId, sourceKind: 'manual', measurements })
+      await queueWaterSms(pool, { owner: userId, fishpenId: res.locals.ownerFishpen.id, sourceId: readingId, sourceKind: 'manual', measurements })
         .catch(() => console.error('Manual water alert could not be queued. Reading was saved.'));
       void flushWaterSms();
       smsResult.message = 'Water reading saved. Eligible alerts are processed using your fishpen SMS settings; delivery is not yet confirmed.';
@@ -749,36 +736,11 @@ app.get("/api/sensors/devices", async (req, res) => {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT d.id, d.device_name AS deviceName, d.last_seen_at AS lastSeenAt,
             (SELECT MAX(t.recorded_at) FROM sensor_telemetry t WHERE t.device_id = d.id) AS lastReadingAt
-     FROM sensor_devices d WHERE d.owner_user_id = ? AND d.is_active = 1 ORDER BY d.id DESC`, [auth.sub]);
+     FROM sensor_devices d WHERE d.owner_user_id = ? AND d.id = ? AND d.is_active = 1 ORDER BY d.id DESC`, [auth.sub, res.locals.ownerFishpen.deviceId || 0]);
   res.json({ devices: rows });
 });
 
-const pairingAttempts = new Map<number, { count: number; startedAt: number }>();
-app.post("/api/sensors/connect", async (req, res) => {
-  const auth = verifyAuthToken(req);
-  if (!auth) return res.status(401).json({ message: "Login required." });
-  if (auth.role !== "farmer") return res.status(403).json({ message: "Farmer account required." });
-  if (!pool) return res.status(503).json({ message: "Database is required." });
-  const code = String(req.body?.code || "").trim().toUpperCase();
-  if (!/^[A-Z0-9_-]{12}$/.test(code)) return res.status(400).json({ message: "Enter the 12-character pairing code from your administrator." });
-  const attempt = pairingAttempts.get(auth.sub);
-  if (attempt && Date.now() - attempt.startedAt < 15 * 60_000 && attempt.count >= 5) return res.status(429).json({ message: "Too many attempts. Try again later." });
-  pairingAttempts.set(auth.sub, attempt && Date.now() - attempt.startedAt < 15 * 60_000
-    ? { ...attempt, count: attempt.count + 1 } : { count: 1, startedAt: Date.now() });
-  const [devices] = await pool.execute<RowDataPacket[]>(
-    `SELECT id, pairing_code_hash FROM sensor_devices
-     WHERE owner_user_id IS NULL AND is_active = 1 AND pairing_expires_at > UTC_TIMESTAMP() AND pairing_code_hash IS NOT NULL`);
-  for (const device of devices) {
-    if (!await bcrypt.compare(code, String(device.pairing_code_hash))) continue;
-    const [result] = await pool.execute<ResultSetHeader>(
-      `UPDATE sensor_devices SET owner_user_id = ?, pairing_code_hash = NULL, pairing_expires_at = NULL
-       WHERE id = ? AND owner_user_id IS NULL AND pairing_expires_at > UTC_TIMESTAMP()`, [auth.sub, device.id]);
-    if (!result.affectedRows) break;
-    pairingAttempts.delete(auth.sub);
-    return res.json({ connected: true, deviceId: device.id });
-  }
-  res.status(400).json({ message: "Pairing code is invalid or expired. Ask your administrator for a new code." });
-});
+app.post('/api/sensors/connect', (_req, res) => res.status(410).json({ message: 'Monitoring devices are assigned by the administrator.' }));
 
 app.patch("/api/admin/devices/:id", requireAdmin, async (req: AuthRequest, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
@@ -803,10 +765,10 @@ app.get("/api/sensors/latest", async (req, res) => {
               telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, telemetry.sampled_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE telemetry.owner_user_id = ? AND telemetry.water_contact_confirmed = TRUE
+       WHERE telemetry.owner_user_id = ? AND device.owner_user_id = ? AND device.id = ? AND telemetry.water_contact_confirmed = TRUE
        ORDER BY telemetry.id DESC
        LIMIT 1`,
-      [auth.sub]
+      [auth.sub, auth.sub, res.locals.ownerFishpen.deviceId || 0]
     );
 
     const latest = rows[0];
@@ -841,9 +803,9 @@ app.get("/api/sensors/trend", async (req, res) => {
               telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, telemetry.sampled_at, device.device_name
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE telemetry.owner_user_id = ? AND telemetry.water_contact_confirmed = TRUE
+       WHERE telemetry.owner_user_id = ? AND device.owner_user_id = ? AND device.id = ? AND telemetry.water_contact_confirmed = TRUE
        ORDER BY telemetry.id DESC LIMIT 60`,
-      [auth.sub]
+      [auth.sub, auth.sub, res.locals.ownerFishpen.deviceId || 0]
     );
     res.json({ readings: rows.reverse().map((row) => ({
       deviceName: String(row.device_name),
@@ -1365,15 +1327,16 @@ app.patch('/api/admin/users/:id/status', requireAdmin, async (req: AuthRequest, 
   if (!origin || !allowedOrigins.includes(origin) || !req.is('application/json')) return res.status(403).json({ message: 'Untrusted request origin.' });
   const id = Number(req.params.id);
   const status = req.body?.status;
-  if (!Number.isSafeInteger(id) || id <= 0 || !['ACTIVE', 'REJECTED', 'SUSPENDED'].includes(status)) return res.status(400).json({ message: 'Invalid account or status.' });
+  if (!Number.isSafeInteger(id) || id <= 0 || !['ACTIVE', 'SUSPENDED'].includes(status)) return res.status(400).json({ message: 'Invalid owner or status.' });
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
     const [rows] = await connection.query<RowDataPacket[]>('SELECT account_status FROM users WHERE id = ? AND role = ? FOR UPDATE', [id, 'farmer']);
     if (!rows.length) { await connection.rollback(); return res.status(404).json({ message: 'Farmer not found.' }); }
     const previous = String(rows[0].account_status);
-    const permitted: Record<string, string[]> = { PENDING: ['ACTIVE', 'REJECTED'], ACTIVE: ['SUSPENDED'], SUSPENDED: ['ACTIVE'], REJECTED: ['ACTIVE'] };
+    const permitted: Record<string, string[]> = { PENDING: ['ACTIVE'], ACTIVE: ['SUSPENDED'], SUSPENDED: ['ACTIVE'], REJECTED: ['ACTIVE'] };
     if (!permitted[previous]?.includes(status)) { await connection.rollback(); return res.status(409).json({ message: 'Account status changed. Refresh and try again.' }); }
+    if (status === 'ACTIVE' && !await assignedFishpen(connection, id, true)) { await connection.rollback(); return res.status(409).json({ message: 'Assign a valid fishpen before reactivating this owner.' }); }
     await connection.execute('UPDATE users SET account_status = ?, auth_version = auth_version + 1 WHERE id = ?', [status, id]);
     await connection.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth!.sub, 'farmer_status_changed', JSON.stringify({ userId: id, previous, status })]);
     await connection.commit();
@@ -1567,6 +1530,7 @@ try {
   if (pool) await migratePlanning(pool);
   if (pool) await migrateFishpenSms(pool);
   if (pool) await migrateOwnerFishpen(pool);
+  if (pool) await migrateProvisionedOwners(pool);
   if (pool) await migrateActiveFishSpecies(pool);
   void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
 } catch (error) {
