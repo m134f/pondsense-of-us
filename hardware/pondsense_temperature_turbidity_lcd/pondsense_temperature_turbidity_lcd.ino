@@ -14,6 +14,33 @@ const char* API_URL = "https://pondsense-of-us.onrender.com/api/v1/sensors/measu
 
 constexpr int TURBIDITY_PIN = 34;
 constexpr int TEMPERATURE_PIN = 4;
+constexpr int PH_PIN = 35;
+constexpr float PH_CAL_VOLTAGE_4_1 = 2.29f;
+constexpr float PH_CAL_VOLTAGE_6_8 = 1.80f;
+constexpr float PH_CAL_VOLTAGE_9_1 = 1.39f;
+// Enable only when a real normally-open immersion switch is installed.
+constexpr bool USE_WATER_SWITCH = false;
+constexpr int WATER_SWITCH_PIN = 27;
+// Continuous mode assumes fixed submerged installation, not detected immersion.
+bool waterConfirmed = true;
+
+bool hasWaterSample() {
+  return USE_WATER_SWITCH ? digitalRead(WATER_SWITCH_PIN) == LOW : waterConfirmed;
+}
+
+void checkWaterConfirmation() {
+  // Optional pause/resume only; no serial command is required at startup.
+  while (Serial.available()) {
+    char command = Serial.read();
+    if (command == 'W' || command == 'w') {
+      waterConfirmed = true;
+      Serial.println("Continuous monitoring resumed. Keep probes submerged.");
+    } else if (command == 'D' || command == 'd') {
+      waterConfirmed = false;
+      Serial.println("Water test stopped. Uploads paused.");
+    }
+  }
+}
 constexpr int SENSOR_SAMPLE_COUNT = 10;
 constexpr unsigned long SEND_INTERVAL_MS = 5000;
 constexpr unsigned long WIFI_RETRY_MS = 15000;
@@ -42,9 +69,36 @@ int readTurbidityRaw() {
 }
 
 float readTemperatureC() {
+  DeviceAddress sensorAddress;
+  if (temperatureSensor.getDeviceCount() == 0 || !temperatureSensor.getAddress(sensorAddress, 0)) {
+    Serial.println("DS18B20 not detected on GPIO 4. Check VCC, GND, DATA, and pull-up.");
+    return NAN;
+  }
   temperatureSensor.requestTemperatures();
   float value = temperatureSensor.getTempCByIndex(0);
-  return value == DEVICE_DISCONNECTED_C || value == 85.0f || value < -10.0f || value > 60.0f ? NAN : value;
+  if (value == DEVICE_DISCONNECTED_C || value == 85.0f || value < -10.0f || value > 60.0f) {
+    Serial.printf("DS18B20 returned invalid temperature: %.2f C\n", value);
+    return NAN;
+  }
+  Serial.printf("DS18B20 temperature: %.2f C\n", value);
+  return value;
+}
+
+float readPhVoltage() {
+  uint32_t totalMillivolts = 0;
+  for (int sample = 0; sample < SENSOR_SAMPLE_COUNT; sample++) {
+    totalMillivolts += analogReadMilliVolts(PH_PIN);
+    delay(10);
+  }
+  return (totalMillivolts / (float)SENSOR_SAMPLE_COUNT) / 1000.0f;
+}
+
+float phFromCalibratedVoltage(float voltage) {
+  if (!isfinite(voltage) || voltage < PH_CAL_VOLTAGE_9_1 || voltage > PH_CAL_VOLTAGE_4_1) return NAN;
+  if (voltage >= PH_CAL_VOLTAGE_6_8) {
+    return 4.1f + (voltage - PH_CAL_VOLTAGE_4_1) * ((6.8f - 4.1f) / (PH_CAL_VOLTAGE_6_8 - PH_CAL_VOLTAGE_4_1));
+  }
+  return 6.8f + (voltage - PH_CAL_VOLTAGE_6_8) * ((9.1f - 6.8f) / (PH_CAL_VOLTAGE_9_1 - PH_CAL_VOLTAGE_6_8));
 }
 
 void connectWifi() {
@@ -54,14 +108,14 @@ void connectWifi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
-String makeSample(int rawValue, float voltage, float temperatureC) {
+String makeSample(int rawValue, float voltage, float temperatureC, float phVoltage, float ph, time_t sampledAt) {
   JsonDocument payload;
   payload["waterContactConfirmed"] = true;
+  payload["waterContactSource"] = USE_WATER_SWITCH ? "switch" : "configured-submerged-installation";
   char readingId[40];
   snprintf(readingId, sizeof(readingId), "%llX-%08lX-%08lX", ESP.getEfuseMac(), millis(), esp_random());
   payload["clientReadingId"] = readingId;
-  if (time(nullptr) >= 1700000000) {
-    time_t sampledAt = time(nullptr);
+  if (sampledAt >= 1700000000) {
     struct tm utcTime;
     gmtime_r(&sampledAt, &utcTime);
     char timestamp[25];
@@ -70,10 +124,14 @@ String makeSample(int rawValue, float voltage, float temperatureC) {
   }
   JsonArray verified = payload["verifiedParameters"].to<JsonArray>();
   if (!isnan(temperatureC)) verified.add("temperature");
+  if (!isnan(ph)) verified.add("ph");
   payload["rawValue"] = rawValue;
   payload["voltage"] = voltage;
   if (isnan(temperatureC)) payload["temperatureC"] = nullptr;
   else payload["temperatureC"] = temperatureC;
+  if (isnan(ph)) payload["ph"] = nullptr;
+  else payload["ph"] = ph;
+  payload["phVoltage"] = phVoltage;
   String body;
   serializeJson(payload, body);
   return body;
@@ -110,7 +168,7 @@ bool sendTelemetry(const String& body) {
 
   if (statusCode == 201 && validResponse && confirmation["saved"] == true &&
       confirmation["assigned"] == true && confirmation["telemetryId"].as<int>() > 0) {
-    showLine(3, "Server: Updated");
+    showLine(3, "Updated device #" + String(confirmation["deviceId"].as<int>()));
   } else if (statusCode == 401) {
     showLine(3, "Server: Key invalid");
   } else if (statusCode == 409) {
@@ -128,10 +186,14 @@ bool sendTelemetry(const String& body) {
 void setup() {
   Serial.begin(115200);
   // Dry-contact float switch at probe height: closed to GND only when submerged.
-  pinMode(27, INPUT_PULLUP);
+  if (USE_WATER_SWITCH) pinMode(WATER_SWITCH_PIN, INPUT_PULLUP);
+  Serial.println("Automatic monitoring starts at power-on. Keep probes submerged; this mode cannot detect air. Optional D pauses, W resumes.");
   analogReadResolution(12);
   analogSetPinAttenuation(TURBIDITY_PIN, ADC_11db);
+  analogSetPinAttenuation(PH_PIN, ADC_11db);
   temperatureSensor.begin();
+  temperatureSensor.setResolution(12);
+  Serial.printf("DS18B20 devices found: %d\n", temperatureSensor.getDeviceCount());
   Wire.begin(21, 22);
   lcd.init();
   lcd.backlight();
@@ -143,39 +205,52 @@ void setup() {
 void loop() {
   connectWifi();
   static unsigned long wetSince = 0;
-  if (digitalRead(27) != LOW) {
+  checkWaterConfirmation();
+  if (!hasWaterSample()) {
     wetSince = 0;
-    showLine(1, "Waiting for water");
-    showLine(2, "No water sample");
+    showLine(1, USE_WATER_SWITCH ? "Waiting for water" : "Submerge probes");
+    showLine(2, USE_WATER_SWITCH ? "Check water switch" : "Serial: W=start");
     showLine(3, "Upload paused");
     delay(200);
     return;
   }
   if (!wetSince) wetSince = millis();
   if (millis() - wetSince < 2000) { delay(100); return; }
+  // One sample per upload cycle: LCD and payload use the same snapshot until the next cycle.
+  if (lastSentAt != 0 && millis() - lastSentAt < SEND_INTERVAL_MS) { delay(50); return; }
+  lastSentAt = millis();
   int rawValue = readTurbidityRaw();
   float voltage = rawValue * (3.3f / 4095.0f);
-  float temperatureC = readTemperatureC();
-  if (digitalRead(27) != LOW) { wetSince = 0; return; }
+  float temperatureC = roundf(readTemperatureC() * 10.0f) / 10.0f;
+  float phVoltage = readPhVoltage();
+  float ph = roundf(phFromCalibratedVoltage(phVoltage) * 100.0f) / 100.0f;
+  time_t sampledAt = time(nullptr);
+  checkWaterConfirmation();
+  if (!hasWaterSample()) { wetSince = 0; return; }
 
-  showLine(0, "PondSense of Us");
-  if (isnan(temperatureC)) {
-    showLine(1, temperatureSensor.getDeviceCount() == 0 ? "Temp: sensor missing" : "Temp: check GPIO 4");
-  } else {
-    showLine(1, "Temp: " + String(temperatureC, 1) + " C");
-  }
+  if (sampledAt >= 1700000000) {
+    time_t philippineTime = sampledAt + 8 * 60 * 60;
+    struct tm sampleTime;
+    gmtime_r(&philippineTime, &sampleTime);
+    char sampleLabel[21];
+    strftime(sampleLabel, sizeof(sampleLabel), "Sample %H:%M:%S PHT", &sampleTime);
+    showLine(0, sampleLabel);
+  } else showLine(0, "Clock not synced");
+  String phText = isnan(ph) ? "pH: --" : "pH: " + String(ph, 2);
+  String tempText = isnan(temperatureC)
+    ? (temperatureSensor.getDeviceCount() == 0 ? "T:No probe" : "T:Check probe")
+    : "T:" + String(temperatureC, 1) + "C";
+  showLine(1, phText + " " + tempText);
   // Display the same provisional conversion as the dashboard; calibration is still required.
   int estimatedNtu = roundf(constrain((1.0f - rawValue / 4095.0f) * 250.0f, 0.0f, 250.0f));
   showLine(2, "Turb: ~" + String(estimatedNtu) + " NTU est");
 
-  if (lastSentAt == 0 || millis() - lastSentAt >= SEND_INTERVAL_MS) {
-    lastSentAt = millis();
-    String body = makeSample(rawValue, voltage, temperatureC);
-    if (WiFi.status() == WL_CONNECTED) {
-      sendTelemetry(body);
-    } else {
-      showLine(3, "WiFi offline");
-    }
+  String body = makeSample(rawValue, voltage, temperatureC, phVoltage, ph, sampledAt);
+  Serial.println("Sample displayed on LCD and queued for upload: " + body);
+  if (WiFi.status() == WL_CONNECTED) {
+    sendTelemetry(body);
+  } else {
+    showLine(3, "WiFi offline");
   }
   delay(500);
 }

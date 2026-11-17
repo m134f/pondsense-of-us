@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { sensorTurbidityValue } from './lib/sensorDisplay';
 import { SessionLoading } from './components/SessionLoading';
 import { apiErrorMessage } from './lib/apiError';
 import { OwnerLogin, OwnerPasswordChange, sessionOwner, type OwnerSession } from './components/OwnerAuthentication';
@@ -136,13 +137,6 @@ const defaultParams: WaterParams = {
 };
 
 const SENSOR_ANALYSIS_DELAY_MS = 5_000;
-
-function sensorTurbidityValue(telemetry: SensorTelemetry) {
-  if (telemetry.turbidityNtu !== null) return Math.max(0, Math.min(500, telemetry.turbidityNtu));
-
-  // Prototype-only estimate. A calibrated NTU value from the sensor takes precedence.
-  return Math.round(Math.max(0, Math.min(250, (1 - telemetry.rawValue / 4095) * 250)));
-}
 
 const parameterMeta = [
   { key: "ph", label: { en: "pH Level", tl: "Antas ng pH" }, min: 4, max: 11, step: 0.1, unit: "", safe: "6.5-8.5" },
@@ -1633,7 +1627,7 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Activity size={20} className="text-teal-600" /> {lang === "tl" ? "Live na Trend ng Kalidad ng Tubig" : "Live Water Quality Trends"}</h2>
-          <p className="mt-1 text-sm text-slate-600">{lang === "tl" ? "Pinagmulan" : "Source"}: {telemetry.deviceName}</p>
+          <p className="mt-1 text-sm text-slate-600">{lang === "tl" ? "Pinagmulan" : "Source"}: {telemetry.deviceName} · Device #{telemetry.deviceId}</p>
           <p className="text-xs text-slate-500">{lang === "tl" ? "Huling sukat" : "Last measurement"}: {new Date(telemetry.recordedAt).toLocaleString("en-PH", { timeZone: "Asia/Manila" })} (PHT)</p>
         </div>
         <span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : connectionState === "stale" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{connectionState === "live" ? "Live" : connectionState === "stale" ? (lang === "tl" ? "Luma" : "Stale") : "Offline"}</span>
