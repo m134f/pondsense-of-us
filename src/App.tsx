@@ -91,6 +91,23 @@ function sensorConnectionState(telemetry: SensorTelemetry | null, now: number): 
   const age = sensorAgeMs(telemetry, now);
   return age < SENSOR_LIVE_MS ? "live" : age < SENSOR_OFFLINE_MS ? "stale" : "offline";
 }
+
+function sensorMeasuredStatus(telemetry: SensorTelemetry): AlertLevel | 'partial' {
+  return measuredStatus({ ph: telemetry.ph, temperature: telemetry.temperatureC, turbidity: telemetry.turbidityNtu });
+}
+
+function statusText(status: AlertLevel | 'partial', lang: Lang) {
+  if (status === 'partial') return lang === 'tl' ? 'Walang sapat na sukat' : 'No measured status';
+  if (status === 'safe') return lang === 'tl' ? 'Ligtas sa nasukat' : 'Safe measured values';
+  if (status === 'warning') return lang === 'tl' ? 'Babala sa nasukat' : 'Warning in measured values';
+  return lang === 'tl' ? 'Kritikal sa nasukat' : 'Critical measured value';
+}
+
+function shortStatusText(status: AlertLevel, lang: Lang) {
+  if (status === 'safe') return lang === 'tl' ? 'Ligtas' : 'Safe';
+  if (status === 'warning') return lang === 'tl' ? 'Babala' : 'Warning';
+  return lang === 'tl' ? 'Kritikal' : 'Critical';
+}
 export type HarvestBatch = {
   notes?: string;
   sensorDeviceId?: number | null;
@@ -1534,6 +1551,7 @@ function AnalysisPage({
       {!showManual && sensorTelemetry ? (
         <aside className="card h-fit space-y-3 p-5">
           <h2 className="font-black">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
+          <div className="flex flex-wrap items-center gap-2"><span className={`rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(sensorMeasuredStatus(sensorTelemetry))}`}>{statusText(sensorMeasuredStatus(sensorTelemetry), lang)}</span><span className="text-xs text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri; walang DO reading at hindi kasama ang tantiya sa turbidity.' : 'Partial assessment; DO is missing and estimated turbidity is excluded.'}</span></div>
           {!sensorFresh && <p className="rounded-md bg-amber-50 p-3 text-sm font-semibold text-amber-900">{lang === 'tl' ? 'Batay sa huling sukat, hindi live. Kumuha ng bagong sukat bago magpasya.' : 'Based on the last reading, not live. Obtain fresh measurements before making decisions.'}</p>}
           {(() => {
             const readings = { ph: sensorTelemetry.ph, temperature: sensorTelemetry.temperatureC, turbidity: null };
@@ -1629,7 +1647,7 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
   const value = sensorTurbidityValue(telemetry);
   const level = statusFor("turbidity", value);
   const calibrated = telemetry.turbidityNtu !== null;
-  const label = level === "critical" ? "Very cloudy" : level === "warning" ? "Cloudy" : "Clear range";
+  const measured = sensorMeasuredStatus(telemetry);
   const chart = readings.map((reading) => ({
     time: new Date(reading.recordedAt).toLocaleTimeString("en-PH"),
     // Show the same provisional value used in Water Parameters until the probe is calibrated.
@@ -1647,19 +1665,21 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
           <p className="mt-1 text-sm text-slate-600">{lang === "tl" ? "Pinagmulan" : "Source"}: {telemetry.deviceName} · Device #{telemetry.deviceId}</p>
           <p className="text-xs text-slate-500">{lang === "tl" ? "Huling sukat" : "Last measurement"}: {new Date(telemetry.recordedAt).toLocaleString("en-PH", { timeZone: "Asia/Manila" })} (PHT)</p>
         </div>
-        <span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : connectionState === "stale" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{connectionState === "live" ? "Live" : connectionState === "stale" ? (lang === "tl" ? "Luma" : "Stale") : "Offline"}</span>
+        <div className="flex flex-wrap items-center gap-2"><span className={`rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(measured)}`}>{statusText(measured, lang)}</span><span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : connectionState === "stale" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{connectionState === "live" ? "Live" : connectionState === "stale" ? (lang === "tl" ? "Luma" : "Stale") : "Offline"}</span></div>
       </div>
+      <p className="mt-2 text-xs text-slate-600">{lang === 'tl' ? 'Status ng mga nasukat lamang. Walang DO reading at hindi kasama ang tantiya sa turbidity; hindi pa matitiyak ang kabuuang kaligtasan ng tubig.' : 'Measured values only. DO is missing and estimated turbidity is excluded; overall water safety is not confirmed.'}</p>
       <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">pH</p><strong className="mt-1 block text-2xl text-slate-950">{telemetry.ph === null ? "--" : telemetry.ph.toFixed(2)}</strong><p className="mt-1 text-xs text-slate-500">{telemetry.ph === null ? (lang === "tl" ? "Walang pH na natanggap mula sa device" : "No pH sent by device") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p></div>
+        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">pH</p><strong className="mt-1 block text-2xl text-slate-950">{telemetry.ph === null ? "--" : telemetry.ph.toFixed(2)}</strong>{telemetry.ph !== null && <span className={`mt-1 inline-block rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(statusFor('ph', telemetry.ph))}`}>{shortStatusText(statusFor('ph', telemetry.ph), lang)}</span>}<p className="mt-1 text-xs text-slate-500">{telemetry.ph === null ? (lang === "tl" ? "Walang pH na natanggap mula sa device" : "No pH sent by device") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p></div>
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Temperatura" : "Temperature"}</p>
           <strong className="mt-1 block text-2xl text-slate-950">{telemetry.temperatureC === null ? "--" : `${telemetry.temperatureC.toFixed(1)} °C`}</strong>
+          {telemetry.temperatureC !== null && <span className={`mt-1 inline-block rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(statusFor('temperature', telemetry.temperatureC))}`}>{shortStatusText(statusFor('temperature', telemetry.temperatureC), lang)}</span>}
           <p className="mt-1 text-xs text-slate-500">{telemetry.temperatureC === null ? (lang === "tl" ? "Walang sukat. Ipasuri ang sensor sa administrator." : "No measurement. Ask the administrator to check the sensor.") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p>
         </div>
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Labo ng tubig" : "Turbidity"}</p>
           <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? "" : "~"}{value} <span className="text-base">NTU</span></strong>
-          {calibrated && live && <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span>}
+          {calibrated && <span className={`mt-1 inline-block rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(level)}`}>{shortStatusText(level, lang)}</span>}
           {!calibrated && <details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer py-1 font-semibold">{lang === 'tl' ? 'Hindi pa calibrated' : 'Not calibrated'}</summary><p className="mt-1 leading-relaxed">{lang === 'tl' ? 'Tantiya lamang; i-calibrate bago gamitin bilang opisyal na NTU.' : 'Approximate value. Calibrate before using as an official NTU measurement.'}</p></details>}
         </div>
       </div>
