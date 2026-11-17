@@ -453,8 +453,10 @@ function historyStatus(row: SessionRecord) {
   return measuredStatus(row.turbidityEstimated ? { ...row, turbidity: null } : row);
 }
 
+const farmerHistoryParameters = parameterMeta.filter(meta => meta.key !== "ammonia");
+
 function isPartialSession(row: SessionRecord) {
-  return parameterMeta.some(meta => row[meta.key] == null);
+  return farmerHistoryParameters.some(meta => row[meta.key] == null);
 }
 
 function levelClasses(level: AlertLevel) {
@@ -683,6 +685,29 @@ export default function App() {
       active = false;
     };
   }, [currentUser?.id, currentUser?.phone, path]);
+
+  useEffect(() => {
+    if (!sensorTelemetry || !currentUser) return;
+    const record: SessionRecord = {
+      id: `sensor-${sensorTelemetry.id}`,
+      timestamp: new Date(sensorTelemetry.recordedAt).toLocaleString("en-PH"),
+      inputMode: "sensor",
+      turbidityEstimated: sensorTelemetry.turbidityNtu === null,
+      ph: sensorTelemetry.ph,
+      temperature: sensorTelemetry.temperatureC,
+      dissolvedOxygen: null,
+      turbidity: sensorTelemetry.turbidityNtu,
+      ammonia: null,
+      bestFish: "",
+      score: null
+    };
+    setSessions(previous => {
+      if (previous.some(item => item.id === record.id)) return previous;
+      const next = [record, ...previous].slice(0, 100);
+      storage.saveSessions(next, currentUser);
+      return next;
+    });
+  }, [sensorTelemetry?.id, currentUser?.id]);
 
   useEffect(() => {
     let active = true;
@@ -920,14 +945,13 @@ export default function App() {
 
   const exportCsv = () => {
     const rows = [
-      ["Date/Time", "pH", "Temp", "DO", "Turbidity", "Ammonia", "Best Fish", "Score", "Measured Parameter Status", "Coverage"],
+      ["Date/Time", "pH", "Temp", "DO", "Turbidity", "Best Fish", "Score", "Measured Parameter Status", "Coverage"],
       ...sessions.map((row) => [
         row.timestamp,
         row.ph,
         row.temperature,
         row.dissolvedOxygen,
         row.turbidity,
-        row.ammonia,
         row.bestFish,
         row.score,
         historyStatus(row),
@@ -1880,7 +1904,7 @@ function WaterParametersPanel({
       {sensorTelemetry && !showManual && (
         <div className="space-y-3 text-sm">
           <p className={`rounded-lg p-3 font-bold ${sensorFresh ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-900"}`}>{sensorFresh ? (lang === "tl" ? "Awtomatikong nag-a-update ang mga sukat ng sensor." : "Sensor measurements update automatically.") : (lang === "tl" ? "Walang bagong reading. Ang value sa ibaba ay huling natanggap lamang." : "No recent reading. The values below are the last received, not live.")}</p>
-          {parameterMeta.map((meta) => (
+          {parameterMeta.filter(meta => meta.key !== "ammonia").map((meta) => (
             <div key={meta.key} className="flex items-center justify-between border-b border-slate-100 py-2">
               <span className="font-semibold text-slate-700">{meta.label[lang]}</span>
               <span className={meta.key === "turbidity" || meta.key === "temperature" || meta.key === "ph" ? "font-black text-teal-700" : "font-semibold text-slate-500"}>{meta.key === "turbidity" ? `${sensorTelemetry.turbidityNtu === null ? "~" : ""}${sensorTurbidityValue(sensorTelemetry)} NTU${sensorTelemetry.turbidityNtu === null ? " (est.)" : ""}` : meta.key === "temperature" && sensorTelemetry.temperatureC !== null ? `${sensorTelemetry.temperatureC.toFixed(1)} °C` : meta.key === "ph" && sensorTelemetry.ph !== null ? sensorTelemetry.ph.toFixed(2) : (lang === "tl" ? "Walang sensor reading" : "No sensor reading")}</span>
@@ -1892,7 +1916,7 @@ function WaterParametersPanel({
       {sensorTelemetry && !showManual ? null : <>
       <p className="mb-4 text-xs font-semibold leading-5 text-slate-600">{lang === "tl" ? "Manu-manong input ang mga slider sa ibaba. Halimbawa lamang ang panimulang value; hindi ito galing sa sensor. Ipasok ang aktuwal na sukat bago mag-full analysis." : "The sliders below are manual inputs. Starting values are examples, not sensor measurements. Enter actual measurements before a full analysis."}</p>
       <div className="space-y-5 sm:space-y-6">
-        {parameterMeta.map((meta) => {
+        {parameterMeta.filter(meta => meta.key !== "ammonia").map((meta) => {
           const status = statusFor(meta.key, params[meta.key]);
           const isSafe = status === "safe";
           return (
@@ -2306,7 +2330,7 @@ function FishRankingPanel({
               </div>
               <p className="mt-3 text-xs font-semibold leading-5 text-slate-600">{strongestFishReason(score, lang)}</p>
               <div className="mt-3 grid grid-cols-5 gap-1">
-                {parameterBadges.map(({ meta, matchLevel, value }) => (
+                {parameterBadges.filter(({ meta }) => meta.key !== "ammonia").map(({ meta, matchLevel, value }) => (
                   <span
                     key={meta.key}
                     className={`rounded-lg px-1.5 py-1 text-center text-[10px] font-black ring-1 ${badgeClasses(matchLevel)}`}
@@ -2353,7 +2377,6 @@ function DashboardTrends({
     { key: "temperature", label: "Temp (°C)", color: "#f59e0b", domain: [10, 40] },
     { key: "dissolvedOxygen", label: "DO (mg/L)", color: "#2563eb", domain: [0, 15] },
     { key: "turbidity", label: "Turbidity (NTU)", color: "#8b5cf6", domain: [0, 500] },
-    { key: "ammonia", label: "Ammonia (mg/L)", color: "#dc2626", domain: [0, 0.5] }
   ] as const;
 
   return (
@@ -2407,6 +2430,15 @@ function DashboardTrends({
       </div>
     </section>
   );
+}
+
+function historyMeasurements(row: SessionRecord): [string, string | number | null][] {
+  return [
+    ["pH", row.ph],
+    ["Temperature", row.temperature == null ? "--" : `${row.temperature} °C`],
+    ["DO", row.dissolvedOxygen == null ? "--" : `${row.dissolvedOxygen} mg/L`],
+    ["Turbidity", row.turbidity == null ? "--" : `${row.turbidity} NTU`]
+  ];
 }
 
 function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionRecord[]; onExport: () => void; text: typeof ui.en; lang: Lang }) {
@@ -2487,7 +2519,6 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
                 <th className="px-4 py-3">Temp</th>
                 <th className="px-4 py-3">DO</th>
                 <th className="px-4 py-3">Turbidity</th>
-                <th className="px-4 py-3">Ammonia</th>
                 <th className="px-4 py-3">Best Fish</th>
                 <th className="px-4 py-3">Score</th>
                 <th className="px-4 py-3">{text.status}</th>
@@ -2503,7 +2534,6 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
                     <td className="px-4 py-3">{row.temperature ?? '--'}</td>
                     <td className="px-4 py-3">{row.dissolvedOxygen ?? '--'}</td>
                     <td className="px-4 py-3">{row.turbidity == null ? '--' : row.turbidityEstimated ? `~${row.turbidity} (est.)` : row.turbidity}</td>
-                    <td className="px-4 py-3">{row.ammonia ?? '--'}</td>
                     <td className="px-4 py-3 font-bold">{row.bestFish || '--'}</td>
                     <td className="px-4 py-3 font-black text-teal-700">{row.score == null ? '--' : `${row.score}%`}</td>
                     <td className="px-4 py-3">
