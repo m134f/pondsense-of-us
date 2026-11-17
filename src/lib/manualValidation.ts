@@ -1,5 +1,9 @@
 import type { FishSpecies, WaterParams } from '../types';
 
+export function isManualDecimalDraft(value: string) {
+  return /^\d*(?:[.,]\d*)?$/.test(value);
+}
+
 // Existing backend measurement limits, not recommended fish-safety ranges.
 export const manualLimits: Record<keyof WaterParams, [number, number]> = {
   ph: [0, 14], temperature: [0, 60], dissolvedOxygen: [0, 30],
@@ -13,7 +17,8 @@ export function validateManual(input: Record<string, unknown>) {
     const raw = input[key];
     if (raw === undefined || raw === null || raw === '') continue;
     const [min, max] = manualLimits[key];
-    const value = typeof raw === 'number' ? raw : typeof raw === 'string' && raw.trim() ? Number(raw) : NaN;
+    const text = typeof raw === 'string' ? raw.trim().replace(',', '.') : '';
+    const value = typeof raw === 'number' ? raw : /^(?:\d+(?:\.\d*)?|\.\d+)$/.test(text) ? Number(text) : NaN;
     if (!Number.isFinite(value) || value < min || value > max) errors[key] = `${min} - ${max}`;
     else values[key] = value;
   }

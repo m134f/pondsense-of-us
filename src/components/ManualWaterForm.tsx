@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Activity, LoaderCircle } from "lucide-react";
 import type { FishSpecies, WaterParams } from "../types";
-import { manualLimits, manualWarnings, validateManual } from '../lib/manualValidation';
+import { isManualDecimalDraft, manualLimits, manualWarnings, validateManual } from '../lib/manualValidation';
 
 const fields: { key: keyof WaterParams; label: string; unit: string; min: number; max: number; step: number }[] = [
   { key: "ph", label: "pH", unit: "", min: 0, max: 14, step: 0.01 },
@@ -17,11 +17,16 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
   const [review, setReview] = useState(false);
   const [confirmed, setConfirmed] = useState(false);
   const [fieldErrors, setFieldErrors] = useState<Partial<Record<keyof WaterParams, string>>>({});
+  const [numericErrors, setNumericErrors] = useState<Partial<Record<keyof WaterParams, boolean>>>({});
   const validation = validateManual(draft);
   const warnings = manualWarnings(validation.values, fish);
   return <form noValidate className="card space-y-4 p-5" onSubmit={async event => {
     event.preventDefault();
     setSaved(false);
+    if (Object.values(numericErrors).some(Boolean)) {
+      setError(lang === 'tl' ? 'Itama muna ang field na may babala. Numero lamang ang ilagay.' : 'Correct the highlighted field first. Enter numbers only.');
+      return;
+    }
     setFieldErrors(validation.errors);
     if (Object.keys(validation.errors).length) return;
     const values: Partial<WaterParams> = {};
@@ -50,9 +55,16 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
     <p className="text-sm text-slate-600">{lang === "tl" ? "Aktuwal na sukat mula sa iyong water test." : "Actual measurements from your water test."}</p>
     {fields.map(field => <label key={field.key} className="block text-sm font-semibold" htmlFor={`manual-${field.key}`}>
       {field.label} {field.unit && <span className="font-normal text-slate-500">({field.unit})</span>}
-      <input id={`manual-${field.key}`} type="text" inputMode="decimal" disabled={busy || review} aria-invalid={!!fieldErrors[field.key]} aria-describedby={`manual-error-${field.key}`}
+      <input id={`manual-${field.key}`} type="text" inputMode="decimal" pattern="[0-9]*[.,]?[0-9]*" autoComplete="off" spellCheck={false} disabled={busy || review} aria-invalid={!!fieldErrors[field.key] || !!numericErrors[field.key]} aria-describedby={`manual-error-${field.key} manual-numeric-${field.key}`}
         className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-base focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
-        value={draft[field.key] ?? ""} onChange={event => { setDraft({ ...draft, [field.key]: event.target.value }); setEdited(true); setConfirmed(false); setSaved(false); }} />
+        value={draft[field.key] ?? ""} onChange={event => {
+          const next = event.target.value;
+          if (!isManualDecimalDraft(next)) { setNumericErrors(previous => ({ ...previous, [field.key]: true })); return; }
+          setNumericErrors(previous => ({ ...previous, [field.key]: false }));
+          setFieldErrors(previous => ({ ...previous, [field.key]: undefined }));
+          setDraft({ ...draft, [field.key]: next.replace(',', '.') }); setEdited(true); setConfirmed(false); setSaved(false);
+        }} />
+      {numericErrors[field.key] && <span id={`manual-numeric-${field.key}`} role="alert" className="mt-1 block text-red-700">{lang === 'tl' ? 'Numero lamang ang ilagay, halimbawa 7.2. Hindi tinatanggap ang mga letra.' : 'Enter numbers only, for example 7.2. Letters are not accepted.'}</span>}
       {fieldErrors[field.key] && <span id={`manual-error-${field.key}`} role="alert" className="mt-1 block text-red-700">{lang === 'tl' ? 'Maglagay ng numero sa pagitan ng' : 'Enter a number between'} {fieldErrors[field.key]} {field.unit}.</span>}
       {review && warnings.includes(field.key) && <span className="mt-1 block text-amber-800">{lang === 'tl' ? 'Babala: Labas ito sa inirerekomendang saklaw ng ilang isda. Suriin muli ang sukat.' : 'Warning: Outside the recommended range for some fish species. Please check your measurement.'}</span>}
     </label>)}
