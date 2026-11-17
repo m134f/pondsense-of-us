@@ -21,7 +21,7 @@ export function FishpenSmsSettings({ ownerId, lang }: { ownerId: string | number
     apiJson<Settings>('/api/fishpen-sms').then(result => {
       if (cancelled) return;
       if (result.error) setError(result.error);
-      else setData(result.data);
+      else { setData(result.data); if (result.data?.fishpens[0]) choose(String(result.data.fishpens[0].id), result.data); }
     });
     return () => { cancelled = true; };
   }, [ownerId]);
@@ -52,14 +52,14 @@ export function FishpenSmsSettings({ ownerId, lang }: { ownerId: string | number
         {(!data.configured || !data.policy.reviewed) && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{!data.policy.reviewed ? t('Automatic water SMS is awaiting administrator threshold review.', 'Naghihintay ng pagsusuri ng admin sa mga limitasyon bago magpadala ng awtomatikong SMS.') : t('SMS is temporarily unavailable. Your contacts can still be saved.', 'Pansamantalang hindi magamit ang SMS. Maaari pa ring i-save ang mga contact.')}</p>}
         <label className="block text-sm font-semibold">{t('Fishpen', 'Fishpen')}
           <select className={input} value={selected} disabled={saving} onChange={e => choose(e.target.value)}>
-            <option value="new">{t('Add a fishpen', 'Magdagdag ng fishpen')}</option>
+            <option value="new" disabled>{t('Ask the administrator to assign your fishpen', 'Ipa-assign sa administrator ang fishpen')}</option>
             {data.fishpens.map(p => <option key={p.id} value={p.id}>{p.name} ({p.owner_enabled || p.caretaker_enabled ? t('Enabled', 'Naka-enable') : t('Disabled', 'Naka-disable')})</option>)}
           </select>
         </label>
         <form onSubmit={save} className="space-y-4">
-          <fieldset disabled={saving} className="space-y-4 disabled:opacity-60">
-            <label className="block text-sm font-semibold">{t('Fishpen name', 'Pangalan ng fishpen')}<input className={input} value={form.name} maxLength={100} required onChange={e => setForm({ ...form, name: e.target.value })} /></label>
-            <label className="block text-sm font-semibold">{t('Assigned monitoring device', 'Nakatalagang sensor')}<select className={input} value={form.deviceId} onChange={e => setForm({ ...form, deviceId: e.target.value })}>
+          <fieldset disabled={saving || selected === 'new'} className="space-y-4 disabled:opacity-60">
+            <label className="block text-sm font-semibold">{t('Fishpen name (managed by administrator)', 'Pangalan ng fishpen (itinakda ng administrator)')}<input readOnly className={input} value={form.name} maxLength={100} required /></label>
+            <label className="block text-sm font-semibold">{t('Assigned monitoring device', 'Nakatalagang sensor')}<select disabled className={input} value={form.deviceId}>
               <option value="">{t('Manual measurements only', 'Manwal na sukat lamang')}</option>
               {data.devices.map(d => <option key={d.id} value={d.id}>{d.device_name} #{d.id}</option>)}
             </select></label>

@@ -4,6 +4,7 @@ import type { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { verifyAuthToken } from '../auth';
 import { isSmsConfigured } from '../sms';
 import { ownedFishpen, validateSmsSettings, waterSmsPolicy } from '../services/FishpenSms';
+import { assignedFishpen } from '../services/OwnerFishpen';
 
 export function fishpenSmsRouter(db: Pool | null) {
   const router = Router();
@@ -25,7 +26,8 @@ export function fishpenSmsRouter(db: Pool | null) {
       const [fishpens] = await db!.query<RowDataPacket[]>('SELECT * FROM sms_fishpens WHERE owner_user_id = ? ORDER BY id', [owner]);
       const [users] = await db!.query<RowDataPacket[]>('SELECT phone FROM users WHERE id = ?', [owner]);
       const [devices] = await db!.query<RowDataPacket[]>('SELECT id, device_name FROM sensor_devices WHERE owner_user_id = ? AND is_active = 1', [owner]);
-      res.json({ fishpens, devices, ownerPhone: users[0]?.phone, configured: isSmsConfigured(), policy: waterSmsPolicy() });
+      const assignment = await assignedFishpen(db!, owner);
+      res.json({ fishpens: assignment ? fishpens.filter(row => Number(row.id) === assignment.id) : [], devices, ownerPhone: users[0]?.phone, configured: isSmsConfigured(), policy: waterSmsPolicy() });
     } catch { res.status(503).json({ message: 'Unable to load SMS settings.' }); }
   });
   router.put('/fishpen-sms/:id', async (req, res) => {
@@ -39,6 +41,9 @@ export function fishpenSmsRouter(db: Pool | null) {
     try {
       connection = await db!.getConnection();
       await connection.beginTransaction();
+      const assignment = await assignedFishpen(connection, res.locals.owner, true);
+      if (!assignment || id !== assignment.id) { await connection.rollback(); return res.status(403).json({ message: 'Only the administrator can assign or create a fishpen. Select your assigned fishpen.' }); }
+      if (values.name !== assignment.name || values.deviceId !== assignment.deviceId) { await connection.rollback(); return res.status(403).json({ message: 'Fishpen name and monitoring device are managed by the administrator.' }); }
       if (values.deviceId !== null) {
         const [devices] = await connection.query<RowDataPacket[]>('SELECT id FROM sensor_devices WHERE id = ? AND owner_user_id = ? AND is_active = 1 FOR UPDATE', [values.deviceId, res.locals.owner]);
         if (!devices.length) { await connection.rollback(); return res.status(403).json({ message: 'Select a device assigned to your account.' }); }

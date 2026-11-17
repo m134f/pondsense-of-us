@@ -1,5 +1,9 @@
 import { loadFishCatalog } from "./services/FishCatalog";
 import { migrateAccountStatus } from './migrations/accountStatus';
+import { migrateOwnerFishpen } from './migrations/ownerFishpen';
+import { assignedFishpen } from './services/OwnerFishpen';
+import { harvestAssignmentGuard } from './harvestAssignmentGuard';
+import { ownerFishpenRouter } from './routes/ownerFishpen';
 import { migrateAdminWebauthn } from './migrations/adminWebauthn';
 import { adminWebauthnRouter, passwordVerifiedFlow, allowAdminAttempt } from './routes/adminWebauthn';
 import { migratePublicMonitoring } from './migrations/publicMonitoring';
@@ -86,6 +90,8 @@ app.use('/api', async (req, res, next) => {
     next();
   } catch { res.status(503).json({ message: 'Unable to verify account access.' }); }
 });
+app.use('/api/harvests', harvestAssignmentGuard(pool));
+app.use('/api', ownerFishpenRouter(pool));
 app.use('/api', publicMonitoringRouter(pool));
 app.use('/api', adminWebauthnRouter(pool));
 app.use('/api', planningRouter(pool));
@@ -993,7 +999,7 @@ app.get("/api/harvests", async (req, res) => {
        WHERE b.owner_user_id = ? ORDER BY e.harvest_date DESC, e.id DESC`, [auth.sub]) : [[] as RowDataPacket[]];
     const waterContexts = new Map<number, Awaited<ReturnType<typeof planningContext>>>();
     for (const row of rows) waterContexts.set(Number(row.id), await planningContext(pool, auth.sub, Number(row.id)));
-    res.json({ harvests: rows.map((row) => ({
+    res.json({ fishpenAssignment: res.locals.fishpenAssignment, harvests: rows.map((row) => ({
       ...row,
       waterContext: waterContexts.get(Number(row.id)),
       stockingDate: String(row.stockingDate).slice(0, 10),
@@ -1011,22 +1017,25 @@ app.get("/api/harvests", async (req, res) => {
 
 app.post("/api/harvests", async (req, res) => {
   const auth = verifyAuthToken(req);
-  if (!auth) return res.status(401).json({ message: "Login required." });
-  if (!pool) return res.status(503).json({ message: "Database is required." });
-  const harvest = validateHarvest(req.body || {});
-  if (!harvest) return res.status(400).json({ message: "Check species, dates, stocking count, and harvest values." });
-  if (harvest.actualHarvestDate) return res.status(400).json({ message: 'Create the batch first, then confirm its completion using Record Harvest.' });
-  const sensorDeviceId = Number(req.body.sensorDeviceId) || null;
-  if (sensorDeviceId) {
-    const [devices] = await pool.query<RowDataPacket[]>('SELECT id FROM sensor_devices WHERE id = ? AND owner_user_id = ? AND is_active = 1', [sensorDeviceId, auth.sub]);
-    if (!devices.length) return res.status(400).json({ message: 'Choose a device assigned to your account.' });
-  }
-  const [result] = await pool.execute<ResultSetHeader>(
-    `INSERT INTO harvest_batches (owner_user_id, species, fishpen_name, target_weight_g, reminder_sms, stocking_date, stocked_count, target_harvest_date, actual_harvest_date, harvested_kg, selling_price, notes, sensor_device_id)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    [auth.sub, harvest.species, harvest.fishpenName || null, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice, String(req.body.notes || '').trim().slice(0, 1000), sensorDeviceId]
-  );
-  res.status(201).json({ id: result.insertId });
+  if (!auth || auth.role !== 'farmer') return res.status(401).json({ message: 'Farmer login required.' });
+  if (!pool) return res.status(503).json({ message: 'Database unavailable.' });
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const pen = await assignedFishpen(connection, auth.sub, true);
+    if (!pen) { await connection.rollback(); return res.status(409).json({ message: 'Ask the administrator to assign your fishpen first.' }); }
+    const harvest = validateHarvest({ ...req.body, fishpenName: pen.name });
+    if (!harvest || harvest.actualHarvestDate) { await connection.rollback(); return res.status(400).json({ message: 'Check the kind of fish, stocking date, fish count, and planned harvest date. Record actual harvests separately.' }); }
+    const [result] = await connection.execute<ResultSetHeader>(
+      `INSERT INTO harvest_batches (owner_user_id, species, fishpen_name, target_weight_g, reminder_sms, stocking_date, stocked_count, target_harvest_date, actual_harvest_date, harvested_kg, selling_price, notes, sensor_device_id, fishpen_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [auth.sub, harvest.species, pen.name, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, null, harvest.harvestedKg, harvest.sellingPrice, String(req.body.notes || '').trim().slice(0, 1000), pen.deviceId, pen.id]);
+    await connection.commit();
+    res.status(201).json({ id: result.insertId });
+  } catch (error) {
+    await connection.rollback(); console.error('Fish group creation failed:', error);
+    res.status(503).json({ message: 'Unable to save your fish group. Please try again.' });
+  } finally { connection.release(); }
 });
 
 app.put("/api/harvests/:id", async (req, res) => {
@@ -1034,12 +1043,12 @@ app.put("/api/harvests/:id", async (req, res) => {
   if (!auth) return res.status(401).json({ message: "Login required." });
   if (!pool) return res.status(503).json({ message: "Database is required." });
   const id = Number(req.params.id);
-  const harvest = validateHarvest(req.body || {});
+  const harvest = validateHarvest({ ...req.body, fishpenName: res.locals.fishpenAssignment.name });
   if (!Number.isSafeInteger(id) || !harvest) return res.status(400).json({ message: "Check the harvest record values." });
   const connection = await pool.getConnection();
   try {
   await connection.beginTransaction();
-  const [existing] = await connection.query<RowDataPacket[]>('SELECT actual_harvest_date FROM harvest_batches WHERE id = ? AND owner_user_id = ? FOR UPDATE', [id, auth.sub]);
+  const [existing] = await connection.query<RowDataPacket[]>('SELECT actual_harvest_date, fishpen_name, sensor_device_id, fishpen_id FROM harvest_batches WHERE id = ? AND owner_user_id = ? FOR UPDATE', [id, auth.sub]);
   if (!existing[0]) { await connection.rollback(); return res.status(404).json({ message: 'Batch not found.' }); }
   const [totals] = await connection.query<RowDataPacket[]>(`SELECT
     (SELECT COALESCE(SUM(dead_count), 0) FROM harvest_mortalities WHERE batch_id = ?) +
@@ -1056,7 +1065,7 @@ app.put("/api/harvests/:id", async (req, res) => {
   ) dates`, [id, id, id, id]);
   if (dates[0].first_record && harvest.stockingDate > new Date(dates[0].first_record).toLocaleDateString('en-CA')) { await connection.rollback(); return res.status(400).json({ message: 'Stocking date cannot follow existing batch records.' }); }
   if (Boolean(existing[0].actual_harvest_date) !== Boolean(harvest.actualHarvestDate)) { await connection.rollback(); return res.status(400).json({ message: 'Use Record Harvest to close a batch. Completed batches cannot be reopened here.' }); }
-  const sensorDeviceId = Number(req.body.sensorDeviceId) || null;
+  const sensorDeviceId = existing[0].sensor_device_id;
   if (sensorDeviceId) {
     const [devices] = await connection.query<RowDataPacket[]>('SELECT id FROM sensor_devices WHERE id = ? AND owner_user_id = ? AND is_active = 1', [sensorDeviceId, auth.sub]);
     if (!devices.length) { await connection.rollback(); return res.status(400).json({ message: 'Choose a device assigned to your account.' }); }
@@ -1064,7 +1073,7 @@ app.put("/api/harvests/:id", async (req, res) => {
   const [result] = await connection.execute<ResultSetHeader>(
     `UPDATE harvest_batches SET species = ?, fishpen_name = ?, target_weight_g = ?, reminder_sms = ?, stocking_date = ?, stocked_count = ?, target_harvest_date = ?,
        actual_harvest_date = ?, harvested_kg = ?, selling_price = ?, notes = ?, sensor_device_id = ? WHERE id = ? AND owner_user_id = ?`,
-    [harvest.species, harvest.fishpenName || null, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice, String(req.body.notes || '').trim().slice(0, 1000), sensorDeviceId, id, auth.sub]
+    [harvest.species, existing[0].fishpen_name, harvest.targetWeightG, harvest.reminderSms, harvest.stockingDate, harvest.stockedCount, harvest.targetHarvestDate, harvest.actualHarvestDate, harvest.harvestedKg, harvest.sellingPrice, String(req.body.notes || '').trim().slice(0, 1000), sensorDeviceId, id, auth.sub]
   );
   await connection.commit();
   if (!result.affectedRows) return res.status(404).json({ message: "Harvest record not found." });
@@ -1557,6 +1566,7 @@ try {
   if (pool) await migratePartialManual(pool);
   if (pool) await migratePlanning(pool);
   if (pool) await migrateFishpenSms(pool);
+  if (pool) await migrateOwnerFishpen(pool);
   if (pool) await migrateActiveFishSpecies(pool);
   void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
 } catch (error) {

@@ -38,6 +38,26 @@
 .farmer-shell .farmer-harvest { padding-top: 24px; }
 .farmer-harvest > .grid > div { border-radius: 8px; }
 .harvest-overview { border-top: 1px solid #dce6e8; border-bottom: 1px solid #dce6e8; padding: 20px 0; }
+.harvest-page-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.harvest-quick-actions { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; }
+.harvest-quick-actions button { display: flex; align-items: center; gap: 12px; min-height: 72px; padding: 16px; border: 1px solid #c6ded9; border-radius: 6px; background: #fff; color: #115e59; font-size: 1rem; font-weight: 600; text-align: left; }
+.harvest-quick-actions button:first-child { background: #0f766e; color: #fff; border-color: #0f766e; }
+.harvest-quick-actions svg { flex-shrink: 0; }
+.harvest-quick-actions button:disabled { opacity: .55; cursor: not-allowed; }
+.harvest-group-row { display: flex; width: 100%; min-width: 0; align-items: center; gap: 12px; padding: 16px 0; border-bottom: 1px solid #dce6e8; text-align: left; font-size: 1rem; }
+.harvest-group-row > span:first-of-type { flex: 1; min-width: 0; }
+.harvest-group-row span { overflow-wrap: anywhere; }
+.harvest-group-row svg { flex-shrink: 0; color: #0f766e; }
+.harvest-entry { max-width: 800px; padding: 20px 0; border-top: 1px solid #dce6e8; }
+.harvest-entry label { font-size: 1rem; font-weight: 600; }
+.harvest-optional { border-top: 1px solid #dce6e8; border-bottom: 1px solid #dce6e8; padding: 12px 0; }
+.harvest-optional summary { font-weight: 600; color: #115e59; padding: 10px 0; }
+@media (max-width: 639px) {
+  .harvest-quick-actions { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .harvest-quick-actions button { flex-direction: column; align-items: flex-start; gap: 10px; padding: 14px; }
+  .harvest-page-heading { flex-wrap: wrap; }
+  .harvest-entry .primary-button { width: 100%; }
+}
 .harvest-metrics { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 24px; }
 .harvest-metrics > div { min-width: 0; }
 .harvest-metrics dt { font-size: 0.875rem; color: #52656d; }
