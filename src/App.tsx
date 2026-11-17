@@ -1680,7 +1680,6 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Labo ng tubig" : "Turbidity"}</p>
           <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? "" : "~"}{value} <span className="text-base">NTU</span></strong>
           {calibrated && <span className={`mt-1 inline-block rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(level)}`}>{shortStatusText(level, lang)}</span>}
-          {!calibrated && <details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer py-1 font-semibold">{lang === 'tl' ? 'Hindi pa calibrated' : 'Not calibrated'}</summary><p className="mt-1 leading-relaxed">{lang === 'tl' ? 'Tantiya lamang; i-calibrate bago gamitin bilang opisyal na NTU.' : 'Approximate value. Calibrate before using as an official NTU measurement.'}</p></details>}
         </div>
       </div>
       {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Hindi live ang sukat na ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This reading is not live. Check device connectivity or contact the administrator."}</p>}
