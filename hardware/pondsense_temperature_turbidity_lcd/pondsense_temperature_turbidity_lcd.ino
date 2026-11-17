@@ -15,6 +15,10 @@ const char* API_URL = "https://pondsense-of-us.onrender.com/api/v1/sensors/measu
 constexpr int TURBIDITY_PIN = 34;
 constexpr int TEMPERATURE_PIN = 4;
 constexpr int PH_PIN = 35;
+constexpr float TURBIDITY_LOW_VOLTAGE = 2.90f;
+constexpr float TURBIDITY_LOW_NTU = 5.0f;
+constexpr float TURBIDITY_HIGH_VOLTAGE = 2.10f;
+constexpr float TURBIDITY_HIGH_NTU = 40.0f;
 constexpr float PH_CAL_VOLTAGE_4_1 = 2.29f;
 constexpr float PH_CAL_VOLTAGE_6_8 = 1.80f;
 constexpr float PH_CAL_VOLTAGE_9_1 = 1.39f;
@@ -59,13 +63,22 @@ void showLine(int row, const String& message) {
   for (int index = min((int)message.length(), 20); index < 20; index++) lcd.print(' ');
 }
 
-int readTurbidityRaw() {
-  uint32_t total = 0;
+float readTurbidityVoltage(int &rawValue) {
+  uint32_t totalRaw = 0;
+  uint32_t totalMillivolts = 0;
   for (int sample = 0; sample < SENSOR_SAMPLE_COUNT; sample++) {
-    total += analogRead(TURBIDITY_PIN);
+    totalRaw += analogRead(TURBIDITY_PIN);
+    totalMillivolts += analogReadMilliVolts(TURBIDITY_PIN);
     delay(20);
   }
-  return total / SENSOR_SAMPLE_COUNT;
+  rawValue = totalRaw / SENSOR_SAMPLE_COUNT;
+  return totalMillivolts / (1000.0f * SENSOR_SAMPLE_COUNT);
+}
+
+float turbidityFromCalibratedVoltage(float voltage) {
+  if (!isfinite(voltage) || voltage < TURBIDITY_HIGH_VOLTAGE || voltage > TURBIDITY_LOW_VOLTAGE) return NAN;
+  return TURBIDITY_LOW_NTU + (voltage - TURBIDITY_LOW_VOLTAGE) *
+    (TURBIDITY_HIGH_NTU - TURBIDITY_LOW_NTU) / (TURBIDITY_HIGH_VOLTAGE - TURBIDITY_LOW_VOLTAGE);
 }
 
 float readTemperatureC() {
@@ -108,7 +121,7 @@ void connectWifi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
-String makeSample(int rawValue, float voltage, float temperatureC, float phVoltage, float ph, time_t sampledAt) {
+String makeSample(int rawValue, float voltage, float turbidityNtu, float temperatureC, float phVoltage, float ph, time_t sampledAt) {
   JsonDocument payload;
   payload["waterContactConfirmed"] = true;
   payload["waterContactSource"] = USE_WATER_SWITCH ? "switch" : "configured-submerged-installation";
@@ -125,8 +138,10 @@ String makeSample(int rawValue, float voltage, float temperatureC, float phVolta
   JsonArray verified = payload["verifiedParameters"].to<JsonArray>();
   if (!isnan(temperatureC)) verified.add("temperature");
   if (!isnan(ph)) verified.add("ph");
+  if (!isnan(turbidityNtu)) verified.add("turbidity");
   payload["rawValue"] = rawValue;
   payload["voltage"] = voltage;
+  if (!isnan(turbidityNtu)) payload["turbidityNtu"] = turbidityNtu;
   if (isnan(temperatureC)) payload["temperatureC"] = nullptr;
   else payload["temperatureC"] = temperatureC;
   if (isnan(ph)) payload["ph"] = nullptr;
@@ -221,8 +236,10 @@ void loop() {
   // One sample per upload cycle: LCD and payload use the same snapshot until the next cycle.
   if (lastSentAt != 0 && millis() - lastSentAt < SEND_INTERVAL_MS) { delay(50); return; }
   lastSentAt = millis();
-  int rawValue = readTurbidityRaw();
-  float voltage = rawValue * (3.3f / 4095.0f);
+  int rawValue = 0;
+  float voltage = readTurbidityVoltage(rawValue);
+  float turbidityNtu = turbidityFromCalibratedVoltage(voltage);
+  if (!isnan(turbidityNtu)) turbidityNtu = roundf(turbidityNtu * 100.0f) / 100.0f;
   float temperatureC = roundf(readTemperatureC() * 10.0f) / 10.0f;
   float phVoltage = readPhVoltage();
   float ph = roundf(phFromCalibratedVoltage(phVoltage) * 100.0f) / 100.0f;
@@ -243,11 +260,10 @@ void loop() {
     ? (temperatureSensor.getDeviceCount() == 0 ? "T:No probe" : "T:Check probe")
     : "T:" + String(temperatureC, 1) + "C";
   showLine(1, phText + " " + tempText);
-  // Display the same provisional conversion as the dashboard; calibration is still required.
   int estimatedNtu = roundf(constrain((1.0f - rawValue / 4095.0f) * 250.0f, 0.0f, 250.0f));
-  showLine(2, "Turb: ~" + String(estimatedNtu) + " NTU est");
+  showLine(2, isnan(turbidityNtu) ? "Turb: ~" + String(estimatedNtu) + " NTU est" : "Turb: " + String(turbidityNtu, 2) + " NTU");
 
-  String body = makeSample(rawValue, voltage, temperatureC, phVoltage, ph, sampledAt);
+  String body = makeSample(rawValue, voltage, turbidityNtu, temperatureC, phVoltage, ph, sampledAt);
   Serial.println("Sample displayed on LCD and queued for upload: " + body);
   if (WiFi.status() == WL_CONNECTED) {
     sendTelemetry(body);
