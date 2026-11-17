@@ -1,5 +1,6 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import { SessionLoading } from './components/SessionLoading';
 import { apiErrorMessage } from './lib/apiError';
 import { OwnerLogin, OwnerPasswordChange, sessionOwner, type OwnerSession } from './components/OwnerAuthentication';
 import { ProvisionOwner } from './components/ProvisionOwner';
@@ -637,6 +638,8 @@ export default function App() {
   const [sessions, setSessions] = useState<SessionRecord[]>(storage.sessions(savedUser));
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [sessionAttempt, setSessionAttempt] = useState(0);
   const [path, setPath] = useState(window.location.pathname);
   const [authOpen, setAuthOpen] = useState(false);
   const [sms, setSms] = useState("");
@@ -660,9 +663,17 @@ export default function App() {
     if (path.startsWith('/admin')) { setSessionLoading(false); return; }
     let active = true;
     setSessionLoading(true);
+    setSessionError(null);
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15_000);
     clearLegacyBrowserCredentials();
-    void apiJson<OwnerSession>("/api/session").then((result) => {
+    void apiJson<OwnerSession>("/api/session", { signal: controller.signal }).then((result) => {
+      window.clearTimeout(timeout);
       if (!active) return;
+      if (result.status === 0 || result.status >= 500) {
+        setSessionError(lang === 'tl' ? 'Hindi pa sumasagot ang server. Subukan muli sa ilang sandali.' : 'The server has not responded. Please try again in a moment.');
+        return;
+      }
       if (result.data?.user.role === 'farmer') {
         const owner = sessionOwner(result.data); setCurrentUser(owner); storage.saveCurrentUser(owner);
       } else {
@@ -672,8 +683,8 @@ export default function App() {
       }
       setSessionLoading(false);
     });
-    return () => { active = false; };
-  }, [path]);
+    return () => { active = false; window.clearTimeout(timeout); controller.abort(); };
+  }, [path.startsWith('/admin'), sessionAttempt]);
 
   useEffect(() => {
     paramsRef.current = params;
@@ -984,7 +995,7 @@ export default function App() {
   if (path.startsWith("/admin")) {
     return <AdminRouter path={path as AdminPath} navigate={navigate} text={text} />;
   }
-  if (sessionLoading) return <main className="p-8" role="status">Checking your session… / Sinusuri ang iyong login…</main>;
+  if (sessionLoading) return <SessionLoading error={sessionError} onRetry={() => setSessionAttempt(value => value + 1)} lang={lang} />;
 
   if (path === "/login" || path === "/register") {
     return (
@@ -1637,8 +1648,8 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
         <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
           <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Labo ng tubig" : "Turbidity"}</p>
           <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? "" : "~"}{value} <span className="text-base">NTU</span></strong>
-          {calibrated && live ? <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span> : <span className="mt-1 inline-block rounded-full bg-amber-100 px-2 py-0.5 text-xs font-black text-amber-900">{calibrated ? "Last reading" : live ? (lang === "tl" ? "Live na tantiya" : "Live estimate") : (lang === "tl" ? "Huling tantiya" : "Last estimate")}</span>}
-          {!calibrated && <p className="mt-1 text-xs font-semibold text-amber-800">{lang === "tl" ? "Tantiya mula sa sensor signal; kailangan ng calibration bago gamiting opisyal na NTU." : "Estimate from the sensor signal; calibration is required before use as an official NTU value."}</p>}
+          {calibrated && live && <span className={`mt-1 inline-block rounded-full px-2 py-0.5 text-xs font-black ${badgeClasses(level)}`}>{label}</span>}
+          {!calibrated && <details className="mt-2 text-xs text-slate-600"><summary className="cursor-pointer py-1 font-semibold">{lang === 'tl' ? 'Hindi pa calibrated' : 'Not calibrated'}</summary><p className="mt-1 leading-relaxed">{lang === 'tl' ? 'Tantiya lamang; i-calibrate bago gamitin bilang opisyal na NTU.' : 'Approximate value. Calibrate before using as an official NTU measurement.'}</p></details>}
         </div>
       </div>
       {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Hindi live ang sukat na ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This reading is not live. Check device connectivity or contact the administrator."}</p>}

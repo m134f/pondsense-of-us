@@ -1,4 +1,5 @@
 import { loadFishCatalog } from "./services/FishCatalog";
+import { sensorAuthenticator } from './services/SensorAuthentication';
 import { migrateAccountStatus } from './migrations/accountStatus';
 import { migrateOwnerFishpen } from './migrations/ownerFishpen';
 import { migrateProvisionedOwners } from './migrations/provisionedOwners';
@@ -114,6 +115,7 @@ async function flushWaterSms() {
 }
 
 app.get("/api/health", async (_req, res) => {
+  res.setHeader('X-PondSense-Release', process.env.RENDER_GIT_COMMIT || 'local');
   if (!pool) {
     return res.json({
       ok: true,
@@ -450,27 +452,7 @@ async function logAdminAction(req: AuthRequest, action: string, details: string)
   );
 }
 
-async function authenticateSensorDevice(apiKey: string) {
-  if (!pool || !apiKey) return null;
-
-  const [devices] = await pool.execute<RowDataPacket[]>(
-    "SELECT id, device_name, api_key_hash, owner_user_id FROM sensor_devices WHERE is_active = 1"
-  );
-
-  for (const device of devices) {
-    const valid = await bcrypt.compare(apiKey, String(device.api_key_hash));
-    if (valid) {
-      await pool.execute("UPDATE sensor_devices SET last_seen_at = CURRENT_TIMESTAMP WHERE id = ?", [device.id]);
-      return {
-        id: Number(device.id),
-        deviceName: String(device.device_name),
-        ownerUserId: device.owner_user_id ? Number(device.owner_user_id) : null
-      };
-    }
-  }
-
-  return null;
-}
+const authenticateSensorDevice = sensorAuthenticator(pool);
 
 async function logReadingAlerts(readingId: number, userId: number, alerts: Array<AlertPayload | AlertResult>, smsResult: { ok: boolean; message: string }, shouldSendSms: boolean) {
   if (!pool) return;
