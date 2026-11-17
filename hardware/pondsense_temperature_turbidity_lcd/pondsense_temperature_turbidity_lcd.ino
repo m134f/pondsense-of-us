@@ -168,6 +168,8 @@ bool sendTelemetry(const String& body) {
 
   if (statusCode == 201 && validResponse && confirmation["saved"] == true &&
       confirmation["assigned"] == true && confirmation["telemetryId"].as<int>() > 0) {
+    Serial.printf("Server accepted device #%d, telemetry #%d\n",
+      confirmation["deviceId"].as<int>(), confirmation["telemetryId"].as<int>());
     showLine(3, "Updated device #" + String(confirmation["deviceId"].as<int>()));
   } else if (statusCode == 401) {
     showLine(3, "Server: Key invalid");
