@@ -21,3 +21,21 @@ test("a measured pH can change the order without other sensors", () => {
   assert.equal(ranked[0].fish.id, "tilapia");
   assert.equal(ranked[0].matches.length, 1);
 });
+
+test("reports the configured range and direction for each measured value", () => {
+  const ranked = rankPartialFish(profiles, { ph: 6.2, temperature: 28, turbidity: null });
+  const tilapia = ranked.find(item => item.fish.id === 'tilapia')!;
+  assert.deepEqual(tilapia.checks.map(check => ({ key: check.key, result: check.result, min: check.min, max: check.max })), [
+    { key: 'ph', result: 'below', min: 6.5, max: 8.5 },
+    { key: 'temperature', result: 'within', min: 25, max: 32 }
+  ]);
+  assert.equal(tilapia.matches.length, 1);
+  assert.equal(tilapia.distance, (6.5 - 6.2) / (8.5 - 6.5));
+});
+
+test("equal measured fit remains a tie broken by fish name", () => {
+  const ranked = rankPartialFish(profiles, { ph: 7.5, temperature: 28, turbidity: null });
+  assert.equal(ranked[0].matches.length, ranked[1].matches.length);
+  assert.equal(ranked[0].distance, ranked[1].distance);
+  assert.deepEqual(ranked.map(item => item.fish.name), ['Bangus (Milkfish)', 'Tilapia']);
+});

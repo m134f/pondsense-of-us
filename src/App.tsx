@@ -1543,11 +1543,28 @@ function AnalysisPage({
             return <>
               {sensorTelemetry.turbidityNtu !== null && <p className="text-sm text-slate-600">{lang === 'tl' ? 'Hindi kasama ang tantyang turbidity sa paghahambing; kailangan muna ng calibration.' : 'Estimated turbidity is excluded from comparison until calibrated.'}</p>}
               <p className="text-sm text-amber-800">{lang === "tl" ? `Batay lamang sa ${measured.length} sukat. Hindi pa kumpirmadong angkop ang isda hangga't kulang ang ibang sukat.` : `Based on ${measured.length} measured parameter${measured.length === 1 ? "" : "s"} only. This is not a full suitability recommendation.`}</p>
+              <p className="text-xs text-slate-600">{lang === 'tl' ? 'Ayos: mas maraming sukat na pasok sa saklaw, saka mas malapit sa saklaw ang mga labas na sukat.' : 'Order: more measurements within the species range, then closer to range for values outside it.'}</p>
               {ranked.length && ranked.every(item => item.matches.length === 0) && <p className="rounded-md bg-red-50 p-2 text-sm font-semibold text-red-800">{lang === "tl" ? "Walang isdang nasa saklaw ng kasalukuyang sukat. Ang nasa itaas ay pinakamalapit lamang." : "No fish is within the measured range. The top fish is only the closest match."}</p>}
-              {ranked.map((item, index) => <section key={item.fish.id} className="border-t border-slate-200 py-3">
-                <div className="flex items-center gap-2"><span className="text-sm font-bold text-slate-500">#{index + 1}</span><img src={fishImageSrc(item.fish.id)} alt="" className="h-10 w-10 rounded-md object-cover" /><strong>{item.fish.name}</strong></div>
-                <p className="mt-1 text-xs text-slate-600">{lang === "tl" ? `${item.matches.length} sa ${measured.length} nasukat ay pasok sa saklaw` : `${item.matches.length} of ${measured.length} measured parameters within range`}</p>
-              </section>)}
+              {ranked.map((item, index) => {
+                const previous = ranked[index - 1];
+                const next = ranked[index + 1];
+                const tied = (other: typeof item | undefined) => Boolean(other && other.matches.length === item.matches.length && Math.abs(other.distance - item.distance) < 0.000001);
+                const reason = index === 0
+                  ? tied(next) ? (lang === 'tl' ? 'Tabla sa nasukat; pangalan lamang ang nag-ayos ng puwesto.' : 'Tied on measured evidence; listed alphabetically.')
+                    : item.matches.length === measured.length ? (lang === 'tl' ? 'Pinakamaraming pasok sa nasukat na saklaw; hindi pa ito kumpletong rekomendasyon.' : 'Most measured values in range; still not a full recommendation.')
+                    : (lang === 'tl' ? 'Pinakamalapit sa saklaw sa mga nasukat, pero hindi pa kumpirmadong angkop.' : 'Closest on measured values, but not confirmed suitable.')
+                  : item.matches.length < previous.matches.length ? (lang === 'tl' ? 'Mas kaunting nasukat ang pasok kaysa sa nasa itaas.' : 'Fewer measured values are in range than the fish above.')
+                    : tied(previous) ? (lang === 'tl' ? 'Tabla sa nasa itaas; pangalan lamang ang nag-ayos ng puwesto.' : 'Tied with the fish above; listed alphabetically.')
+                    : (lang === 'tl' ? 'Pareho ang bilang na pasok, pero mas malayo sa saklaw ang labas na sukat.' : 'Same number in range, but the out-of-range value is farther from its species range.');
+                return <section key={item.fish.id} className="border-t border-slate-200 py-3">
+                  <div className="flex items-center gap-2"><span className="text-sm font-bold text-slate-500">#{index + 1}</span><img src={fishImageSrc(item.fish.id)} alt="" className="h-10 w-10 rounded-md object-cover" /><strong>{item.fish.name}</strong></div>
+                  <p className="mt-2 text-xs font-semibold text-slate-700">{lang === 'tl' ? `${item.matches.length} sa ${measured.length} nasukat ang pasok` : `${item.matches.length} of ${measured.length} measured values in range`}</p>
+                  {item.checks.map(check => <p key={check.key} className="mt-1 text-xs text-slate-600">
+                    {check.key === 'ph' ? 'pH' : check.key === 'temperature' ? (lang === 'tl' ? 'Temperatura' : 'Temperature') : (lang === 'tl' ? 'Labo' : 'Turbidity')} {check.value}{check.key === 'temperature' ? ' °C' : check.key === 'turbidity' ? ' NTU' : ''}: {check.result === 'unknown' ? (lang === 'tl' ? 'walang beripikadong saklaw' : 'no verified range') : <><span className={check.result === 'within' ? 'font-semibold text-emerald-700' : 'font-semibold text-amber-800'}>{check.result === 'within' ? (lang === 'tl' ? 'pasok' : 'within') : check.result === 'below' ? (lang === 'tl' ? 'mas mababa' : 'below') : (lang === 'tl' ? 'mas mataas' : 'above')}</span> ({check.min}–{check.max}{check.key === 'temperature' ? ' °C' : check.key === 'turbidity' ? ' NTU' : ''})</>}
+                  </p>)}
+                  <p className="mt-2 text-xs leading-relaxed text-slate-700">{reason}</p>
+                </section>;
+              })}
               {activeSpecies.filter(species => !fishDb.some(fish => fish.id === species.id)).map(species => <p key={species.id} className="text-xs text-slate-500">{species.name}: {lang === "tl" ? "kailangan ng kumpletong saklaw sa database" : "complete database thresholds needed"}</p>)}
             </>;
           })()}
