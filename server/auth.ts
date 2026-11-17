@@ -4,7 +4,11 @@ import type { RowDataPacket } from "mysql2";
 import { pool } from "./db";
 
 const cookieName = "pondsense_auth";
-const defaultSecret = "pondsense-local-dev-jwt-secret";
+const configuredSecret = process.env.SESSION_SECRET || process.env.JWT_SECRET;
+if (process.env.NODE_ENV === "production" && (!configuredSecret || configuredSecret.length < 32 || configuredSecret === "pondsense-local-dev-jwt-secret")) {
+  throw new Error("Production requires a strong SESSION_SECRET of at least 32 characters.");
+}
+const signingSecret = configuredSecret || crypto.randomBytes(48).toString("hex");
 
 type Role = "farmer" | "admin";
 
@@ -17,6 +21,7 @@ type JwtPayload = {
   sub: number;
   role: Role;
   exp: number;
+  version?: number;
 };
 
 export type AuthRequest = Request & {
@@ -29,7 +34,7 @@ function base64urlJson(value: object) {
 
 function sign(input: string) {
   return crypto
-    .createHmac("sha256", process.env.SESSION_SECRET || process.env.JWT_SECRET || defaultSecret)
+    .createHmac("sha256", signingSecret)
     .update(input)
     .digest("base64url");
 }
@@ -43,11 +48,12 @@ function readCookie(req: Request, name: string) {
     ?.slice(name.length + 1);
 }
 
-export function createAuthSession(res: Response, userId: number, role: Role) {
+export function createAuthSession(res: Response, userId: number, role: Role, version = 0) {
   const header: JwtHeader = { alg: "HS256", typ: "JWT" };
   const payload: JwtPayload = {
     sub: userId,
     role,
+    version,
     exp: Math.floor(Date.now() / 1000) + 60 * 60 * 8
   };
   const unsigned = `${base64urlJson(header)}.${base64urlJson(payload)}`;
@@ -73,12 +79,14 @@ export function verifyAuthToken(req: Request): JwtPayload | null {
   const token = readCookie(req, cookieName);
   if (!token) return null;
   const [header, payload, signature] = token.split(".");
-  if (!header || !payload || !signature) return null;
-  if (sign(`${header}.${payload}`) !== signature) return null;
+  if (!header || !payload || !signature || token.split(".").length !== 3) return null;
+  const expected = Buffer.from(sign(`${header}.${payload}`));
+  const supplied = Buffer.from(signature);
+  if (expected.length !== supplied.length || !crypto.timingSafeEqual(expected, supplied)) return null;
 
   try {
     const decoded = JSON.parse(Buffer.from(payload, "base64url").toString("utf8")) as JwtPayload;
-    if ((decoded.role !== "farmer" && decoded.role !== "admin") || decoded.exp < Math.floor(Date.now() / 1000)) return null;
+    if ((decoded.role !== "farmer" && decoded.role !== "admin") || !Number.isSafeInteger(decoded.sub) || decoded.sub <= 0 || !Number.isFinite(decoded.exp) || decoded.exp <= Math.floor(Date.now() / 1000)) return null;
     return decoded;
   } catch {
     return null;

@@ -191,9 +191,7 @@ ON DUPLICATE KEY UPDATE name = VALUES(name);
 
 INSERT IGNORE INTO fish_species (name) VALUES ('Mamali');
 
-INSERT INTO admin_settings (setting_key, setting_val)
-VALUES ('admin_pin', 'admin2024')
-ON DUPLICATE KEY UPDATE setting_val = setting_val;
+-- Administrator PIN is provisioned explicitly by the backend, never seeded publicly.
 
 INSERT INTO users (full_name, phone, email, password_hash, role)
 VALUES ('Guest Mode', '+639000000000', NULL, 'guest-demo-account', 'farmer')

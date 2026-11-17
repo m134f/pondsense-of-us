@@ -109,6 +109,7 @@ type SensorAnalysisState = {
   recordedAt: string;
 };
 type AdminUser = {
+  accountStatus?: 'PENDING' | 'ACTIVE' | 'REJECTED' | 'SUSPENDED';
   id: number;
   fullName: string;
   username?: string | null;
@@ -2589,7 +2590,7 @@ function AuthPage({
       });
       setIsSubmitting(false);
       if (result.error) return setMessage({ type: "error", text: result.error });
-      setMessage({ type: "success", text: "Account created. Please login." });
+      setMessage({ type: "success", text: "Account submitted. Please wait for administrator approval before logging in. / Hintayin ang pag-apruba ng administrator." });
       setMode("login");
       navigate("/login");
       return;
@@ -3141,19 +3142,37 @@ function AdminDashboardPage() {
 
 function AdminUsersPage() {
   const [users, setUsers] = useState<AdminUser[]>([]);
+  const [pendingOnly, setPendingOnly] = useState(false);
+  const [busy, setBusy] = useState<number | null>(null);
+  const [error, setError] = useState('');
+  const refresh = async () => {
+    const result = await apiJson<{ users: AdminUser[] }>('/api/admin/users');
+    if (result.data) setUsers(result.data.users);
+    else setError(result.error || 'Unable to load users.');
+  };
+  const updateStatus = async (user: AdminUser, status: string) => {
+    if (!window.confirm(`${status}: ${user.fullName}?`)) return;
+    setBusy(user.id); setError('');
+    const result = await apiJson(`/api/admin/users/${user.id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
+    if (result.error) setError(result.error);
+    else await refresh();
+    setBusy(null);
+  };
   const [query, setQuery] = useState("");
   useEffect(() => {
-    apiJson<{ users: AdminUser[] }>("/api/admin/users").then((result) => result.data && setUsers(result.data.users));
+    void refresh();
   }, []);
   const filteredUsers = users.filter((user) => {
     const value = `${user.fullName} ${user.username || ""} ${user.email || ""} ${user.phone || ""} ${user.role}`.toLowerCase();
-    return value.includes(query.toLowerCase());
+    return value.includes(query.toLowerCase()) && (!pendingOnly || user.accountStatus === 'PENDING');
   });
   return (
     <section className="card p-5">
       <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="text-xl font-black text-slate-950">Registered Users</h2>
+          <label className="flex min-h-11 items-center gap-2"><input type="checkbox" checked={pendingOnly} onChange={e => setPendingOnly(e.target.checked)} />Pending Registrations ({users.filter(user => user.accountStatus === 'PENDING').length})</label>
+          {error && <p role="alert" className="text-red-700">{error}</p>}
           <p className="text-sm font-semibold text-slate-500">{filteredUsers.length} of {users.length} accounts shown</p>
         </div>
         <input
@@ -3174,7 +3193,13 @@ function AdminUsersPage() {
                 <td className="px-4 py-3 font-bold text-slate-900">{user.fullName}</td>
                 <td className="px-4 py-3 text-slate-600">{user.username || user.email || "-"}</td>
                 <td className="px-4 py-3 text-slate-600">{user.phone || "-"}</td>
-                <td className="px-4 py-3"><span className={badgeClasses(user.role === "admin" ? "High" : "Medium")}>{user.role}</span></td>
+                <td className="px-4 py-3"><span className={badgeClasses(user.role === "admin" ? "High" : "Medium")}>{user.role}</span>
+                  {user.role === 'farmer' && <div className="mt-2 space-y-2"><strong>{user.accountStatus}</strong><div className="flex flex-wrap gap-2">
+                    {user.accountStatus !== 'ACTIVE' && <button disabled={busy !== null} className="soft-button" onClick={() => void updateStatus(user, 'ACTIVE')}>{user.accountStatus === 'PENDING' ? 'Approve' : 'Reactivate'}</button>}
+                    {user.accountStatus === 'PENDING' && <button disabled={busy !== null} className="soft-button" onClick={() => void updateStatus(user, 'REJECTED')}>Reject</button>}
+                    {user.accountStatus === 'ACTIVE' && <button disabled={busy !== null} className="soft-button" onClick={() => void updateStatus(user, 'SUSPENDED')}>Suspend</button>}
+                  </div></div>}
+                </td>
                 <td className="px-4 py-3 text-slate-600">{user.createdAt ? new Date(user.createdAt).toLocaleString("en-PH") : "-"}</td>
               </tr>
             ))}

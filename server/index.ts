@@ -1,4 +1,5 @@
 import { loadFishCatalog } from "./services/FishCatalog";
+import { migrateAccountStatus } from './migrations/accountStatus';
 import { migratePublicMonitoring } from './migrations/publicMonitoring';
 import { publicMonitoringRouter } from './routes/publicMonitoring';
 import { validateManual } from '../src/lib/manualValidation';
@@ -67,6 +68,21 @@ app.use(cors({
   }
 }));
 app.use(express.json());
+// Check current database status on every authenticated request, including legacy cookies.
+app.use('/api', async (req, res, next) => {
+  if (['/login', '/register', '/logout', '/admin/login'].includes(req.path)) return next();
+  const auth = verifyAuthToken(req);
+  if (!auth) return next();
+  if (!pool) return res.status(503).json({ message: 'Authentication unavailable.' });
+  try {
+    const [rows] = await pool.execute<RowDataPacket[]>('SELECT role, account_status, auth_version FROM users WHERE id = ?', [auth.sub]);
+    if (!rows[0] || rows[0].role !== auth.role || (auth.role === 'farmer' && (rows[0].account_status !== 'ACTIVE' || Number(rows[0].auth_version) !== (auth.version ?? 0)))) {
+      clearAuthSession(res);
+      return res.status(403).json({ message: 'Your account is not active. Contact the administrator.' });
+    }
+    next();
+  } catch { res.status(503).json({ message: 'Unable to verify account access.' }); }
+});
 app.use('/api', publicMonitoringRouter(pool));
 app.use('/api', planningRouter(pool));
 app.use('/api', fishpenSmsRouter(pool));
@@ -85,6 +101,7 @@ app.get("/api/health", async (_req, res) => {
     return res.json({
       ok: true,
       name: "PondSense API",
+      authPhase: 1,
       database: "local-demo-mode"
     });
   }
@@ -94,6 +111,7 @@ app.get("/api/health", async (_req, res) => {
     res.json({
       ok: true,
       name: "PondSense API",
+      authPhase: 1,
       database: hasDbConfig() ? "mysql-connected" : "local-demo-mode"
     });
   } catch (error) {
@@ -201,6 +219,7 @@ function adminPublicUser(row: RowDataPacket) {
     email: row.email,
     phone: row.phone,
     role: normalizeRole(row.role),
+    accountStatus: row.account_status,
     createdAt: row.created_at
   };
 }
@@ -356,12 +375,15 @@ async function ensureAdminStorage() {
     `INSERT INTO admin_settings (setting_key, setting_val)
      VALUES ('admin_pin', ?)
      ON DUPLICATE KEY UPDATE setting_val = setting_val`,
-    [process.env.ADMIN_PIN || "admin2024"]
+    [process.env.ADMIN_PIN || ""]
   );
 
   const [admins] = await pool.execute<RowDataPacket[]>("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
   if (!admins.length) {
-    const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD || "admin2024", 10);
+    if (!process.env.ADMIN_PASSWORD || !process.env.ADMIN_PIN || !process.env.ADMIN_PHONE || !process.env.ADMIN_USERNAME || process.env.ADMIN_PASSWORD === 'admin2024' || process.env.ADMIN_PIN === 'admin2024') {
+      throw new Error('No administrator exists. Explicit ADMIN_USERNAME, ADMIN_PHONE, ADMIN_PASSWORD and ADMIN_PIN are required for provisioning.');
+    }
+    const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 10);
     await pool.execute(
       `INSERT INTO users (full_name, username, phone, email, password_hash, role)
        VALUES (?, ?, ?, ?, ?, 'admin')`,
@@ -473,12 +495,12 @@ app.post("/api/register", async (req, res) => {
 
   const passwordHash = await bcrypt.hash(password, 10);
   if (!pool) {
-    return res.json({ id: Date.now(), fullName, phone, email: email ?? null, role: "farmer", demo: true });
+    return res.status(503).json({ message: 'Registration requires the database.' });
   }
 
   try {
     const [result] = await pool.execute<ResultSetHeader>(
-      "INSERT INTO users (full_name, phone, email, password_hash, role) VALUES (?, ?, ?, ?, 'farmer')",
+      "INSERT INTO users (full_name, phone, email, password_hash, role, account_status) VALUES (?, ?, ?, ?, 'farmer', 'PENDING')",
       [fullName, phone, email ?? null, passwordHash]
     );
     res.json({ id: result.insertId, fullName, phone, email: email ?? null, role: "farmer" });
@@ -504,7 +526,7 @@ app.post("/api/login", async (req, res) => {
 
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
-      "SELECT id, full_name, phone, password_hash, role, created_at FROM users WHERE phone = ? AND role = 'farmer' LIMIT 1",
+      "SELECT id, full_name, phone, password_hash, role, account_status, auth_version, created_at FROM users WHERE phone = ? AND role = 'farmer' LIMIT 1",
       [phone]
     );
     const user = rows[0];
@@ -517,7 +539,8 @@ app.post("/api/login", async (req, res) => {
       return res.status(401).json({ message: "Incorrect password. Please try again." });
     }
 
-    createAuthSession(res, Number(user.id), normalizeRole(user.role));
+    if (user.account_status !== 'ACTIVE') return res.status(403).json({ message: `Account ${String(user.account_status).toLowerCase()}. Administrator approval is required.` });
+    createAuthSession(res, Number(user.id), normalizeRole(user.role), Number(user.auth_version));
     res.json({
       id: user.id,
       fullName: user.full_name,
@@ -1274,7 +1297,8 @@ app.post("/api/admin/login", async (req, res) => {
     const [settings] = await pool.execute<RowDataPacket[]>(
       "SELECT setting_val FROM admin_settings WHERE setting_key = 'admin_pin' LIMIT 1"
     );
-    const savedPin = String(settings[0]?.setting_val || process.env.ADMIN_PIN || "admin2024");
+    const savedPin = String(settings[0]?.setting_val || process.env.ADMIN_PIN || "");
+    if (!savedPin) return res.status(503).json({ message: 'Administrator PIN is not configured. Contact the system operator.' });
     if (String(pin) !== savedPin) return res.status(401).json({ message: "Incorrect admin PIN." });
 
     const loginId = String(identifier).trim();
@@ -1292,6 +1316,7 @@ app.post("/api/admin/login", async (req, res) => {
     const valid = await bcrypt.compare(String(password), String(admin.password_hash));
     if (!valid) return res.status(401).json({ message: "Incorrect admin password." });
 
+    await pool.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [admin.id, 'admin_login', 'Password and configured PIN verified']);
     createAuthSession(res, Number(admin.id), "admin");
     res.json({ admin: adminPublicUser(admin) });
   } catch (error) {
@@ -1314,10 +1339,33 @@ app.get("/api/admin/session", requireAdmin, async (req: AuthRequest, res) => {
   res.json({ admin: rows[0] ? adminPublicUser(rows[0]) : null });
 });
 
+app.patch('/api/admin/users/:id/status', requireAdmin, async (req: AuthRequest, res) => {
+  if (!pool) return res.status(503).json({ message: 'Database unavailable.' });
+  const origin = req.headers.origin;
+  if (!origin || !allowedOrigins.includes(origin) || !req.is('application/json')) return res.status(403).json({ message: 'Untrusted request origin.' });
+  const id = Number(req.params.id);
+  const status = req.body?.status;
+  if (!Number.isSafeInteger(id) || id <= 0 || !['ACTIVE', 'REJECTED', 'SUSPENDED'].includes(status)) return res.status(400).json({ message: 'Invalid account or status.' });
+  const connection = await pool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const [rows] = await connection.query<RowDataPacket[]>('SELECT account_status FROM users WHERE id = ? AND role = ? FOR UPDATE', [id, 'farmer']);
+    if (!rows.length) { await connection.rollback(); return res.status(404).json({ message: 'Farmer not found.' }); }
+    const previous = String(rows[0].account_status);
+    const permitted: Record<string, string[]> = { PENDING: ['ACTIVE', 'REJECTED'], ACTIVE: ['SUSPENDED'], SUSPENDED: ['ACTIVE'], REJECTED: ['ACTIVE'] };
+    if (!permitted[previous]?.includes(status)) { await connection.rollback(); return res.status(409).json({ message: 'Account status changed. Refresh and try again.' }); }
+    await connection.execute('UPDATE users SET account_status = ?, auth_version = auth_version + 1 WHERE id = ?', [status, id]);
+    await connection.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth!.sub, 'farmer_status_changed', JSON.stringify({ userId: id, previous, status })]);
+    await connection.commit();
+    res.json({ ok: true });
+  } catch { await connection.rollback(); res.status(503).json({ message: 'Unable to update account.' }); }
+  finally { connection.release(); }
+});
+
 app.get("/api/admin/users", requireAdmin, async (_req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
   const [rows] = await pool.execute<RowDataPacket[]>(
-    "SELECT id, full_name, username, email, phone, role, created_at FROM users ORDER BY created_at DESC"
+    "SELECT id, full_name, username, email, phone, role, account_status, created_at FROM users ORDER BY created_at DESC"
   );
   res.json({ users: rows.map(adminPublicUser) });
 });
@@ -1492,6 +1540,7 @@ async function sendDueHarvestReminders() {
 
 try {
   await ensureAdminStorage();
+  if (pool) await migrateAccountStatus(pool);
   if (pool) await migratePublicMonitoring(pool);
   if (pool) await migratePartialManual(pool);
   if (pool) await migratePlanning(pool);
@@ -1499,6 +1548,7 @@ try {
   if (pool) await migrateActiveFishSpecies(pool);
   void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
 } catch (error) {
+  if (process.env.NODE_ENV === 'production') throw error;
   console.warn("PondSense API started without MySQL migrations. Start XAMPP MySQL, then restart npm run dev.", error);
 }
 
