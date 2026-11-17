@@ -3236,42 +3236,40 @@ function AdminSettingsPage({ navigate, text }: { navigate: (path: string) => voi
 }
 
 function AdminDevicesPage() {
-  type Device = { id: number; device_name: string; owner_user_id: number | null; owner_name: string | null; is_active: number; last_seen_at: string | null; last_reading_at: string | null };
+  type Device = { id: number; device_name: string; owner_user_id: number | null; owner_name: string | null; is_active: number; last_seen_at: string | null; last_reading_at: string | null; monitoring_fishpen_id: number | null };
   const [devices, setDevices] = useState<Device[]>([]);
-  const [users, setUsers] = useState<AdminUser[]>([]);
-  const [ownerUserId, setOwnerUserId] = useState("");
-  const [deviceName, setDeviceName] = useState("PondSense ESP32");
-  const [newKey, setNewKey] = useState("");
   const [message, setMessage] = useState("");
+  const [busyDevice, setBusyDevice] = useState<number | null>(null);
+  const [replacementKey, setReplacementKey] = useState<{ deviceId: number; key: string } | null>(null);
   const refresh = async () => {
-    const [deviceResult, userResult] = await Promise.all([
-      apiJson<{ devices: Device[] }>("/api/admin/devices"),
-      apiJson<{ users: AdminUser[] }>("/api/admin/users")
-    ]);
+    const deviceResult = await apiJson<{ devices: Device[] }>("/api/admin/devices");
     if (deviceResult.data) setDevices(deviceResult.data.devices);
-    if (userResult.data) setUsers(userResult.data.users.filter((user) => user.role === "farmer"));
     if (deviceResult.error) setMessage(deviceResult.error);
   };
   useEffect(() => { void refresh(); }, []);
-  const create = async () => {
-    setNewKey("");
-    const result = await postJson<{ deviceId: number; apiKey: string }>("/api/admin/devices", { deviceName, ownerUserId: ownerUserId ? Number(ownerUserId) : null });
-    if (result.error) return setMessage(result.error);
-    setNewKey(result.data?.apiKey || "");
-    setMessage("Device created. Copy the key into its firmware now; it will not be shown again.");
-    void refresh();
+  const useForFishpen = async (device: Device) => {
+    if (!device.owner_user_id) return;
+    setBusyDevice(device.id);
+    setMessage("");
+    const result = await apiJson(`/api/admin/owners/${device.owner_user_id}/monitoring-device`, { method: "PUT", body: JSON.stringify({ deviceId: device.id }) });
+    setMessage(result.error || `Device #${device.id} is now the fishpen monitor for ${device.owner_name}. Refresh the owner dashboard.`);
+    if (!result.error) await refresh();
+    setBusyDevice(null);
   };
-  const assign = async (deviceId: number, userId: number) => {
-    const result = await apiJson(`/api/admin/devices/${deviceId}`, { method: "PATCH", body: JSON.stringify({ ownerUserId: userId }) });
-    setMessage(result.error || "Device assigned. Its next readings will appear in that farmer's dashboard.");
-    if (!result.error) void refresh();
+  const replaceKey = async (device: Device) => {
+    if (!device.owner_user_id || !window.confirm(`Replace the key for device #${device.id}? The current ESP32 key will stop working until you upload the new key to its firmware.`)) return;
+    setBusyDevice(device.id);
+    setReplacementKey(null);
+    const result = await apiJson<{ deviceId: number; deviceKey: string }>(`/api/admin/owners/${device.owner_user_id}/device-key`, { method: "POST", body: "{}" });
+    setMessage(result.error || "New key issued. Update the ESP32 firmware before monitoring resumes.");
+    if (result.data) setReplacementKey({ deviceId: result.data.deviceId, key: result.data.deviceKey });
+    setBusyDevice(null);
   };
-  return <section className="card p-5"><h2 className="text-xl font-black text-slate-950">Sensor devices</h2><p className="mt-1 text-sm text-slate-600">Assign existing devices without changing their keys. New keys are visible to admins once only.</p>
-    <div className="mt-4 flex flex-wrap gap-2"><input className="min-h-11 rounded-lg border border-slate-300 px-3" aria-label="Device name" value={deviceName} onChange={(event) => setDeviceName(event.target.value)} /><select className="min-h-11 rounded-lg border border-slate-300 px-3" aria-label="Farmer account" value={ownerUserId} onChange={(event) => setOwnerUserId(event.target.value)}><option value="">Unassigned (administrator assigns)</option>{users.map((user) => <option key={user.id} value={user.id}>{user.fullName} ({user.phone})</option>)}</select><button className="primary-button" onClick={create}>Create device</button></div>
-    <p className="mt-4 text-sm text-slate-600">Monitoring is private. Owners see only their administrator-assigned fishpen.</p>
-    {newKey && <div className="mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm"><p className="font-bold text-amber-900">One-time device key</p><code className="mt-1 block break-all text-slate-900">{newKey}</code><button className="soft-button mt-2" onClick={() => { void navigator.clipboard.writeText(newKey); }}>Copy key</button><button className="soft-button mt-2 ml-2" onClick={() => setNewKey("")}>Hide key</button></div>}
+  const ordered = [...devices].sort((a, b) => (b.last_reading_at ? new Date(b.last_reading_at).getTime() : 0) - (a.last_reading_at ? new Date(a.last_reading_at).getTime() : 0) || b.id - a.id);
+  return <section className="card p-5"><h2 className="text-xl font-black text-slate-950">Sensor devices</h2><p className="mt-1 text-sm text-slate-600">A new owner gets one device key automatically. For older accounts, choose the device that is actually uploading. Selecting it disables that owner's other device keys but keeps all past readings.</p>
     {message && <p className="mt-3 text-sm font-semibold text-slate-700" role="status">{message}</p>}
-    <div className="mt-4 space-y-2">{devices.map((device) => <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3" key={device.id}><div><p className="font-bold text-slate-900">{device.device_name} · #{device.id}</p><p className="text-xs text-slate-600">{device.owner_name || "Unassigned"} · Last upload: {device.last_reading_at ? new Date(device.last_reading_at).toLocaleString("en-PH") : "None"}</p></div><div className="flex flex-wrap gap-2"><select className="min-h-11 rounded-lg border border-slate-300 px-3 text-sm" aria-label={`Assign ${device.device_name}`} value={device.owner_user_id ?? ""} onChange={(event) => { if (event.target.value) void assign(device.id, Number(event.target.value)); }}><option value="">Unassigned</option>{users.map((user) => <option key={user.id} value={user.id}>{user.fullName} ({user.phone})</option>)}</select></div></div>)}</div>
+    {replacementKey && <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm"><p className="font-bold">Replacement key for device #{replacementKey.deviceId}, shown once</p><code className="mt-2 block break-all">{replacementKey.key}</code><button className="soft-button mt-2" onClick={() => setReplacementKey(null)}>Hide key</button></div>}
+    <div className="mt-4 space-y-2">{ordered.map((device) => <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3" key={device.id}><div><p className="font-bold text-slate-900">{device.device_name} · #{device.id}</p><p className="text-xs text-slate-600">{device.owner_name || "Unassigned"} · Last upload: {device.last_reading_at ? new Date(device.last_reading_at).toLocaleString("en-PH") : "None"}{Number(device.is_active) !== 1 ? " · Inactive" : ""}</p></div><div className="flex flex-wrap items-center gap-2">{device.monitoring_fishpen_id ? <><span className="text-sm font-bold text-teal-700">Fishpen monitor</span><button className="soft-button" disabled={busyDevice !== null} onClick={() => void replaceKey(device)}>Replace key</button></> : device.owner_user_id && Number(device.is_active) === 1 ? <button className="soft-button" disabled={busyDevice !== null} onClick={() => void useForFishpen(device)}>{busyDevice === device.id ? "Saving..." : "Use for fishpen"}</button> : null}</div></div>)}</div>
   </section>;
 }
 

@@ -28,11 +28,58 @@ export function ownerAccountsRouter(db: Pool | null) {
       await c.beginTransaction();
       const [result] = await c.execute<ResultSetHeader>(`INSERT INTO users (full_name, phone, password_hash, role, account_status, must_change_password, temporary_password_expires_at)
         VALUES (?, ?, ?, 'farmer', 'ACTIVE', TRUE, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 24 HOUR))`, [fullName.trim(), phone, hash]);
-      const [pen] = await c.execute<ResultSetHeader>('INSERT INTO sms_fishpens (owner_user_id, name) VALUES (?, ?)', [result.insertId, fishpenName.trim()]);
+      const deviceKey = `ps_${crypto.randomBytes(24).toString('base64url')}`;
+      const [device] = await c.execute<ResultSetHeader>('INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)',
+        ['PondSense ESP32', await bcrypt.hash(deviceKey, 10), result.insertId]);
+      const [pen] = await c.execute<ResultSetHeader>('INSERT INTO sms_fishpens (owner_user_id, name, device_id) VALUES (?, ?, ?)', [result.insertId, fishpenName.trim(), device.insertId]);
       await c.execute('INSERT INTO owner_fishpen_assignments (owner_user_id, fishpen_id, updated_by) VALUES (?, ?, ?)', [result.insertId, pen.insertId, req.auth!.sub]);
-      await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth!.sub, 'owner_provisioned', JSON.stringify({ ownerId: result.insertId, fishpenId: pen.insertId })]);
-      await c.commit(); res.json({ id: result.insertId, temporaryPassword, expiresInHours: 24 });
+      await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth!.sub, 'owner_provisioned', JSON.stringify({ ownerId: result.insertId, fishpenId: pen.insertId, deviceId: device.insertId })]);
+      await c.commit(); res.json({ id: result.insertId, temporaryPassword, deviceKey, deviceId: device.insertId, expiresInHours: 24 });
     } catch (error) { await c.rollback(); res.status((error as {code?: string}).code === 'ER_DUP_ENTRY' ? 409 : 503).json({ message: (error as {code?: string}).code === 'ER_DUP_ENTRY' ? 'That mobile number already has an account. Manage the existing account instead.' : 'Unable to create owner account.' }); }
+    finally { c.release(); }
+  });
+  router.put('/admin/owners/:id/monitoring-device', requireAdmin, async (req: AuthRequest, res) => {
+    const owner = Number(req.params.id);
+    const deviceId = Number(req.body?.deviceId);
+    if (!Number.isSafeInteger(owner) || owner <= 0 || !Number.isSafeInteger(deviceId) || deviceId <= 0) return res.status(400).json({ message: 'Choose a valid owner and monitoring device.' });
+    const c = await db!.getConnection();
+    try {
+      await c.beginTransaction();
+      const [rows] = await c.query<RowDataPacket[]>(`SELECT p.id AS fishpenId, p.device_id AS previousDeviceId
+        FROM owner_fishpen_assignments a JOIN sms_fishpens p ON p.id = a.fishpen_id
+        JOIN users u ON u.id = a.owner_user_id
+        WHERE a.owner_user_id = ? AND p.owner_user_id = ? AND u.role = 'farmer' FOR UPDATE`, [owner, owner]);
+      if (!rows.length) { await c.rollback(); return res.status(404).json({ message: 'Owner has no assigned fishpen.' }); }
+      const [devices] = await c.query<RowDataPacket[]>('SELECT id FROM sensor_devices WHERE id = ? AND owner_user_id = ? AND is_active = 1 FOR UPDATE', [deviceId, owner]);
+      if (!devices.length) { await c.rollback(); return res.status(403).json({ message: 'Device is not active or does not belong to this owner.' }); }
+      await c.execute('UPDATE sms_fishpens SET device_id = ? WHERE id = ?', [deviceId, rows[0].fishpenId]);
+      await c.execute('UPDATE sensor_devices SET is_active = 0 WHERE owner_user_id = ? AND id <> ? AND is_active = 1', [owner, deviceId]);
+      await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)',
+        [req.auth!.sub, 'fishpen_monitor_changed', JSON.stringify({ ownerId: owner, fishpenId: rows[0].fishpenId, previousDeviceId: rows[0].previousDeviceId, deviceId })]);
+      await c.commit(); res.json({ saved: true, deviceId, fishpenId: rows[0].fishpenId });
+    } catch (error) {
+      await c.rollback();
+      res.status((error as { code?: string }).code === 'ER_DUP_ENTRY' ? 409 : 503).json({ message: 'Unable to assign this device. Check whether it monitors another fishpen.' });
+    } finally { c.release(); }
+  });
+  router.post('/admin/owners/:id/device-key', requireAdmin, async (req: AuthRequest, res) => {
+    const owner = Number(req.params.id);
+    if (!Number.isSafeInteger(owner) || owner <= 0) return res.status(400).json({ message: 'Invalid owner.' });
+    const deviceKey = `ps_${crypto.randomBytes(24).toString('base64url')}`;
+    const hash = await bcrypt.hash(deviceKey, 10);
+    const c = await db!.getConnection();
+    try {
+      await c.beginTransaction();
+      const [rows] = await c.query<RowDataPacket[]>(`SELECT d.id FROM owner_fishpen_assignments a
+        JOIN sms_fishpens p ON p.id = a.fishpen_id AND p.owner_user_id = a.owner_user_id
+        JOIN sensor_devices d ON d.id = p.device_id AND d.owner_user_id = a.owner_user_id AND d.is_active = 1
+        WHERE a.owner_user_id = ? FOR UPDATE`, [owner]);
+      if (!rows.length) { await c.rollback(); return res.status(404).json({ message: 'No active fishpen monitor is assigned to this owner.' }); }
+      await c.execute('UPDATE sensor_devices SET api_key_hash = ? WHERE id = ?', [hash, rows[0].id]);
+      await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)',
+        [req.auth!.sub, 'device_key_replaced', JSON.stringify({ ownerId: owner, deviceId: rows[0].id })]);
+      await c.commit(); res.json({ deviceId: Number(rows[0].id), deviceKey });
+    } catch { await c.rollback(); res.status(503).json({ message: 'Unable to replace device key.' }); }
     finally { c.release(); }
   });
   router.post('/admin/owners/:id/reset-password', requireAdmin, async (req: AuthRequest, res) => {

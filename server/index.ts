@@ -672,29 +672,15 @@ app.get("/api/admin/devices", requireAdmin, async (_req, res) => {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT d.id, d.device_name, d.owner_user_id, d.is_active, d.last_seen_at,
             u.full_name AS owner_name,
+            (SELECT p.id FROM sms_fishpens p JOIN owner_fishpen_assignments a ON a.fishpen_id = p.id
+             WHERE p.device_id = d.id AND a.owner_user_id = d.owner_user_id LIMIT 1) AS monitoring_fishpen_id,
             (SELECT MAX(t.recorded_at) FROM sensor_telemetry t WHERE t.device_id = d.id) AS last_reading_at
      FROM sensor_devices d LEFT JOIN users u ON u.id = d.owner_user_id ORDER BY d.id DESC`
   );
   res.json({ devices: rows });
 });
 
-app.post("/api/admin/devices", requireAdmin, async (req: AuthRequest, res) => {
-  if (!pool) return res.status(503).json({ message: "Database is required." });
-  const ownerUserId = req.body?.ownerUserId ? Number(req.body.ownerUserId) : null;
-  const deviceName = String(req.body?.deviceName || "PondSense ESP32").trim().slice(0, 100);
-  if (!deviceName || (ownerUserId !== null && (!Number.isSafeInteger(ownerUserId) || ownerUserId < 1))) return res.status(400).json({ message: "Enter a device name and valid farmer." });
-  if (ownerUserId !== null) {
-    const [owners] = await pool.execute<RowDataPacket[]>("SELECT id FROM users WHERE id = ? AND role = 'farmer' LIMIT 1", [ownerUserId]);
-    if (!owners.length) return res.status(404).json({ message: "Farmer account not found." });
-  }
-  const apiKey = `ps_${crypto.randomBytes(24).toString("base64url")}`;
-  const [result] = await pool.execute<ResultSetHeader>(
-    "INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)",
-    [deviceName, await bcrypt.hash(apiKey, 10), ownerUserId]
-  );
-  await logAdminAction(req, "device_created", `Device ${result.insertId} assigned to user ${ownerUserId}`);
-  res.status(201).json({ deviceId: result.insertId, apiKey });
-});
+app.post("/api/admin/devices", requireAdmin, (_req, res) => res.status(410).json({ message: "Devices are provisioned with owner accounts. Use the existing owner fishpen monitor instead." }));
 
 app.post("/api/admin/devices/:id/pairing-code", requireAdmin, async (req: AuthRequest, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });

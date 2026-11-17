@@ -31,10 +31,12 @@ test('provision, restricted first login, password change, reset and API authoriz
     if (sql.includes('FROM admin_security')) return [[{admin_id:1, enforced:false}], []];
     if (sql.includes('FROM admin_auth_rate')) return [[{attempts:1}], []];
     if (sql.includes('FROM owner_fishpen_assignments')) return [assignments.has(args[0]) ? [assignments.get(args[0])] : [], []];
+    if (sql.includes('FROM sensor_devices')) return [[{id:args[0]}], []];
     if (sql.includes('FROM users')) { const u=users.get(Number(args[0])); return [u && (!args[1] || args[1]===u.role) ? [{...u}] : [], []]; }
     if (sql.startsWith('INSERT INTO users')) { const id=nextId++; users.set(id,{id,role:'farmer',account_status:'ACTIVE',auth_version:0,password_hash:args[2],must_change_password:1,temporary_password_expires_at:new Date(Date.now()+86400000)}); return [{insertId:id},[]]; }
+    if (sql.startsWith('INSERT INTO sensor_devices')) return [{insertId:200+args[2]},[]];
     if (sql.startsWith('INSERT INTO sms_fishpens')) return [{insertId:100+args[0]},[]];
-    if (sql.startsWith('INSERT INTO owner_fishpen_assignments')) { assignments.set(args[0],{id:args[1],name:'Cuyab owner pen',deviceId:null}); return [{affectedRows:1},[]]; }
+    if (sql.startsWith('INSERT INTO owner_fishpen_assignments')) { assignments.set(args[0],{id:args[1],name:'Cuyab owner pen',deviceId:200+args[0]}); return [{affectedRows:1},[]]; }
     if (sql.startsWith('INSERT INTO admin_audit_logs')) { audits.push(args); return [{affectedRows:1},[]]; }
     if (sql.startsWith('UPDATE users SET password_hash')) { const u=users.get(args[1])!; u.password_hash=args[0]; u.auth_version++; u.must_change_password=sql.includes('must_change_password = TRUE')?1:0; u.temporary_password_expires_at=u.must_change_password?new Date(Date.now()+86400000):null; return [{affectedRows:1},[]]; }
     if (sql.startsWith('INSERT INTO admin_auth_rate')) return [{affectedRows:1},[]];
@@ -61,6 +63,8 @@ test('provision, restricted first login, password change, reset and API authoriz
     assert.equal((await request('/admin/owners','POST',{},admin,'https://bad.example')).status,403);
     const created=await request('/admin/owners','POST',{fullName:'Owner',phone:'+639111111111',fishpenName:'Cuyab'},admin);
     assert.equal(created.status,200);const data=await created.json();const id=data.id;
+    assert.match(data.deviceKey, /^ps_[A-Za-z0-9_-]{32}$/);
+    assert.equal(data.deviceId,200+id);
     assert.ok(assignments.has(id)); assert.notEqual(users.get(id)!.password_hash,data.temporaryPassword);
     assert.equal(await bcrypt.compare(data.temporaryPassword,users.get(id)!.password_hash),true);
     const temporary=await cookie(id);
