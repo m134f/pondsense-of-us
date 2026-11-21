@@ -19,8 +19,7 @@ test('configured origin is normalized without allowing arbitrary sites', () => {
   try {
     process.env.FRONTEND_URL = ' https://pondsense-of-us.vercel.app/ ';
     const request = (origin: string, contentType = 'application/json') => ({
-      headers: { origin },
-      is: (type: string) => type === contentType
+      headers: { origin, 'content-type': contentType }
     }) as unknown as Request;
     assert.ok(isTrustedJsonRequest(request('https://pondsense-of-us.vercel.app')));
     assert.ok(!isTrustedJsonRequest(request('https://attacker.example')));
@@ -29,4 +28,13 @@ test('configured origin is normalized without allowing arbitrary sites', () => {
     if (previous === undefined) delete process.env.FRONTEND_URL;
     else process.env.FRONTEND_URL = previous;
   }
+});
+
+test('bodyless DELETE with JSON header and trusted origin is accepted', () => {
+  const request = {
+    method: 'DELETE',
+    headers: { origin: 'https://pondsense-of-us.vercel.app', 'content-type': 'application/json; charset=utf-8' },
+    is: () => null
+  } as unknown as Request;
+  assert.ok(isTrustedJsonRequest(request));
 });

@@ -13,5 +13,11 @@ export function trustedOrigins(): string[] {
 }
 
 export function isTrustedJsonRequest(req: Request): boolean {
-  return Boolean(req.headers.origin && trustedOrigins().includes(req.headers.origin) && req.is('application/json'));
+  const contentType = req.headers['content-type'];
+  return Boolean(
+    req.headers.origin &&
+    trustedOrigins().includes(req.headers.origin) &&
+    typeof contentType === 'string' &&
+    contentType.split(';', 1)[0].trim().toLowerCase() === 'application/json'
+  );
 }
