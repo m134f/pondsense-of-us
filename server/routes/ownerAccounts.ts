@@ -5,6 +5,7 @@ import type { Pool } from 'mysql2/promise';
 import type { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { requireRole, verifyAuthToken, createAuthSession, type AuthRequest } from '../auth';
 import { allowAdminAttempt } from './adminWebauthn';
+import { isTrustedJsonRequest } from '../trustedOrigin';
 
 export const validOwnerPassword = (value: unknown): value is string => typeof value === 'string' && value.length >= 12 && Buffer.byteLength(value, 'utf8') <= 72;
 export function ownerAccountsRouter(db: Pool | null) {
@@ -13,8 +14,7 @@ export function ownerAccountsRouter(db: Pool | null) {
   router.use(['/admin/owners', '/owner/password'], (req, res, next) => {
     if (!db) return res.status(503).json({ message: 'Database unavailable.' });
     if (req.method !== 'GET') {
-      const origins = [process.env.FRONTEND_URL, 'http://localhost:5173', 'http://127.0.0.1:5173'].filter(Boolean);
-      if (!req.is('application/json') || !req.headers.origin || !origins.includes(req.headers.origin)) return res.status(403).json({ message: 'Untrusted request origin.' });
+      if (!isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request origin.' });
     }
     next();
   });

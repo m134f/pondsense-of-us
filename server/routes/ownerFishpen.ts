@@ -2,6 +2,7 @@ import { Router } from 'express';
 import type { Pool } from 'mysql2/promise';
 import type { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { requireAdmin, type AuthRequest } from '../auth';
+import { isTrustedJsonRequest } from '../trustedOrigin';
 
 export function ownerFishpenRouter(db: Pool | null) {
   const router = Router();
@@ -15,8 +16,7 @@ export function ownerFishpenRouter(db: Pool | null) {
   });
   router.put('/admin/fishpen-assignments/:owner', requireAdmin, async (req: AuthRequest, res) => {
     if (!db) return res.status(503).json({ message: 'Database unavailable.' });
-    const allowed = [process.env.FRONTEND_URL, 'http://localhost:5173'].filter(Boolean);
-    if (!req.is('application/json') || !req.headers.origin || !allowed.includes(req.headers.origin)) return res.status(403).json({ message: 'Untrusted request.' });
+    if (!isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request.' });
     const owner = Number(req.params.owner);
     const id = req.body.fishpenId === null ? null : Number(req.body.fishpenId);
     const device = req.body.deviceId == null || req.body.deviceId === '' ? null : Number(req.body.deviceId);

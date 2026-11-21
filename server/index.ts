@@ -4,6 +4,7 @@ import { migrateAccountStatus } from './migrations/accountStatus';
 import { migrateOwnerFishpen } from './migrations/ownerFishpen';
 import { migrateProvisionedOwners } from './migrations/provisionedOwners';
 import { ownerAccess } from './ownerAccess';
+import { isTrustedJsonRequest, trustedOrigins } from './trustedOrigin';
 import { ownerAccountsRouter } from './routes/ownerAccounts';
 import { assignedFishpen } from './services/OwnerFishpen';
 import { harvestAssignmentGuard } from './harvestAssignmentGuard';
@@ -62,11 +63,7 @@ type FishThresholdUpdate = {
   max_ammonia?: number;
 };
 
-const allowedOrigins = [
-  "http://localhost:5173",
-  "http://127.0.0.1:5173",
-  process.env.FRONTEND_URL
-].filter(Boolean) as string[];
+const allowedOrigins = trustedOrigins();
 
 app.use(cors({
   credentials: true,
@@ -490,7 +487,7 @@ async function sendAccountSms(user: SmsRecipient, action: "register" | "login") 
 app.all('/api/register', (_req, res) => res.status(410).json({ message: 'Public registration is disabled. Contact the administrator for an owner account.' }));
 
 app.post("/api/login", async (req, res) => {
-  if (!req.headers.origin || !allowedOrigins.includes(req.headers.origin) || !req.is('application/json')) return res.status(403).json({ message: 'Untrusted request origin.' });
+  if (!isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request origin.' });
   const { phone, password } = req.body ?? {};
   if (!/^(\+639)\d{9}$/.test(phone) || !password) {
     return res.status(400).json({ message: "Use Philippine phone format +639XXXXXXXXX and enter your password." });
@@ -1230,7 +1227,7 @@ app.post("/api/sms/test", async (req, res) => {
 });
 
 app.post("/api/admin/login", async (req, res) => {
-  if (!req.headers.origin || !allowedOrigins.includes(req.headers.origin) || !req.is('application/json')) return res.status(403).json({ message: 'Untrusted request origin.' });
+  if (!isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request origin.' });
   const { identifier, password, pin } = req.body ?? {};
   if (!identifier || !password || !pin) {
     return res.status(400).json({ message: "Username/email, password, and admin PIN are required." });
@@ -1291,8 +1288,7 @@ app.get("/api/admin/session", requireAdmin, async (req: AuthRequest, res) => {
 
 app.patch('/api/admin/users/:id/status', requireAdmin, async (req: AuthRequest, res) => {
   if (!pool) return res.status(503).json({ message: 'Database unavailable.' });
-  const origin = req.headers.origin;
-  if (!origin || !allowedOrigins.includes(origin) || !req.is('application/json')) return res.status(403).json({ message: 'Untrusted request origin.' });
+  if (!isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request origin.' });
   const id = Number(req.params.id);
   const status = req.body?.status;
   if (!Number.isSafeInteger(id) || id <= 0 || !['ACTIVE', 'SUSPENDED'].includes(status)) return res.status(400).json({ message: 'Invalid owner or status.' });

@@ -3,6 +3,7 @@ import type { Pool } from 'mysql2/promise';
 import type { RowDataPacket } from 'mysql2';
 import { verifyAuthToken, clearAuthSession } from './auth';
 import { assignedFishpen } from './services/OwnerFishpen';
+import { isTrustedJsonRequest } from './trustedOrigin';
 
 const deviceUploads = new Set(['/v1/sensors/measurements', '/v1/sensors/turbidity', '/v1/sensors/data', '/sensor/readings']);
 export function ownerAccess(db: Pool | null) {
@@ -14,8 +15,7 @@ export function ownerAccess(db: Pool | null) {
     if (!auth) return res.status(401).json({ message: 'Owner login required.' });
     if (auth.role !== 'farmer') return res.status(403).json({ message: 'Use a fishpen owner account for these features.' });
     if (!['GET', 'HEAD'].includes(req.method)) {
-      const origins = [process.env.FRONTEND_URL, 'http://localhost:5173', 'http://127.0.0.1:5173'].filter(Boolean);
-      if (!req.headers.origin || !origins.includes(req.headers.origin) || !req.is('application/json')) return res.status(403).json({ message: 'Untrusted request origin.' });
+      if (!isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request origin.' });
     }
     if (!db) return res.status(503).json({ message: 'Authentication unavailable.' });
     try {
