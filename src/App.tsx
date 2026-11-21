@@ -41,6 +41,7 @@ import {
 import { activeSpecies, fishDatabase } from "./data/fish";
 import { analyzeWaterQuality, detectRisks, feedingAdvice } from "./lib/decisionEngine";
 import { rankPartialFish } from "./lib/partialFish";
+import { historyFishFit } from "./lib/historyFishFit";
 import { daysUntilHarvest, estimatedRemainingStock, harvestReminderDue, harvestStage, recentMortality, csvCell } from "./lib/harvest";
 import { RecommendedActions, type WaterContext } from "./components/RecommendedActions";
 import { HarvestReview } from "./components/HarvestReview";
@@ -477,6 +478,16 @@ const farmerHistoryParameters = parameterMeta.filter(meta => meta.key !== "ammon
 
 function isPartialSession(row: SessionRecord) {
   return farmerHistoryParameters.some(meta => row[meta.key] == null);
+}
+
+function historyFishDisplay(row: SessionRecord, fishDb: FishSpecies[], lang: Lang) {
+  const fit = isPartialSession(row) && !row.bestFish && row.score == null ? historyFishFit(row, fishDb) : null;
+  if (fit) return {
+    fish: `${lang === 'tl' ? 'Paunang tugma' : 'Preliminary match'}: ${fit.fish}`,
+    score: `${fit.fit} ${lang === 'tl' ? 'nasukat' : 'measured'}`,
+    note: fit.hasMatch ? null : (lang === 'tl' ? 'Pinakamalapit lamang; walang sukat na pasok.' : 'Closest only; no measured value is in range.')
+  };
+  return { fish: row.bestFish || '--', score: row.score == null ? '--' : `${row.score}%`, note: null };
 }
 
 function levelClasses(level: AlertLevel) {
@@ -980,15 +991,15 @@ export default function App() {
 
   const exportCsv = () => {
     const rows = [
-      ["Date/Time", "pH", "Temp", "DO", "Turbidity", "Best Fish", "Score", "Measured Parameter Status", "Coverage"],
+      ["Date/Time", "pH", "Temp", "DO", "Turbidity", "Best Fish / Preliminary Match", "Score / Measured Fit", "Measured Parameter Status", "Coverage"],
       ...sessions.map((row) => [
         row.timestamp,
         row.ph,
         row.temperature,
         row.dissolvedOxygen,
         row.turbidity,
-        row.bestFish,
-        row.score,
+        historyFishDisplay(row, fishDb, 'en').fish,
+        historyFishDisplay(row, fishDb, 'en').score,
         historyStatus(row),
         isPartialSession(row) ? 'Partial - measured parameters only' : 'Complete'
       ])
@@ -1111,7 +1122,7 @@ export default function App() {
       )}
 
       {tab === "history" && (
-        <HistoryPage sessions={sessions} onExport={exportCsv} text={text} lang={lang} />
+        <HistoryPage sessions={sessions} onExport={exportCsv} text={text} lang={lang} fishDb={fishDb} />
       )}
 
       {tab === "harvest" && <HarvestPage currentUser={currentUser} lang={lang} fishDb={fishDb} navigate={navigate} />}
@@ -2495,7 +2506,7 @@ function historyMeasurements(row: SessionRecord): [string, string | number | nul
   ];
 }
 
-function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionRecord[]; onExport: () => void; text: typeof ui.en; lang: Lang }) {
+function HistoryPage({ sessions, onExport, text, lang, fishDb }: { sessions: SessionRecord[]; onExport: () => void; text: typeof ui.en; lang: Lang; fishDb: FishSpecies[] }) {
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
   const counts = sessions.reduce(
@@ -2507,7 +2518,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
   );
   const filteredSessions = sessions.filter((row) => {
     const status = historyStatus(row);
-    const haystack = `${row.timestamp} ${row.bestFish} ${status}`.toLowerCase();
+    const haystack = `${row.timestamp} ${historyFishDisplay(row, fishDb, lang).fish} ${status}`.toLowerCase();
     return haystack.includes(query.toLowerCase()) && (statusFilter === "all" || statusFilter === 'partial' && isPartialSession(row) || status === statusFilter);
   });
   return (
@@ -2526,6 +2537,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
           </div>
         </div>
         <p className="mt-3 text-sm text-slate-600">{lang === 'tl' ? 'Ang Safe, Warning, at Critical ay para lamang sa mga sinukat na parameter. Hindi kinukumpirma ng bahagyang pagsusuri na ligtas ang buong tubig.' : 'Safe, Warning, and Critical describe measured parameters only. A partial test does not confirm overall water safety.'}</p>
+        <p className="mt-1 text-sm text-slate-600">{lang === 'tl' ? 'Ang paunang tugma at measured fit ay kinuwenta mula sa naitalang sukat gamit ang kasalukuyang fish ranges; hindi ito naka-save na full score o pahintulot nang mag-stock.' : 'Preliminary match and measured fit are calculated from saved readings using current fish ranges; they are not saved full scores or stocking approval.'}</p>
         <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
           <div className="flex flex-col gap-2 sm:flex-row">
             <input
@@ -2560,7 +2572,8 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
             {isPartialSession(row) && <p className="text-sm text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri - sinukat na values lamang' : 'Partial test - measured values only'}</p>}
             <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
               {[["pH", row.ph], ["Temperature", row.temperature == null ? '--' : `${row.temperature} °C`], ["DO", row.dissolvedOxygen == null ? '--' : `${row.dissolvedOxygen} mg/L`], ["Turbidity", row.turbidity == null ? '--' : `${row.turbidity} NTU`], ["Ammonia", row.ammonia == null ? '--' : `${row.ammonia} mg/L`]].map(([label, value]) => <div key={label}><dt className="text-slate-600">{label}</dt><dd className="font-semibold">{value ?? "--"}</dd></div>)}
-            </dl><p className="mt-3 border-t border-slate-100 pt-3 font-semibold">{row.bestFish || '--'} · {row.score == null ? '--' : `${row.score}%`}</p>
+            </dl><p className="mt-3 border-t border-slate-100 pt-3 font-semibold">{historyFishDisplay(row, fishDb, lang).fish} · {historyFishDisplay(row, fishDb, lang).score}</p>
+            {historyFishDisplay(row, fishDb, lang).note && <p className="mt-1 text-xs text-amber-800">{historyFishDisplay(row, fishDb, lang).note}</p>}
           </article>)}
           {!filteredSessions.length && <p className="py-6 text-sm text-slate-600">{text.noHistory}</p>}
         </div>
@@ -2581,6 +2594,7 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
             <tbody>
               {filteredSessions.map((row) => {
                 const status = historyStatus(row);
+                const fishDisplay = historyFishDisplay(row, fishDb, lang);
                 return (
                   <tr key={row.id} className="border-b border-slate-100">
                     <td className="px-4 py-3 font-semibold text-slate-700">{row.timestamp}<span className="block text-xs font-normal">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : (lang === 'tl' ? 'Tala ng sensor' : 'Sensor Reading')}</span></td>
@@ -2588,8 +2602,8 @@ function HistoryPage({ sessions, onExport, text, lang }: { sessions: SessionReco
                     <td className="px-4 py-3">{row.temperature ?? '--'}</td>
                     <td className="px-4 py-3">{row.dissolvedOxygen ?? '--'}</td>
                     <td className="px-4 py-3">{row.turbidity == null ? '--' : row.turbidityEstimated ? `~${row.turbidity} (est.)` : row.turbidity}</td>
-                    <td className="px-4 py-3 font-bold">{row.bestFish || '--'}</td>
-                    <td className="px-4 py-3 font-black text-teal-700">{row.score == null ? '--' : `${row.score}%`}</td>
+                    <td className="px-4 py-3 font-bold">{fishDisplay.fish}{fishDisplay.note && <span className="mt-1 block text-xs font-normal text-amber-800">{fishDisplay.note}</span>}</td>
+                    <td className="px-4 py-3 font-black text-teal-700">{fishDisplay.score}</td>
                     <td className="px-4 py-3">
                       <span className={measurementBadge(status)}>{status}</span>
                       {isPartialSession(row) && <span className="mt-1 block text-xs text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri - sinukat lamang' : 'Partial test - measured only'}</span>}
