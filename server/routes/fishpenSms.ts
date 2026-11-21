@@ -51,7 +51,7 @@ export function fishpenSmsRouter(db: Pool | null) {
       if (id !== null && !await ownedFishpen(connection, id, res.locals.owner, true)) {
         await connection.rollback(); return res.status(404).json({ message: 'Fishpen not found.' });
       }
-      const fields = [values.name, values.deviceId, values.ownerEnabled, values.caretakerPhone, values.caretakerEnabled];
+      const fields = [values.name, values.deviceId, true, values.caretakerPhone, values.caretakerEnabled];
       let savedId = id;
       if (id === null) {
         const [result] = await connection.execute<ResultSetHeader>(`INSERT INTO sms_fishpens (name, device_id, owner_enabled, caretaker_phone, caretaker_enabled, owner_user_id) VALUES (?, ?, ?, ?, ?, ?)`, [...fields, res.locals.owner]);
@@ -73,7 +73,15 @@ export function fishpenSmsRouter(db: Pool | null) {
         DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at,
         DATE_FORMAT(attempted_at, '%Y-%m-%dT%H:%i:%sZ') AS attempted_at, provider_response, provider_message_id, provider
         FROM sms_water_attempts ORDER BY id DESC LIMIT 200`);
-      res.json({ logs });
+      const [incidentLogs] = await db!.query<RowDataPacket[]>(`SELECT id, fishpen_name, recipient_type, recipient_phone,
+        critical_keys AS parameter_name, kind, status, message,
+        DATE_FORMAT(measured_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS measured_at,
+        DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at,
+        DATE_FORMAT(attempted_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS attempted_at,
+        provider_response, provider_message_id, provider FROM sms_critical_notifications ORDER BY id DESC LIMIT 200`);
+      const combined: Array<Record<string, unknown>> = [...logs.map(row => ({ ...row, log_type: 'legacy' })),
+        ...incidentLogs.map(row => ({ ...row, log_type: 'incident' }))];
+      res.json({ logs: combined.sort((a, b) => String(b.created_at).localeCompare(String(a.created_at))).slice(0, 200) });
     } catch { res.status(503).json({ message: 'Unable to load water SMS logs.' }); }
   });
   return router;

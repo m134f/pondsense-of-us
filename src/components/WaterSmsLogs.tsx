@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { RefreshCw } from 'lucide-react';
 import { apiJson } from '../lib/api';
-type Log = { id: number; fishpen_name: string; recipient_type: string; recipient_phone: string; parameter_name: string; severity: string; reading_value: number; measured_at: string; status: string; created_at: string; provider_response: string | null; provider_message_id: string | null };
+type Log = { id: number; log_type: 'legacy' | 'incident'; fishpen_name: string; recipient_type: string; recipient_phone: string; parameter_name: string; severity?: string; reading_value?: number; kind?: string; message?: string; measured_at: string; status: string; created_at: string; provider_response: string | null; provider_message_id: string | null };
 export function WaterSmsLogs() {
   const [logs, setLogs] = useState<Log[]>([]);
   const [error, setError] = useState('');
@@ -20,11 +20,12 @@ export function WaterSmsLogs() {
     {error && <p role="alert" className="mt-3 text-red-700">{error}</p>}
     {!logs.length && !loading && <p className="mt-4 text-slate-600">No fishpen water SMS attempts yet.</p>}
     <ul className="mt-4 max-h-[600px] divide-y overflow-auto">
-      {logs.map(log => <li key={log.id} className="space-y-1 py-3 text-sm">
-        <p className="font-bold">{log.fishpen_name} · {log.parameter_name}: {log.reading_value} · {log.severity}</p>
+      {logs.map(log => <li key={`${log.log_type}-${log.id}`} className="space-y-1 py-3 text-sm">
+        <p className="font-bold">{log.fishpen_name} · {log.log_type === 'incident' ? `${log.kind} critical alert: ${log.parameter_name}` : `${log.parameter_name}: ${log.reading_value} · ${log.severity}`}</p>
         <p className="capitalize">{log.recipient_type}: {log.recipient_phone}</p>
         <p className={log.status === 'accepted' ? 'font-semibold text-teal-800' : 'font-semibold text-amber-900'}>{log.status === 'accepted' ? 'Provider accepted (delivery unconfirmed)' : log.status}</p>
         <p className="text-slate-600">Reading: {new Date(log.measured_at).toLocaleString()} | Logged: {new Date(log.created_at).toLocaleString()}</p>
+        {log.message && <p className="whitespace-pre-line text-slate-600">{log.message}</p>}
         <p className="break-words text-slate-600">{log.provider_response || 'Awaiting provider submission'}{log.provider_message_id ? ` | Provider ID: ${log.provider_message_id}` : ''}</p>
       </li>)}
     </ul>

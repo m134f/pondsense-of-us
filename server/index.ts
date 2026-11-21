@@ -32,8 +32,8 @@ import { sendDailySms } from './services/PlanningSms';
 import { migrateFishpenSms } from './migrations/fishpenSms';
 import { migrateActiveFishSpecies } from './migrations/activeFishSpecies';
 import { fishpenSmsRouter } from './routes/fishpenSms';
-import { drainWaterSms, queueWaterSms, sensorSmsMeasurements } from './services/FishpenSms';
-import { parameters, type Measurements } from '../src/lib/recommendations';
+import { sensorSmsMeasurements } from './services/FishpenSms';
+import { drainIncidentSms, queueIncidentSms } from './services/IncidentSms';
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
@@ -106,7 +106,7 @@ let waterSmsBusy = false;
 async function flushWaterSms() {
   if (!pool || waterSmsBusy) return;
   waterSmsBusy = true;
-  try { await drainWaterSms(pool); }
+  try { await drainIncidentSms(pool); }
   catch { console.error('Water SMS queue temporarily unavailable.'); }
   finally { waterSmsBusy = false; }
 }
@@ -641,18 +641,8 @@ app.post("/api/readings", async (req, res) => {
     const readingId = result.insertId;
     const alerts = analysis.alerts;
     let smsResult = { configured: isSmsConfigured(), ok: false, message: "SMS alerts require a registered account." };
-    const shouldSendSms = isRegisteredUser && reading.measurementsConfirmed === true && Number.isSafeInteger(reading.fishpenId);
-    if (shouldSendSms) {
-      const measurements: Measurements = Object.fromEntries(parameters.map(parameter => [parameter, {
-        value: validation.values![parameter], source: 'manual', recordedAt: typeof reading.sampledAt === 'string' ? reading.sampledAt : null
-      }]));
-      await queueWaterSms(pool, { owner: userId, fishpenId: res.locals.ownerFishpen.id, sourceId: readingId, sourceKind: 'manual', measurements })
-        .catch(() => console.error('Manual water alert could not be queued. Reading was saved.'));
-      void flushWaterSms();
-      smsResult.message = 'Water reading saved. Eligible alerts are processed using your fishpen SMS settings; delivery is not yet confirmed.';
-    } else if (isRegisteredUser) {
-      smsResult.message = 'Water reading saved. Select a fishpen in SMS Alert Settings and confirm actual measurements to enable water alerts.';
-    }
+    const shouldSendSms = false;
+    smsResult.message = 'Manual test saved. Manual and Warning readings do not trigger automatic SMS.';
 
     await logReadingAlerts(readingId, userId, alerts, smsResult, shouldSendSms);
     if (isRegisteredUser) await archiveRecommendations(pool, userId, 'manual', readingId).catch(error => console.error('Recommendation archive:', error));
@@ -823,9 +813,8 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
     );
     const duplicate = result.affectedRows !== 1;
     if (!duplicate) {
-      if ((clientReadingId === undefined && !Number.isFinite(sampledAtMs)) ||
-          (Number.isFinite(sampledAtMs) && Date.now() - sampledAtMs < 60_000)) {
-        await queueWaterSms(pool, { owner: device.ownerUserId, deviceId: device.id, sourceId: result.insertId, sourceKind: 'telemetry',
+      if (Number.isFinite(sampledAtMs) && Math.abs(Date.now() - sampledAtMs) <= 30_000) {
+        await queueIncidentSms(pool, { owner: device.ownerUserId, deviceId: device.id, sourceId: result.insertId, sourceKind: 'telemetry',
           measurements: sensorSmsMeasurements({ temperature: telemetry.values.temperatureC, ph: telemetry.values.ph, turbidity: telemetry.values.ntu }, req.body)
         }).catch(() => console.error('Water alert could not be queued. Reading was saved.'));
         void flushWaterSms();
@@ -1184,8 +1173,8 @@ app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
     );
 
     const smsResult = { configured: isSmsConfigured(), ok: false, message: 'Reading saved. Eligible fishpen SMS alerts are processed separately; delivery is not confirmed.' };
-    const shouldSendSms = analysis.alerts.some(alert => alert.level === 'warning' || alert.level === 'critical');
-    await queueWaterSms(pool, { owner: userId, deviceId: device.id, sourceId: result.insertId, sourceKind: 'sensor-full',
+    const shouldSendSms = false;
+    await queueIncidentSms(pool, { owner: userId, deviceId: device.id, sourceId: result.insertId, sourceKind: 'sensor-full',
       measurements: sensorSmsMeasurements(validation.values, reading)
     }).catch(() => console.error('Water alert could not be queued. Reading was saved.'));
     void flushWaterSms();

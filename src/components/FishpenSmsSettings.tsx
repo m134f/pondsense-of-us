@@ -15,7 +15,6 @@ export function FishpenSmsSettings({ ownerId, lang }: { ownerId: string | number
   const [saving, setSaving] = useState(false);
   const [selected, setSelected] = useState('new');
   const [form, setForm] = useState({ name: '', deviceId: '', ownerEnabled: true, caretakerPhone: '', caretakerEnabled: false });
-  const [manual, setManual] = useState(() => localStorage.getItem(manualSmsPenKey(ownerId)) || '');
   useEffect(() => {
     let cancelled = false;
     apiJson<Settings>('/api/fishpen-sms').then(result => {
@@ -28,7 +27,7 @@ export function FishpenSmsSettings({ ownerId, lang }: { ownerId: string | number
   function choose(id: string, settings = data) {
     setSelected(id); setMessage(''); setError('');
     const pen = settings?.fishpens.find(p => String(p.id) === id);
-    setForm(pen ? { name: pen.name, deviceId: pen.device_id === null ? '' : String(pen.device_id), ownerEnabled: Boolean(pen.owner_enabled), caretakerPhone: pen.caretaker_phone || '', caretakerEnabled: Boolean(pen.caretaker_enabled) }
+    setForm(pen ? { name: pen.name, deviceId: pen.device_id === null ? '' : String(pen.device_id), ownerEnabled: true, caretakerPhone: pen.caretaker_phone || '', caretakerEnabled: Boolean(pen.caretaker_enabled) }
       : { name: '', deviceId: '', ownerEnabled: true, caretakerPhone: '', caretakerEnabled: false });
   }
   async function save(event: React.FormEvent) {
@@ -48,12 +47,12 @@ export function FishpenSmsSettings({ ownerId, lang }: { ownerId: string | number
     <div className="mt-4 space-y-4">
       {!data && !error && <p role="status">{t('Loading contacts...', 'Kinukuha ang mga contact...')}</p>}
       {data && <>
-        <p className="text-sm text-slate-600">{t('Water alerts go to enabled contacts for the selected fishpen. Harvest reminders keep their existing settings.', 'Ang babala sa tubig ay para sa naka-enable na contact ng fishpen. Hiwalay ang setting ng paalala sa ani.')}</p>
+        <p className="text-sm text-slate-600">{t('Confirmed critical sensor alerts go to the owner and, if enabled, the caretaker. Manual tests and warnings do not send automatic SMS.', 'Ang kumpirmadong kritikal na sukat ng sensor ay ipapadala sa may-ari at, kung naka-enable, sa tagapag-alaga. Walang awtomatikong SMS para sa manwal na test o babala.')}</p>
         {(!data.configured || !data.policy.reviewed) && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{!data.policy.reviewed ? t('Automatic water SMS is awaiting administrator threshold review.', 'Naghihintay ng pagsusuri ng admin sa mga limitasyon bago magpadala ng awtomatikong SMS.') : t('SMS is temporarily unavailable. Your contacts can still be saved.', 'Pansamantalang hindi magamit ang SMS. Maaari pa ring i-save ang mga contact.')}</p>}
         <label className="block text-sm font-semibold">{t('Fishpen', 'Fishpen')}
           <select className={input} value={selected} disabled={saving} onChange={e => choose(e.target.value)}>
             <option value="new" disabled>{t('Ask the administrator to assign your fishpen', 'Ipa-assign sa administrator ang fishpen')}</option>
-            {data.fishpens.map(p => <option key={p.id} value={p.id}>{p.name} ({p.owner_enabled || p.caretaker_enabled ? t('Enabled', 'Naka-enable') : t('Disabled', 'Naka-disable')})</option>)}
+            {data.fishpens.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
         </label>
         <form onSubmit={save} className="space-y-4">
@@ -64,17 +63,13 @@ export function FishpenSmsSettings({ ownerId, lang }: { ownerId: string | number
               {data.devices.map(d => <option key={d.id} value={d.id}>{d.device_name} #{d.id}</option>)}
             </select></label>
             <div className="border-t border-slate-200 pt-3"><p className="text-sm text-slate-600">{t('Owner (registered number)', 'May-ari (rehistradong numero)')}</p><p className="break-all font-semibold">{data.ownerPhone}</p></div>
-            <label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" className="h-5 w-5 accent-teal-600" checked={form.ownerEnabled} onChange={e => setForm({ ...form, ownerEnabled: e.target.checked })} />{t('Send water SMS to owner', 'Ipadala ang SMS sa may-ari')}</label>
+            <p className="text-sm text-slate-600">{t('The owner receives confirmed critical sensor alerts automatically.', 'Awtomatikong tatanggap ang may-ari ng kumpirmadong kritikal na alert mula sa sensor.')}</p>
             <label className="block text-sm font-semibold">{t('Caretaker mobile number (optional)', 'Numero ng tagapag-alaga (opsyonal)')}<input type="tel" autoComplete="off" inputMode="tel" placeholder="09XXXXXXXXX" maxLength={25} className={input} value={form.caretakerPhone} onChange={e => setForm({ ...form, caretakerPhone: e.target.value })} /></label>
             <label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" className="h-5 w-5 accent-teal-600" checked={form.caretakerEnabled} onChange={e => setForm({ ...form, caretakerEnabled: e.target.checked })} />{t('Send water SMS to caretaker', 'Ipadala ang SMS sa tagapag-alaga')}</label>
             <p className="text-sm text-slate-600">{t('Get the caretaker\'s consent before enabling texts. Network availability and SMS credits affect sending.', 'Humingi ng pahintulot ng tagapag-alaga bago mag-enable. Nakadepende ang pagpapadala sa network at SMS credits.')}</p>
             <button type="submit" className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-teal-700 px-4 py-3 font-bold text-white hover:bg-teal-800 disabled:opacity-60">{saving ? <LoaderCircle size={18} className="animate-spin" /> : selected === 'new' ? <Plus size={18} /> : <Save size={18} />}{saving ? t('Saving...', 'Sine-save...') : t('Save contacts', 'I-save ang mga contact')}</button>
           </fieldset>
         </form>
-        <label className="block border-t border-slate-200 pt-3 text-sm font-semibold">{t('Fishpen for manual water alerts', 'Fishpen para sa manwal na babala')}<select className={input} value={manual} onChange={e => { setManual(e.target.value); localStorage.setItem(manualSmsPenKey(ownerId), e.target.value); }}>
-          <option value="">{t('No manual SMS', 'Walang manwal na SMS')}</option>
-          {data.fishpens.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-        </select></label>
       </>}
       {error && <p role="alert" className="text-sm text-red-700">{t('Unable to save or load settings. ', 'Hindi ma-save o makuha ang settings. ')}{error}</p>}
       {message && <p role="status" className="text-sm text-teal-800">{message}</p>}
