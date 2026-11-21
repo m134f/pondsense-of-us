@@ -33,6 +33,7 @@ import {
   CartesianGrid,
   Line,
   LineChart,
+  ReferenceLine,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -50,6 +51,7 @@ import { WaterSmsLogs } from "./components/WaterSmsLogs";
 import { ManualWaterForm } from "./components/ManualWaterForm";
 import { PublicMonitoring } from './components/PublicMonitoring';
 import { measuredStatus, parameterStatus } from './lib/measurementStatus';
+import { chartValue, classCGuidelines, classCSource, classCUrl } from './lib/waterGuidelines';
 import { clearLegacyBrowserCredentials, storage, type AppUser } from "./lib/storage";
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
 
@@ -1674,9 +1676,9 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
   const chart = readings.map((reading) => ({
     time: new Date(reading.recordedAt).toLocaleTimeString("en-PH"),
     // Show the same provisional value used in Water Parameters until the probe is calibrated.
-    turbidity: sensorTurbidityValue(reading),
-    temperature: reading.temperatureC,
-    ph: reading.ph
+    turbidity: chartValue('turbidity', reading.turbidityNtu),
+    temperature: chartValue('temperature', reading.temperatureC),
+    ph: chartValue('ph', reading.ph)
   }));
   const connectionState = sensorConnectionState(telemetry, now);
   const live = connectionState === "live";
@@ -1713,10 +1715,11 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
             <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={25} />
             <YAxis domain={[0, 500]} tick={{ fontSize: 10 }} width={34} />
             <Tooltip />
-            <Line type="monotone" dataKey="turbidity" name={calibrated ? "Turbidity (NTU)" : "Estimated turbidity (NTU)"} stroke="#0d9488" strokeWidth={3} dot={false} isAnimationActive={false} />
+             <Line type="monotone" dataKey="turbidity" name="Verified turbidity (NTU)" stroke="#0d9488" strokeWidth={3} dot={false} connectNulls={false} isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>
+      <p className="mt-2 text-xs text-slate-600">{lang === 'tl' ? 'Turbidity (NTU): walang beripikadong opisyal na LLDA limit. Walang guideline line.' : 'Turbidity (NTU): no verified official LLDA limit; no guideline line.'}</p>
       {chart.some((point) => point.temperature !== null) && <div className="mt-3 h-40 w-full">
         <ResponsiveContainer width="100%" height="100%">
           <LineChart data={chart}>
@@ -1724,11 +1727,16 @@ function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: Senso
             <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={25} />
             <YAxis domain={[10, 40]} tick={{ fontSize: 10 }} width={34} />
             <Tooltip />
+             <ReferenceLine y={25} stroke="#334155" strokeDasharray="4 4" />
+             <ReferenceLine y={31} stroke="#334155" strokeDasharray="4 4" />
             <Line type="monotone" dataKey="temperature" name="Temperature (°C)" stroke="#ea580c" strokeWidth={3} dot={false} connectNulls={false} isAnimationActive={false} />
           </LineChart>
         </ResponsiveContainer>
       </div>}
-      {chart.some((point) => point.ph !== null) && <div className="mt-3 h-40 w-full"><ResponsiveContainer width="100%" height="100%"><LineChart data={chart}><CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" /><XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={25} /><YAxis domain={[0, 14]} tick={{ fontSize: 10 }} width={34} /><Tooltip /><Line type="monotone" dataKey="ph" name="pH" stroke="#7c3aed" strokeWidth={3} dot={false} connectNulls={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div>}
+      <p className="mt-2 text-xs text-slate-600">Class C freshwater temperature: 25–31 °C · <a className="underline" href={classCUrl} target="_blank" rel="noreferrer">{classCSource}</a>. {lang === 'tl' ? 'Gabay pangkapaligiran, hindi limit ng isda o Critical alert.' : 'Environmental guideline, not fish-fit or Critical alert threshold.'}</p>
+      {chart.some((point) => point.ph !== null) && <div className="mt-3 h-40 w-full"><ResponsiveContainer width="100%" height="100%"><LineChart data={chart}><CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" /><XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={25} /><YAxis domain={[0, 14]} tick={{ fontSize: 10 }} width={34} /><Tooltip /><ReferenceLine y={6.5} stroke="#334155" strokeDasharray="4 4" /><ReferenceLine y={9} stroke="#334155" strokeDasharray="4 4" /><Line type="monotone" dataKey="ph" name="pH" stroke="#7c3aed" strokeWidth={3} dot={false} connectNulls={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div>}
+      <p className="mt-2 text-xs text-slate-600">Class C freshwater pH: 6.5–9.0 · <a className="underline" href={classCUrl} target="_blank" rel="noreferrer">{classCSource}</a>. {lang === 'tl' ? 'Gabay pangkapaligiran, hindi limit ng isda o Critical alert.' : 'Environmental guideline, not fish-fit or Critical alert threshold.'}</p>
+      <p className="mt-2 text-xs text-slate-600">{lang === 'tl' ? 'Dissolved oxygen (mg/L): walang konektadong DO sensor; walang sukat na ipapakita. Class C minimum ay 5 mg/L.' : 'Dissolved oxygen (mg/L): no connected DO sensor, so no measured series. Class C minimum is 5 mg/L.'}</p>
       <p className="mt-2 text-xs font-semibold text-slate-600">{lang === "tl" ? "Ang walang reading ay hindi zero. Hindi sapat ang bahagyang sensor data upang matiyak ang pangkalahatang kaligtasan ng tubig." : "Missing readings are not zero. Partial sensor data cannot confirm overall water safety."}</p>
     </section>
   );
@@ -2428,15 +2436,12 @@ function DashboardTrends({
   sessions: SessionRecord[];
   text: typeof ui.en;
 }) {
-  const currentPoint: SessionRecord = {
-    id: "current",
-    timestamp: "Current",
-    ...params,
-    bestFish: "-",
-    score: 0
-  };
   const chartData = [...sessions].reverse();
-  const data = chartData.length ? chartData : [currentPoint];
+  const data = chartData.map(row => ({ ...row,
+    ph: chartValue('ph', row.ph), temperature: chartValue('temperature', row.temperature),
+    dissolvedOxygen: chartValue('dissolvedOxygen', row.dissolvedOxygen),
+    turbidity: chartValue('turbidity', row.turbidity, Boolean(row.turbidityEstimated))
+  }));
   const trendCards = [
     { key: "ph", label: "pH", color: "#0d9488", domain: [4, 11] },
     { key: "temperature", label: "Temp (°C)", color: "#f59e0b", domain: [10, 40] },
@@ -2465,9 +2470,7 @@ function DashboardTrends({
           <article key={card.key} className="min-w-[230px] snap-start rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:min-w-[260px] sm:p-4 md:min-w-0">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-black uppercase tracking-wide text-slate-600">{card.label}</h3>
-              <span className="text-sm font-black text-slate-950">
-                {valueText(card.key, params[card.key])}
-              </span>
+               <span className="text-sm font-black text-slate-950">{chartValue(card.key, params[card.key]) === null ? '—' : valueText(card.key, params[card.key])}</span>
             </div>
             <div className="mt-3 h-28 sm:h-32">
               <ResponsiveContainer width="100%" height="100%">
@@ -2476,23 +2479,25 @@ function DashboardTrends({
                   <XAxis dataKey="timestamp" hide />
                   <YAxis domain={card.domain} hide />
                   <Tooltip />
+                   {classCGuidelines[card.key]?.min !== undefined && <ReferenceLine y={classCGuidelines[card.key]?.min} stroke="#334155" strokeDasharray="4 4" />}
+                   {classCGuidelines[card.key]?.max !== undefined && <ReferenceLine y={classCGuidelines[card.key]?.max} stroke="#334155" strokeDasharray="4 4" />}
                   <Line
                     type="monotone"
                     dataKey={card.key}
                     stroke={card.color}
                     strokeWidth={3}
-                    dot={{ r: 3 }}
+                     dot={{ r: 3 }}
                     activeDot={{ r: 5 }}
+                     connectNulls={false}
                   />
                 </LineChart>
               </ResponsiveContainer>
             </div>
-            <p className="mt-2 text-xs font-semibold text-slate-500">
-              Safe: {parameterMeta.find((meta) => meta.key === card.key)?.safe}
-            </p>
+             <p className="mt-2 text-xs text-slate-600">{card.key === 'turbidity' ? 'No verified official LLDA NTU limit; no guideline line.' : `Dashed: Class C freshwater ${classCGuidelines[card.key]?.min}${classCGuidelines[card.key]?.max !== undefined ? `–${classCGuidelines[card.key]?.max}` : ' minimum'} ${classCGuidelines[card.key]?.unit}.`}</p>
           </article>
         ))}
       </div>
+      <p className="mt-3 text-xs text-slate-600">Only finite, in-range recorded values are plotted; missing, invalid, and estimated values leave gaps. Older saved readings may be stale and are not live. Dashed lines are environmental guidelines, not fish suitability or operational Critical thresholds. <a className="underline" href={classCUrl} target="_blank" rel="noreferrer">{classCSource}</a>. DO guideline applies to official daytime sampling (9 AM–4 PM).</p>
     </section>
   );
 }

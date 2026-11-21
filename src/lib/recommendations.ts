@@ -55,6 +55,19 @@ export function completeMeasuredValues(items: Recommendation[]): WaterParams | n
 }
 export const parameterLabels = { ph: 'pH', temperature: 'Temperature / Temperatura', dissolvedOxygen: 'Dissolved oxygen (DO)', turbidity: 'Turbidity / Labo ng tubig', ammonia: 'Ammonia (NH3)' };
 export const units = { ph: '', temperature: 'C', dissolvedOxygen: 'mg/L', turbidity: 'NTU', ammonia: 'mg/L' };
+export const lldaAdvisoryUrl = 'https://llda.gov.ph/presence-of-algal-bloom-in-selected-areas-of-laguna-de-bay/';
+export function lowOxygenGuidance(item: Recommendation, tl: boolean) {
+  if (item.parameter !== 'dissolvedOxygen' || item.value === null || item.value >= 5 || !['warning', 'critical'].includes(item.state)) return null;
+  return tl ? {
+    immediate: 'Sukatin muli ang DO at tingnan mismo ang kilos ng isda, lalo na sa madaling araw. Hindi pa nasusukat ng sistema ang pagkabalisa ng isda.',
+    monitoring: 'Bantayan kung lumalangoy malapit sa ibabaw o sumisinghap ang isda. I-monitor muli ang DO at itala ang aktuwal na obserbasyon.',
+    emergency: 'Kung nakita ang hirap sa paghinga, manu-manong maglagay ng angkop na aerator o paddle wheel kung mayroon at ligtas. Kung matindi at tuloy-tuloy ang distress at maaari nang ibenta ang isda, pag-isipan ang maagang pag-ani. Iulat sa LLDA ang hindi pangkaraniwang algal bloom, maramihang pagkamatay, kakaibang kulay ng tubig, o mabahong amoy.'
+  } : {
+    immediate: 'Recheck DO and inspect fish behavior directly, especially in the early morning. Fish distress has not been observed by this system.',
+    monitoring: 'Watch for fish swimming near the surface or gasping. Recheck DO and record what you actually observe.',
+    emergency: 'If oxygen-related distress is observed, manually deploy a suitable aerator or paddle wheel if available and safe. Only if severe distress persists and fish are already marketable, consider early harvest. Report unusual algal blooms, mass mortality, abnormal water color, or foul odors to LLDA.'
+  };
+}
 export function recommendationCopy(item: Recommendation, tl: boolean) {
   const states = {
     safe: ['Safe', 'Ligtas'], warning: ['Warning', 'Babala'], critical: ['Critical', 'Kritikal'],

@@ -1,18 +1,26 @@
 import { useEffect, useState } from 'react';
 import { Check, History } from 'lucide-react';
 import { apiJson } from '../lib/api';
-import { parameters, parameterLabels, units, recommendationCopy, type Recommendation } from '../lib/recommendations';
+import { parameters, parameterLabels, units, recommendationCopy, lowOxygenGuidance, lldaAdvisoryUrl, type Recommendation } from '../lib/recommendations';
 
 export type WaterContext = { recommendations: Recommendation[]; status: string; reference: string; fishpenName: string | null; deviceAssigned: boolean };
 type HistoryRow = { id: number; fishpenName: string | null; deviceId: number | null; recordedAt: string; acknowledgedAt: string | null; payload: Recommendation & { reference: string } };
 const colors = { critical: 'border-red-200 bg-red-50 text-red-900', warning: 'border-amber-200 bg-amber-50 text-amber-950', safe: 'border-emerald-200 bg-emerald-50 text-emerald-950', missing: 'border-slate-200 bg-slate-50 text-slate-700', stale: 'border-slate-200 bg-slate-50 text-slate-700', unavailable: 'border-slate-200 bg-slate-50 text-slate-700', unverified: 'border-slate-200 bg-slate-50 text-slate-700' };
 export function RecommendationDetails({ item, reference, lang }: { item: Recommendation; reference: string; lang: 'en' | 'tl' }) {
   const copy = recommendationCopy(item, lang === 'tl');
+  const oxygen = lowOxygenGuidance(item, lang === 'tl');
   const priority = lang === 'tl' ? ({ NORMAL: 'NORMAL', WATCH: 'BANTAYAN', 'ACTION NEEDED': 'KAILANGANG KUMILOS', URGENT: 'AGARAN' })[item.priority] : item.priority;
   return <article className={`rounded-lg border p-3 ${colors[item.state]}`}>
     <div className="flex flex-wrap items-start justify-between gap-2"><strong className="text-sm">{parameterLabels[item.parameter]}</strong><span className="text-xs font-bold">{priority}</span></div>
     <p className="mt-1 text-base font-bold">{item.value === null ? '--' : item.value} {item.value === null ? '' : units[item.parameter]} <span className="text-xs font-semibold">{copy.label}</span></p>
-    <p className="mt-2 text-sm leading-relaxed">{copy.action}</p>
+    <dl className="mt-3 space-y-2 text-sm leading-relaxed">
+      <div><dt className="font-semibold">{lang === 'tl' ? 'Natukoy na kondisyon' : 'Detected Condition'}</dt><dd>{oxygen ? (lang === 'tl' ? `Mababang nasukat na DO: ${item.value} mg/L. Hindi pa nakumpirma ang kilos ng isda.` : `Measured low DO: ${item.value} mg/L. Fish behavior is not confirmed.`) : copy.why}</dd></div>
+      <div><dt className="font-semibold">{lang === 'tl' ? 'Kalubhaan' : 'Severity'}</dt><dd>{copy.label} · {lang === 'tl' ? 'ayon sa kasalukuyang patakaran ng app' : 'per current application rule'}</dd></div>
+      <div><dt className="font-semibold">{lang === 'tl' ? 'Agarang hakbang' : 'Immediate Action'}</dt><dd>{oxygen?.immediate ?? copy.action}</dd></div>
+      <div><dt className="font-semibold">{lang === 'tl' ? 'Patuloy na pagbabantay' : 'Monitoring Action'}</dt><dd>{oxygen?.monitoring ?? copy.followup}</dd></div>
+      <div><dt className="font-semibold">{lang === 'tl' ? 'Kung may emerhensiya' : 'Conditional Emergency Action'}</dt><dd>{oxygen?.emergency ?? (lang === 'tl' ? 'Kung may nakitang pagkabalisa ng isda o hindi pangkaraniwang kondisyon, kumonsulta sa lokal na fisheries officer. Walang awtomatikong aeration o pag-ani.' : 'If fish distress or unusual conditions are observed, consult a local fisheries officer. No automatic aeration or harvest is triggered.')}</dd></div>
+      <div><dt className="font-semibold">{lang === 'tl' ? 'Opisyal na sanggunian' : 'Scientific or Official Reference'}</dt><dd>{oxygen ? <><a className="underline" href={lldaAdvisoryUrl} target="_blank" rel="noreferrer">LLDA algal bloom and fish kill advisory</a>. {lang === 'tl' ? 'Hindi nagbibigay ang abiso ng numerong DO threshold; galing sa app ang severity.' : 'The advisory does not set a numerical DO threshold; severity comes from the application rule.'}</> : (lang === 'tl' ? 'Saklaw ng app; walang beripikadong opisyal na sanggunian para sa payong ito.' : 'Application range; no verified official citation for this action.')}</dd></div>
+    </dl>
     <details className="mt-2 text-sm"><summary className="cursor-pointer py-1 font-semibold">{lang === 'tl' ? 'Bakit ito ipinapakita?' : 'Why am I seeing this?'}</summary>
       <p className="mt-2">{copy.why}</p><p>{reference}: {item.range.join(' - ')} {units[item.parameter]}</p>
       <p>{item.source === 'manual' ? (lang === 'tl' ? 'Manu-manong sukat' : 'Manual measurement') : item.source === 'sensor' ? 'Sensor' : '--'} · {item.recordedAt ? new Date(item.recordedAt).toLocaleString(lang === 'tl' ? 'fil-PH' : 'en-PH') : '--'}</p>

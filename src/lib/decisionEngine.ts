@@ -48,14 +48,14 @@ export function detectRisks(params: WaterParams): AlertItem[] {
       level: "critical",
       title: "Critical DO / Hypoxia Risk",
       message: "Dissolved oxygen is dangerously low. Fish may gasp at the surface.",
-      actions: ["Maximize aeration immediately", "Stop feeding", "Remove dead fish and organic waste", "Contact BFAR/LGU if fish stress continues"]
+      actions: ["Recheck dissolved oxygen and inspect fish behavior, especially early in the morning", "Watch for fish at the surface or gasping", "If oxygen-related distress is observed, manually use a suitable aerator or paddle wheel if available and safe", "If severe distress persists and fish are marketable, consider early harvest; report unusual blooms, mass mortality, discoloration or foul odor to LLDA"]
     });
   } else if (params.dissolvedOxygen < 5) {
     alerts.push({
       level: "warning",
       title: "Low Dissolved Oxygen",
       message: "Oxygen is below the safe range for most pond fish.",
-      actions: ["Increase aeration", "Reduce feeding", "Clean nets or cage area", "Observe fish behavior closely"]
+      actions: ["Recheck dissolved oxygen", "Observe fish behavior, especially early in the morning", "If fish are gasping near the surface, manually deploy a suitable aerator or paddle wheel if safe"]
     });
   }
 
@@ -107,7 +107,7 @@ export function detectRisks(params: WaterParams): AlertItem[] {
       level: "critical",
       title: "Combined DO + Ammonia Risk",
       message: "Low oxygen combined with ammonia creates a serious stress condition.",
-      actions: ["Stop feeding immediately", "Maximize aeration", "Remove organic waste", "Contact BFAR/LGU for emergency guidance"]
+      actions: ["Recheck both dissolved oxygen and ammonia", "Inspect fish for surface swimming or gasping", "If oxygen-related distress is observed, manually deploy a suitable aerator or paddle wheel if safe", "If severe distress persists and fish are marketable, consider early harvest and seek expert guidance"]
     });
   }
 
