@@ -39,3 +39,10 @@ test("equal measured fit remains a tie broken by fish name", () => {
   assert.equal(ranked[0].distance, ranked[1].distance);
   assert.deepEqual(ranked.map(item => item.fish.name), ['Bangus (Milkfish)', 'Tilapia']);
 });
+
+test('manual dissolved oxygen and ammonia measurements affect the preliminary ranking', () => {
+  const ranked = rankPartialFish(profiles, { dissolvedOxygen: 4, ammonia: 0.04 });
+  assert.ok(ranked.every(item => item.checks.length === 2));
+  assert.ok(ranked.every(item => item.checks.some(check => check.key === 'dissolvedOxygen')));
+  assert.ok(ranked.every(item => item.checks.some(check => check.key === 'ammonia')));
+});

@@ -1,11 +1,12 @@
 import type { FishSpecies } from "../types";
+import type { WaterParams } from "../types";
 
-export type PartialReading = { ph: number | null; temperature: number | null; turbidity: number | null };
+export type PartialReading = Partial<Record<keyof WaterParams, number | null>>;
 type PartialKey = keyof PartialReading;
 export type PartialCheck = { key: PartialKey; value: number; min: number; max: number; result: 'within' | 'below' | 'above' | 'unknown' };
 
 export function rankPartialFish(profiles: FishSpecies[], readings: PartialReading) {
-  const keys = (["ph", "temperature", "turbidity"] as const).filter(key =>
+  const keys = (["ph", "temperature", "dissolvedOxygen", "turbidity", "ammonia"] as const).filter(key =>
     readings[key] !== null && Number.isFinite(readings[key])
   );
   return profiles.map(fish => {

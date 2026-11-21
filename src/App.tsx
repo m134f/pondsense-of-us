@@ -1591,14 +1591,26 @@ function AnalysisPage({
         <aside className="card h-fit space-y-4 p-5">
           <h2 className="text-lg font-bold">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
           <p className="text-sm text-amber-800">{lang === "tl" ? "Batay lamang sa nasukat; hindi kumpletong rekomendasyon sa pag-aalaga." : "Measured parameters only; not a complete stocking recommendation."}</p>
-          {fishDb.filter(fish => activeSpecies.some(species => species.id === fish.id)).map(fish => <section key={fish.id} className="border-t border-slate-200 pt-3">
-            <div className="flex items-center gap-3"><img src={fishImageSrc(fish.id)} alt="" className="h-12 w-12 rounded-md object-cover" /><h3 className="font-bold">{fish.name}</h3></div>
-            {Object.entries(partialManual).map(([key, value]) => {
-              const range = fish.ranges[key as keyof WaterParams];
-              const matches = value >= range[0] && value <= range[1];
-              return <p key={key} className="mt-2 text-sm">{key}: {matches ? (lang === "tl" ? "Pasok sa saklaw" : "Within range") : (lang === "tl" ? "Labas sa saklaw" : "Outside range")} ({range.join(" - ")})</p>;
-            })}
-          </section>)}
+          {(() => {
+            const ranked = rankPartialFish(fishDb.filter(fish => activeSpecies.some(species => species.id === fish.id)), partialManual);
+            const measuredCount = Object.values(partialManual).filter(value => value !== null && Number.isFinite(value)).length;
+            const tied = (a: typeof ranked[number], b: typeof ranked[number]) => a.matches.length === b.matches.length && Math.abs(a.distance - b.distance) < 0.000001;
+            const leaders = ranked.filter(item => ranked[0] && tied(item, ranked[0]));
+            return <>
+              {leaders.length > 0 && <p className="border-l-4 border-teal-600 bg-teal-50 p-3 text-sm font-semibold text-teal-950">
+                {lang === 'tl' ? `${leaders.length > 1 ? 'Magkakatabla sa unang puwesto' : 'Pinakamalapit sa nasukat'}: ${leaders.map(item => item.fish.name).join(', ')}. ${leaders[0].matches.length} sa ${measuredCount} sukat ang pasok. Hindi pa ito kumpirmadong ligtas na ilagay sa fishpen.` : `${leaders.length > 1 ? 'Tied for top measured fit' : 'Top measured fit'}: ${leaders.map(item => item.fish.name).join(', ')}. ${leaders[0].matches.length} of ${measuredCount} measurements in range. This does not confirm the fish is safe to stock.`}
+              </p>}
+              {ranked.map((item, index) => {
+                const rank = ranked.findIndex(other => tied(other, item)) + 1;
+                return <section key={item.fish.id} className="border-t border-slate-200 pt-3">
+                  <div className="flex items-center gap-3"><span className="w-6 shrink-0 text-sm font-bold text-teal-800">#{rank}</span><img src={fishImageSrc(item.fish.id)} alt="" className="h-12 w-12 rounded-md object-cover" /><h3 className="font-bold">{item.fish.name}</h3></div>
+                  <p className="mt-2 text-sm font-semibold">{lang === 'tl' ? `${item.matches.length} sa ${measuredCount} sukat ang pasok` : `${item.matches.length} of ${measuredCount} measurements in range`}</p>
+                  {item.checks.map(check => <p key={check.key} className="mt-1 text-sm">{check.key === 'ph' ? 'pH' : check.key === 'temperature' ? (lang === 'tl' ? 'Temperatura' : 'Temperature') : check.key === 'dissolvedOxygen' ? 'Dissolved oxygen' : check.key === 'turbidity' ? (lang === 'tl' ? 'Labo ng tubig' : 'Turbidity') : 'Ammonia'}: {check.result === 'within' ? (lang === 'tl' ? 'Pasok sa saklaw' : 'Within range') : check.result === 'unknown' ? (lang === 'tl' ? 'Walang beripikadong saklaw' : 'No verified range') : (lang === 'tl' ? 'Labas sa saklaw' : 'Outside range')} ({check.min}–{check.max})</p>)}
+                  {index > 0 && tied(item, ranked[index - 1]) && <p className="mt-2 text-xs text-slate-600">{lang === 'tl' ? 'Tabla sa nasa itaas; nakaayos ayon sa pangalan.' : 'Tied with the fish above; listed alphabetically.'}</p>}
+                </section>;
+              })}
+            </>;
+          })()}
         </aside>
       ) : showManual && showManualResults ? (
         <>
