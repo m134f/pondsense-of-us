@@ -1,13 +1,12 @@
-const CACHE_NAME = "pondsense-app-v1";
+const CACHE_NAME = "pondsense-app-v2";
 const APP_SHELL = [
   "/",
   "/dashboard",
   "/history",
   "/offline.html",
   "/manifest.webmanifest",
-  "/logofishpond.png",
-  "/pwa-icon-192.png",
-  "/pwa-icon-512.png",
+  "/cuyab-bay-pen-192.png",
+  "/cuyab-bay-pen-512.png",
   "/laguna-de-bay-enhanced.jpg"
 ];
 

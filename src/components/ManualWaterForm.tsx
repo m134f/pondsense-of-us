@@ -1,14 +1,18 @@
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Activity, LoaderCircle } from "lucide-react";
 import type { FishSpecies, WaterParams } from "../types";
-import { isManualDecimalDraft, manualLimits, manualWarnings, validateManual } from '../lib/manualValidation';
+import { isManualDecimalDraft, manualParameters, manualWarnings, validateManual } from '../lib/manualValidation';
 
-const fields: { key: keyof WaterParams; label: string; unit: string; min: number; max: number; step: number }[] = [
-  { key: "ph", label: "pH", unit: "", min: 0, max: 14, step: 0.01 },
-  { key: "temperature", label: "Temperature", unit: "°C", min: 0, max: 60, step: 0.1 }
-];
+const fields = {
+  ph: { en: 'pH', tl: 'pH', unit: '' },
+  temperature: { en: 'Temperature', tl: 'Temperatura', unit: '\u00b0C' },
+  dissolvedOxygen: { en: 'Dissolved Oxygen', tl: 'Natunaw na Oxygen', unit: 'mg/L' },
+  turbidity: { en: 'Calibrated Turbidity', tl: 'Calibrated na Labo ng Tubig', unit: 'NTU' }
+};
 
-export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpecies[]; lang: "en" | "tl"; onAnalyze: (values: Partial<WaterParams>) => void | Promise<void> }) {
+export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpecies[]; lang: "en" | "tl"; onAnalyze: (values: Partial<WaterParams>, saveTime: string) => void | Promise<void> }) {
+  const submitting = useRef(false);
+  const pending = useRef<{ key: string; time: string } | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -20,42 +24,48 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
   const [numericErrors, setNumericErrors] = useState<Partial<Record<keyof WaterParams, boolean>>>({});
   const validation = validateManual(draft);
   const warnings = manualWarnings(validation.values, fish);
-  return <form noValidate className="card space-y-4 p-5" onSubmit={async event => {
+  const clearDraft = () => {
+    pending.current = null;
+    setDraft({}); setFieldErrors({}); setNumericErrors({}); setError('');
+    setSaved(false); setEdited(false); setReview(false); setConfirmed(false);
+  };
+  return <form noValidate className="card manual-water-form space-y-4 p-5" onSubmit={async event => {
     event.preventDefault();
-    setSaved(false);
+    if (submitting.current || saved) return;
     if (Object.values(numericErrors).some(Boolean)) {
       setError(lang === 'tl' ? 'Itama muna ang field na may babala. Numero lamang ang ilagay.' : 'Correct the highlighted field first. Enter numbers only.');
       return;
     }
     setFieldErrors(validation.errors);
     if (Object.keys(validation.errors).length) return;
-    const values: Partial<WaterParams> = {};
-    for (const field of fields) {
-      const raw = draft[field.key]?.trim();
-      if (!raw) continue;
-      const value = Number(raw);
-      if (!Number.isFinite(value) || value < manualLimits[field.key][0] || value > manualLimits[field.key][1]) {
-        setError(lang === "tl" ? "Suriin ang mga inilagay na sukat." : "Check the measurements you entered.");
-        return;
-      }
-      values[field.key] = value;
-    }
-    if (!Object.keys(values).length) {
+    if (validation.empty) {
       setError(lang === "tl" ? "Maglagay ng kahit isang sukat." : "Enter at least one measurement.");
       return;
     }
     if (!review) { setReview(true); setError(''); return; }
     if (warnings.length && !confirmed) return;
+    const values = validation.values;
+    const key = manualParameters.map(field => values[field] ?? '').join('|');
+    if (pending.current?.key !== key) pending.current = { key, time: new Date(Math.floor(Date.now() / 1000) * 1000).toISOString() };
+    submitting.current = true;
     setBusy(true); setError("");
-    try { await onAnalyze(values); setEdited(false); setSaved(true); setReview(false); setConfirmed(false); }
-    catch { setError(lang === "tl" ? "Hindi naisumite. Subukan muli." : "Could not submit. Please try again."); }
-    finally { setBusy(false); }
+    try {
+      await onAnalyze(values, pending.current.time);
+      pending.current = null;
+      setEdited(false); setSaved(true); setReview(false); setConfirmed(false);
+    } catch (failure) {
+      if (failure instanceof Error && failure.cause === 409) {
+        pending.current = null; setReview(false); setConfirmed(false);
+        setError(lang === 'tl' ? 'Suriin ang oras ng device at i-review muli ang test.' : 'Check your device clock and review the test again.');
+      } else setError(lang === "tl" ? "Hindi nakumpirma ang pag-save. Subukan muli." : "Could not confirm the save. Please try again.");
+    } finally { submitting.current = false; setBusy(false); }
   }}>
     <h2 className="text-lg font-bold">{lang === "tl" ? "Manu-manong pagsusuri" : "Manual water analysis"}</h2>
-    <p className="text-sm text-slate-600">{lang === "tl" ? "Aktuwal na sukat mula sa iyong water test." : "Actual measurements from your water test."}</p>
-    {fields.map(field => <label key={field.key} className="block text-sm font-semibold" htmlFor={`manual-${field.key}`}>
-      {field.label} {field.unit && <span className="font-normal text-slate-500">({field.unit})</span>}
-      <input id={`manual-${field.key}`} type="text" inputMode="decimal" pattern="[0-9]*[.,]?[0-9]*" autoComplete="off" spellCheck={false} disabled={busy || review} aria-invalid={!!fieldErrors[field.key] || !!numericErrors[field.key]} aria-describedby={`manual-error-${field.key} manual-numeric-${field.key}`}
+    <p className="text-sm text-slate-600">{lang === "tl" ? "Ilagay ang aktuwal na sukat. Iwanang blangko ang hindi nasukat." : "Enter actual measurements. Leave unmeasured fields blank."}</p>
+    <div className="manual-measurement-fields">
+    {manualParameters.map(key => ({ ...fields[key], key })).map(field => <div key={field.key} className="min-w-0 text-sm">
+      <label className="block font-semibold" htmlFor={`manual-${field.key}`}>{field[lang]} {field.unit && <span className="font-normal text-slate-500">({field.unit})</span>}</label>
+      <input id={`manual-${field.key}`} type="text" inputMode="decimal" pattern="[0-9]*[.,]?[0-9]*" autoComplete="off" spellCheck={false} disabled={busy || review} aria-invalid={!!fieldErrors[field.key] || !!numericErrors[field.key]} aria-describedby={[fieldErrors[field.key] && `manual-error-${field.key}`, numericErrors[field.key] && `manual-numeric-${field.key}`].filter(Boolean).join(' ') || undefined}
         className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-base focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
         value={draft[field.key] ?? ""} onChange={event => {
           const next = event.target.value;
@@ -67,11 +77,17 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
       {numericErrors[field.key] && <span id={`manual-numeric-${field.key}`} role="alert" className="mt-1 block text-red-700">{lang === 'tl' ? 'Numero lamang ang ilagay, halimbawa 7.2. Hindi tinatanggap ang mga letra.' : 'Enter numbers only, for example 7.2. Letters are not accepted.'}</span>}
       {fieldErrors[field.key] && <span id={`manual-error-${field.key}`} role="alert" className="mt-1 block text-red-700">{lang === 'tl' ? 'Maglagay ng numero sa pagitan ng' : 'Enter a number between'} {fieldErrors[field.key]} {field.unit}.</span>}
       {review && warnings.includes(field.key) && <span className="mt-1 block text-amber-800">{lang === 'tl' ? 'Babala: Labas ito sa inirerekomendang saklaw ng ilang isda. Suriin muli ang sukat.' : 'Warning: Outside the recommended range for some fish species. Please check your measurement.'}</span>}
-    </label>)}
+    </div>)}
+    </div>
+    <p className="text-sm text-slate-600">{lang === 'tl' ? 'Sa labo ng tubig, ilagay lamang ang NTU mula sa calibrated na metro. Huwag maglagay ng tantiya.' : 'For turbidity, enter only an NTU reading from a calibrated meter. Leave it blank if you only have an estimate.'}</p>
     {review && <div className="space-y-3 border-t pt-3"><p className="font-semibold">{lang === 'tl' ? 'Suriin ang mga sukat sa itaas bago magpatuloy.' : 'Review the measurements above before continuing.'}</p>{warnings.length > 0 && <label className="flex min-h-11 items-center gap-3"><input type="checkbox" checked={confirmed} onChange={e => setConfirmed(e.target.checked)} />{lang === 'tl' ? 'Sinuri ko muli ang mga sukat na may babala.' : 'I have checked the measurements with warnings.'}</label>}<button type="button" className="soft-button" disabled={busy} onClick={() => { setReview(false); setConfirmed(false); }}>{lang === 'tl' ? 'Itama ang mga sukat' : 'Edit measurements'}</button></div>}
-    {edited && <p className="text-sm text-amber-800">{lang === "tl" ? "Hindi pa naisumite ang mga pagbabago." : "Changes have not been submitted."}</p>}
+    {edited && !review && <p className="text-sm text-slate-600">{lang === "tl" ? "Hindi pa nai-save ang mga sukat." : "Measurements not saved yet."}</p>}
     {saved && <p role="status" className="text-sm text-teal-800">{lang === 'tl' ? 'Nai-save ang manual test sa Session History.' : 'Manual test saved to Session History.'}</p>}
     {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
-    <button disabled={busy || (review && warnings.length > 0 && !confirmed)} className="primary-button w-full disabled:opacity-60">{busy ? <LoaderCircle size={18} className="animate-spin" /> : <Activity size={18} />}{busy ? (lang === "tl" ? "Sinusuri…" : "Analyzing…") : review ? (lang === "tl" ? "Kumpirmahin at suriin" : "Confirm and analyze") : (lang === "tl" ? "Suriin ang mga inilagay" : "Review measurements")}</button>
+    <div className="manual-form-actions">
+      {!saved && !review && <button type="button" className="soft-button" onClick={clearDraft} disabled={busy}>{lang === 'tl' ? 'I-clear' : 'Clear'}</button>}
+      {saved ? <button type="button" className="primary-button" onClick={clearDraft}>{lang === 'tl' ? 'Magsimula ng bagong test' : 'Start another test'}</button> :
+        <button disabled={busy || (review && warnings.length > 0 && !confirmed)} className="primary-button disabled:opacity-60">{busy ? <LoaderCircle size={18} className="animate-spin" /> : <Activity size={18} />}{busy ? (lang === "tl" ? "Sinusuri…" : "Analyzing…") : review ? (lang === "tl" ? "Kumpirmahin at suriin" : "Confirm and analyze") : (lang === "tl" ? "Suriin ang mga inilagay" : "Review measurements")}</button>}
+    </div>
   </form>;
 }

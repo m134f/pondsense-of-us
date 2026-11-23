@@ -1,12 +1,12 @@
 import { useEffect, useState } from 'react';
-import { Bell, Plus, Save, LoaderCircle } from 'lucide-react';
+import { Bell, Save, LoaderCircle } from 'lucide-react';
 import { apiJson } from '../lib/api';
 
 type Pen = { id: number; name: string; device_id: number | null; owner_enabled: number; caretaker_phone: string | null; caretaker_enabled: number };
 type Settings = { fishpens: Pen[]; devices: Array<{ id: number; device_name: string }>; ownerPhone: string; configured: boolean; policy: { reviewed: boolean } };
 export const manualSmsPenKey = (owner: string | number) => `pondsense:manual-sms-fishpen:${owner}`;
 
-export function FishpenSmsSettings({ ownerId, lang }: { ownerId: string | number; lang: string }) {
+export function FishpenSmsSettings({ ownerId, lang, defaultOpen }: { ownerId: string | number; lang: string; defaultOpen?: boolean }) {
   const tl = lang === 'tl';
   const t = (en: string, fil: string) => tl ? fil : en;
   const [data, setData] = useState<Settings | null>(null);
@@ -42,34 +42,28 @@ export function FishpenSmsSettings({ ownerId, lang }: { ownerId: string | number
     } finally { setSaving(false); }
   }
   const input = 'mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100';
-  return <details className="rounded-lg border border-slate-200 bg-white p-4">
-    <summary className="cursor-pointer text-base font-bold text-slate-900"><Bell size={18} className="mr-2 inline" />{t('SMS Alert Settings', 'Mga Setting ng SMS')}</summary>
-    <div className="mt-4 space-y-4">
+  return <details open={defaultOpen} className="card p-4 sm:p-5">
+    <summary className="cursor-pointer py-2 text-lg font-bold text-slate-900"><Bell size={18} className="mr-2 inline text-teal-700" aria-hidden="true" />{t('SMS Notifications', 'Mga Abiso sa SMS')}</summary>
+    <div className="mt-2 space-y-4">
       {!data && !error && <p role="status">{t('Loading contacts...', 'Kinukuha ang mga contact...')}</p>}
       {data && <>
         <p className="text-sm text-slate-600">{t('Confirmed critical sensor alerts go to the owner and, if enabled, the caretaker. Manual tests and warnings do not send automatic SMS.', 'Ang kumpirmadong kritikal na sukat ng sensor ay ipapadala sa may-ari at, kung naka-enable, sa tagapag-alaga. Walang awtomatikong SMS para sa manwal na test o babala.')}</p>
         {(!data.configured || !data.policy.reviewed) && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{!data.policy.reviewed ? t('Automatic water SMS is awaiting administrator threshold review.', 'Naghihintay ng pagsusuri ng admin sa mga limitasyon bago magpadala ng awtomatikong SMS.') : t('SMS is temporarily unavailable. Your contacts can still be saved.', 'Pansamantalang hindi magamit ang SMS. Maaari pa ring i-save ang mga contact.')}</p>}
-        <label className="block text-sm font-semibold">{t('Fishpen', 'Fishpen')}
+        {data.fishpens.length > 1 ? <label className="block text-sm font-semibold">{t('Fishpen', 'Fishpen')}
           <select className={input} value={selected} disabled={saving} onChange={e => choose(e.target.value)}>
             <option value="new" disabled>{t('Ask the administrator to assign your fishpen', 'Ipa-assign sa administrator ang fishpen')}</option>
             {data.fishpens.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
           </select>
-        </label>
-        <form onSubmit={save} className="space-y-4">
+        </label> : data.fishpens.length === 1 ? <p className="text-sm text-slate-600">{t('Fishpen', 'Fishpen')}: <strong className="text-slate-900">{data.fishpens[0].name}</strong></p> : <p className="text-sm text-amber-900">{t('Ask the administrator to assign a fishpen before saving SMS contacts.', 'Magpa-assign muna ng fishpen sa administrator bago mag-save ng SMS contacts.')}</p>}
+        {data.fishpens.length > 0 && <form onSubmit={save} className="space-y-4">
           <fieldset disabled={saving || selected === 'new'} className="space-y-4 disabled:opacity-60">
-            <label className="block text-sm font-semibold">{t('Fishpen name (managed by administrator)', 'Pangalan ng fishpen (itinakda ng administrator)')}<input readOnly className={input} value={form.name} maxLength={100} required /></label>
-            <label className="block text-sm font-semibold">{t('Assigned monitoring device', 'Nakatalagang sensor')}<select disabled className={input} value={form.deviceId}>
-              <option value="">{t('Manual measurements only', 'Manwal na sukat lamang')}</option>
-              {data.devices.map(d => <option key={d.id} value={d.id}>{d.device_name} #{d.id}</option>)}
-            </select></label>
             <div className="border-t border-slate-200 pt-3"><p className="text-sm text-slate-600">{t('Owner (registered number)', 'May-ari (rehistradong numero)')}</p><p className="break-all font-semibold">{data.ownerPhone}</p></div>
-            <p className="text-sm text-slate-600">{t('The owner receives confirmed critical sensor alerts automatically.', 'Awtomatikong tatanggap ang may-ari ng kumpirmadong kritikal na alert mula sa sensor.')}</p>
             <label className="block text-sm font-semibold">{t('Caretaker mobile number (optional)', 'Numero ng tagapag-alaga (opsyonal)')}<input type="tel" autoComplete="off" inputMode="tel" placeholder="09XXXXXXXXX" maxLength={25} className={input} value={form.caretakerPhone} onChange={e => setForm({ ...form, caretakerPhone: e.target.value })} /></label>
             <label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" className="h-5 w-5 accent-teal-600" checked={form.caretakerEnabled} onChange={e => setForm({ ...form, caretakerEnabled: e.target.checked })} />{t('Send water SMS to caretaker', 'Ipadala ang SMS sa tagapag-alaga')}</label>
             <p className="text-sm text-slate-600">{t('Get the caretaker\'s consent before enabling texts. Network availability and SMS credits affect sending.', 'Humingi ng pahintulot ng tagapag-alaga bago mag-enable. Nakadepende ang pagpapadala sa network at SMS credits.')}</p>
-            <button type="submit" className="flex min-h-11 w-full items-center justify-center gap-2 rounded-lg bg-teal-700 px-4 py-3 font-bold text-white hover:bg-teal-800 disabled:opacity-60">{saving ? <LoaderCircle size={18} className="animate-spin" /> : selected === 'new' ? <Plus size={18} /> : <Save size={18} />}{saving ? t('Saving...', 'Sine-save...') : t('Save contacts', 'I-save ang mga contact')}</button>
+            <button type="submit" className="primary-button">{saving ? <LoaderCircle size={18} className="animate-spin" /> : <Save size={18} />}{saving ? t('Saving...', 'Sine-save...') : t('Save contacts', 'I-save ang mga contact')}</button>
           </fieldset>
-        </form>
+        </form>}
       </>}
       {error && <p role="alert" className="text-sm text-red-700">{t('Unable to save or load settings. ', 'Hindi ma-save o makuha ang settings. ')}{error}</p>}
       {message && <p role="status" className="text-sm text-teal-800">{message}</p>}

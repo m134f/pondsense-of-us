@@ -1,17 +1,17 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import crypto from 'node:crypto';
 import express from 'express';
 import mysql from 'mysql2/promise';
 import type { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { migrateFishpenSms } from './migrations/fishpenSms';
+import { migrateOwnerFishpen } from './migrations/ownerFishpen';
 import { queueWaterSms, drainWaterSms, sensorSmsMeasurements } from './services/FishpenSms';
 import { fishpenSmsRouter } from './routes/fishpenSms';
+import { createAuthSession } from './auth';
 
 // Local isolated database only. No .env import and every SMS call uses the injected fake sender.
 test('fishpen SMS database and HTTP integration', { skip: process.env.RUN_SMS_DB_TESTS !== '1', timeout: 60000 }, async t => {
   process.env.IPROG_SMS_API_TOKEN = '';
-  process.env.SESSION_SECRET = 'local-sms-test-secret';
   process.env.WATER_SMS_THRESHOLDS_REVIEWED = 'true';
   process.env.WATER_SMS_RULES_REFERENCE = 'Test fixture only - not a real scientific validation';
   const database = `pondsense_sms_test_${Date.now()}`;
@@ -23,13 +23,16 @@ test('fishpen SMS database and HTTP integration', { skip: process.env.RUN_SMS_DB
   await db.query('CREATE TABLE sensor_devices(id INT PRIMARY KEY, owner_user_id INT, device_name VARCHAR(100), is_active BOOLEAN DEFAULT TRUE)');
   await db.query("INSERT INTO sensor_devices(id,owner_user_id,device_name) VALUES (1,1,'Cuyab A'),(2,2,'Cuyab B')");
   await migrateFishpenSms(db);
+  await db.query('CREATE TABLE harvest_batches(id INT PRIMARY KEY)');
+  await migrateOwnerFishpen(db);
   const app = express(); app.use(express.json()); app.use('/api', fishpenSmsRouter(db));
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   const port = (server.address() as { port: number }).port;
   const cookie = (owner: number) => {
-    const content = [{ alg: 'HS256', typ: 'JWT' }, { sub: owner, role: owner === 3 ? 'admin' : 'farmer', exp: Math.floor(Date.now() / 1000) + 3600 }].map(v => Buffer.from(JSON.stringify(v)).toString('base64url')).join('.');
-    return `pondsense_auth=${content}.${crypto.createHmac('sha256', process.env.SESSION_SECRET!).update(content).digest('base64url')}`;
+    let value = '';
+    createAuthSession({ cookie: (name: string, token: string) => { value = `${name}=${token}`; } } as never, owner, owner === 3 ? 'admin' : 'farmer');
+    return value;
   };
   const request = async (path: string, owner: number, method = 'GET', body?: object) => {
     const response = await fetch(`http://127.0.0.1:${port}/api${path}`, { method, headers: { 'Content-Type': 'application/json', ...(owner ? { Cookie: cookie(owner) } : {}) }, body: body ? JSON.stringify(body) : undefined });
@@ -103,12 +106,18 @@ test('fishpen SMS database and HTTP integration', { skip: process.env.RUN_SMS_DB
       const start = calls.length; await drainWaterSms(db, sender, true); assert.equal(calls.length, start);
     });
     await t.test('HTTP settings enforce authentication, ownership, role and phone validation', async () => {
-      const pens = (await request('/fishpen-sms', 1)).data.fishpens;
-      const foreign = (await request('/fishpen-sms', 2)).data.fishpens[0].id;
-      const body = { name: 'Renamed Cuyab A', deviceId: 1, ownerEnabled: true, caretakerPhone: '09987654321', caretakerEnabled: true };
+      const ownerResult = await request('/fishpen-sms', 1);
+      const foreignResult = await request('/fishpen-sms', 2);
+      assert.equal(ownerResult.status, 200, JSON.stringify(ownerResult.data));
+      assert.equal(foreignResult.status, 200, JSON.stringify(foreignResult.data));
+      const pens = ownerResult.data.fishpens;
+      const foreign = foreignResult.data.fishpens[0].id;
+      const body = { name: pens[0].name, deviceId: 1, ownerEnabled: true, caretakerPhone: '09987654321', caretakerEnabled: true };
+      assert.equal(pens.length, 1);
       assert.equal((await request('/fishpen-sms', 0)).status, 401);
       assert.equal((await request('/fishpen-sms', 3)).status, 403);
-      assert.equal((await request(`/fishpen-sms/${foreign}`, 1, 'PUT', { ...body, deviceId: null })).status, 404);
+      assert.equal((await request(`/fishpen-sms/${foreign}`, 1, 'PUT', { ...body, deviceId: null })).status, 403);
+      assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', { ...body, name: 'Renamed Cuyab A' })).status, 403);
       assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', { ...body, deviceId: 2 })).status, 403);
       assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', { ...body, caretakerPhone: '123' })).status, 400);
       assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', body)).status, 200);

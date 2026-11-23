@@ -14,6 +14,7 @@ import { adminWebauthnRouter, passwordVerifiedFlow, allowAdminAttempt } from './
 import { migratePublicMonitoring } from './migrations/publicMonitoring';
 import { publicMonitoringRouter } from './routes/publicMonitoring';
 import { validateManual } from '../src/lib/manualValidation';
+import { parseManualSaveTime, saveManualReading } from './services/ManualReadings';
 import { migratePartialManual } from './migrations/partialManual';
 import "dotenv/config";
 import crypto from "node:crypto";
@@ -551,11 +552,11 @@ app.get("/api/readings", async (req, res) => {
         dissolved_oxygen, turbidity, ammonia, best_fish, best_score, 0 AS turbidity_estimated
         FROM water_readings WHERE user_id = ? ORDER BY recorded_at DESC, id DESC LIMIT 50)
        UNION ALL
-       (SELECT CONCAT('sensor-', id) AS id, 'sensor' AS input_mode, recorded_at, ph,
+       (SELECT CONCAT('sensor-', id) AS id, 'sensor' AS input_mode, COALESCE(sampled_at, recorded_at) AS recorded_at, ph,
         temperature_c AS temperature, NULL AS dissolved_oxygen, turbidity_ntu AS turbidity,
-        NULL AS ammonia, NULL AS best_fish, NULL AS best_score, 1 AS turbidity_estimated
+        NULL AS ammonia, NULL AS best_fish, NULL AS best_score, 0 AS turbidity_estimated
         FROM sensor_telemetry WHERE owner_user_id = ? AND water_contact_confirmed = TRUE
-        ORDER BY recorded_at DESC, id DESC LIMIT 50)
+        ORDER BY COALESCE(sampled_at, recorded_at) DESC, sensor_telemetry.id DESC LIMIT 50)
      ) AS history ORDER BY recorded_at DESC, id DESC LIMIT 100`,
     [auth.sub, auth.sub]
   );
@@ -588,17 +589,16 @@ app.post("/api/readings", async (req, res) => {
   const reading = req.body ?? {};
   if (reading.partialManual === true) {
     const checked = validateManual(reading);
-    if (checked.empty || Object.keys(checked.errors).length || Object.keys(checked.values).some(key => key !== 'ph' && key !== 'temperature')) {
-      return res.status(400).json({ message: 'Enter valid pH and/or temperature measurements.', errors: checked.errors });
+    if (checked.empty || Object.keys(checked.errors).length || checked.values.ammonia !== undefined) {
+      return res.status(400).json({ message: 'Enter valid pH, temperature, dissolved oxygen, and/or calibrated turbidity measurements.', errors: checked.errors });
     }
+    const saveTime = reading.manualSaveTime === undefined ? undefined : parseManualSaveTime(reading.manualSaveTime);
+    if (saveTime === null) return res.status(400).json({ message: 'Invalid manual test confirmation time.' });
     if (!pool) return res.status(503).json({ message: 'Reading could not be saved.' });
     try {
-      const [result] = await pool.execute<ResultSetHeader>(
-        `INSERT INTO water_readings (user_id, input_mode, ph, temperature, dissolved_oxygen, turbidity, ammonia, best_fish, best_score, confidence, status)
-         VALUES (?, 'manual', ?, ?, NULL, NULL, NULL, NULL, NULL, NULL, NULL)`,
-        [auth.sub, checked.values.ph ?? null, checked.values.temperature ?? null]);
-      const [rows] = await pool.execute<RowDataPacket[]>('SELECT recorded_at FROM water_readings WHERE id = ? AND user_id = ?', [result.insertId, auth.sub]);
-      return res.json({ saved: true, session: { id: String(result.insertId), inputMode: 'manual', turbidityEstimated: false, timestamp: new Date(rows[0].recorded_at).toLocaleString('en-PH'), ph: checked.values.ph ?? null, temperature: checked.values.temperature ?? null, dissolvedOxygen: null, turbidity: null, ammonia: null, bestFish: '', score: null } });
+      const session = await saveManualReading(pool, auth.sub, checked.values, saveTime);
+      if (!session) return res.status(409).json({ message: 'Confirmation time expired or clock is out of sync. Check your clock and review the test again.' });
+      return res.json({ saved: true, session });
     } catch (error) {
       console.error('Partial manual save failed:', error);
       return res.status(503).json({ message: 'Manual test was not saved. Please try again.' });
@@ -721,7 +721,7 @@ app.get("/api/sensors/latest", async (req, res) => {
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
        WHERE telemetry.owner_user_id = ? AND device.owner_user_id = ? AND device.id = ? AND telemetry.water_contact_confirmed = TRUE
-       ORDER BY telemetry.id DESC
+       ORDER BY COALESCE(telemetry.sampled_at, telemetry.recorded_at) DESC, telemetry.id DESC
        LIMIT 1`,
       [auth.sub, auth.sub, res.locals.ownerFishpen.deviceId || 0]
     );
@@ -740,6 +740,7 @@ app.get("/api/sensors/latest", async (req, res) => {
         temperatureC: latest.temperature_c === null ? null : Number(latest.temperature_c),
         ph: latest.ph === null ? null : Number(latest.ph),
         recordedAt: latest.sampled_at ?? latest.recorded_at,
+        sampledAt: latest.sampled_at,
         receivedAt: latest.recorded_at
       }
     });
@@ -759,7 +760,7 @@ app.get("/api/sensors/trend", async (req, res) => {
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
        WHERE telemetry.owner_user_id = ? AND device.owner_user_id = ? AND device.id = ? AND telemetry.water_contact_confirmed = TRUE
-       ORDER BY telemetry.id DESC LIMIT 60`,
+       ORDER BY COALESCE(telemetry.sampled_at, telemetry.recorded_at) DESC, telemetry.id DESC LIMIT 60`,
       [auth.sub, auth.sub, res.locals.ownerFishpen.deviceId || 0]
     );
     res.json({ readings: rows.reverse().map((row) => ({
@@ -772,6 +773,7 @@ app.get("/api/sensors/trend", async (req, res) => {
       temperatureC: row.temperature_c === null ? null : Number(row.temperature_c),
       ph: row.ph === null ? null : Number(row.ph),
       recordedAt: row.sampled_at ?? row.recorded_at,
+      sampledAt: row.sampled_at,
       receivedAt: row.recorded_at
     })) });
   } catch (error) {
@@ -804,17 +806,32 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
     if (!device.ownerUserId) return res.status(409).json({ message: "Device has no assigned farmer. Contact the administrator." });
     if (req.body.waterContactConfirmed !== true) return res.status(422).json({ saved: false, message: "Water contact not confirmed. Check probe placement and firmware." });
 
-    const [result] = await pool.execute<ResultSetHeader>(
-      `INSERT INTO sensor_telemetry (device_id, owner_user_id, turbidity_raw, turbidity_voltage, turbidity_ntu, temperature_c, ph, client_reading_id, sampled_at, water_contact_confirmed)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)
-       ON DUPLICATE KEY UPDATE id = LAST_INSERT_ID(id)`,
-      [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC, telemetry.values.ph,
-        clientReadingId ?? null, Number.isFinite(sampledAtMs) ? new Date(sampledAtMs) : null]
-    );
-    const duplicate = result.affectedRows !== 1;
+    let telemetryId: number;
+    let recordedAt = new Date().toISOString();
+    let duplicate = false;
+    try {
+      const [result] = await pool.execute<ResultSetHeader>(
+        `INSERT INTO sensor_telemetry (device_id, owner_user_id, turbidity_raw, turbidity_voltage, turbidity_ntu, temperature_c, ph, client_reading_id, sampled_at, water_contact_confirmed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, TRUE)`,
+        [device.id, device.ownerUserId, telemetry.values.rawValue, telemetry.values.voltage, telemetry.values.ntu, telemetry.values.temperatureC, telemetry.values.ph,
+          clientReadingId ?? null, Number.isFinite(sampledAtMs) ? new Date(sampledAtMs) : null]
+      );
+      telemetryId = result.insertId;
+    } catch (error) {
+      if ((error as { code?: string }).code !== 'ER_DUP_ENTRY' || !clientReadingId) throw error;
+      // Affected-row counts for no-op upserts differ across client flags and engines.
+      const [rows] = await pool.execute<RowDataPacket[]>(
+        'SELECT id, recorded_at FROM sensor_telemetry WHERE device_id = ? AND owner_user_id = ? AND client_reading_id = ? LIMIT 1',
+        [device.id, device.ownerUserId, clientReadingId]
+      );
+      if (!rows[0]) throw error;
+      duplicate = true;
+      telemetryId = Number(rows[0].id);
+      recordedAt = new Date(rows[0].recorded_at).toISOString();
+    }
     if (!duplicate) {
       if (Number.isFinite(sampledAtMs) && Math.abs(Date.now() - sampledAtMs) <= 30_000) {
-        await queueIncidentSms(pool, { owner: device.ownerUserId, deviceId: device.id, sourceId: result.insertId, sourceKind: 'telemetry',
+        await queueIncidentSms(pool, { owner: device.ownerUserId, deviceId: device.id, sourceId: telemetryId, sourceKind: 'telemetry',
           measurements: sensorSmsMeasurements({ temperature: telemetry.values.temperatureC, ph: telemetry.values.ph, turbidity: telemetry.values.ntu }, req.body)
         }).catch(() => console.error('Water alert could not be queued. Reading was saved.'));
         void flushWaterSms();
@@ -823,14 +840,14 @@ app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (r
 
     res.status(201).json({
       saved: true,
-      telemetryId: result.insertId,
+      telemetryId,
       deviceId: device.id,
       assigned: true,
       duplicate,
-      recordedAt: new Date().toISOString()
+      recordedAt
     });
     if (!duplicate) {
-      void archiveRecommendations(pool, device.ownerUserId, 'sensor', result.insertId).catch(error => {
+      void archiveRecommendations(pool, device.ownerUserId, 'sensor', telemetryId).catch(error => {
         console.error('Recommendation archive:', error);
       });
     }

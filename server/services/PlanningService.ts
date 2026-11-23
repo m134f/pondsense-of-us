@@ -27,12 +27,12 @@ export async function planningContext(db: Pool, owner: number, batchId = 0, now 
   const measurements: Measurements = {};
   const [sensor] = await db.query<RowDataPacket[]>(
     `SELECT t.* FROM sensor_telemetry t JOIN sensor_devices d ON d.id = t.device_id
-     WHERE t.owner_user_id = ? AND d.owner_user_id = ? AND d.is_active = 1 ${batch ? 'AND t.device_id = ?' : ''}
-     ORDER BY t.id DESC LIMIT 1`, batch ? [owner, owner, batch.sensor_device_id || 0] : [owner, owner]);
+     WHERE t.owner_user_id = ? AND d.owner_user_id = ? AND d.is_active = 1 AND t.water_contact_confirmed = TRUE ${batch ? 'AND t.device_id = ?' : ''}
+     ORDER BY COALESCE(t.sampled_at, t.recorded_at) DESC, t.id DESC LIMIT 1`, batch ? [owner, owner, batch.sensor_device_id || 0] : [owner, owner]);
   const telemetry = sensor[0];
   if (telemetry) {
     for (const [key, col] of [['ph', 'ph'], ['temperature', 'temperature_c'], ['turbidity', 'turbidity_ntu']] as const) {
-      measurements[key] = { value: telemetry[col] === null ? null : Number(telemetry[col]), source: 'sensor', recordedAt: new Date(telemetry.recorded_at).toISOString() };
+      measurements[key] = { value: telemetry[col] === null ? null : Number(telemetry[col]), source: 'sensor', recordedAt: telemetry.sampled_at == null ? null : new Date(telemetry.sampled_at).toISOString() };
     }
   }
   if (batch) {
@@ -67,7 +67,8 @@ export async function archiveRecommendations(db: Pool, owner: number, kind: 'sen
   const source = sources[0];
   if (!source || (kind === 'sensor' && Number(source.owner_user_id) !== owner) || (kind === 'manual' && Number(source.user_id) !== owner) || (kind === 'batch-manual' && Number(source.batch_id) !== batchId)) return null;
   const snapshot: Measurements = {};
-  const recordedAt = new Date(source.recorded_at).toISOString();
+  const measurementTime = kind === 'sensor' ? source.sampled_at : source.recorded_at;
+  const recordedAt = measurementTime == null ? null : new Date(measurementTime).toISOString();
   const columns = kind === 'sensor' ? { ph: 'ph', temperature: 'temperature_c', turbidity: 'turbidity_ntu' } :
     kind === 'manual' ? { ph: 'ph', temperature: 'temperature', turbidity: 'turbidity', dissolvedOxygen: 'dissolved_oxygen', ammonia: 'ammonia' } : { [source.parameter_name]: 'measurement_value' };
   for (const [key, col] of Object.entries(columns)) snapshot[key as keyof Measurements] = {

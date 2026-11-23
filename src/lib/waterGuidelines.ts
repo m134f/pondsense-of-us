@@ -1,7 +1,7 @@
 import type { WaterParams } from '../types';
 
 export const classCSource = 'DENR-EMB DAO 2016-08, Table 3, freshwater Class C';
-export const classCUrl = 'https://pab.emb.gov.ph/wp-content/uploads/2017/07/DAO-2016-08-WQG-and-GES.pdf';
+export const classCUrl = 'https://emb.gov.ph/wp-content/uploads/2019/04/DAO-2016-08_WATER-QUALITY-GUIDELINES-AND-GENERAL-EFFLUENT-STANDARDS.pdf';
 export const classCGuidelines: Partial<Record<keyof WaterParams, { min?: number; max?: number; unit: string }>> = {
   ph: { min: 6.5, max: 9, unit: 'pH' },
   temperature: { min: 25, max: 31, unit: '°C' },

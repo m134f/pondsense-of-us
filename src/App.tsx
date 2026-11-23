@@ -1,28 +1,30 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
-import { sensorTurbidityValue } from './lib/sensorDisplay';
+import { sensorTurbidityValue, compareSensorSamples, sensorConnectionState } from './lib/sensorDisplay';
 import { SessionLoading } from './components/SessionLoading';
 import { apiErrorMessage } from './lib/apiError';
-import { OwnerLogin, OwnerPasswordChange, sessionOwner, type OwnerSession } from './components/OwnerAuthentication';
+import { OwnerLogin, OwnerPasswordChange, OwnerPasswordForm, sessionOwner, type OwnerSession } from './components/OwnerAuthentication';
 import { ProvisionOwner } from './components/ProvisionOwner';
 import { AdminDeviceEnrollment, AdminDeviceSettings, verifyAdminDevice } from './components/AdminDeviceSecurity';
-import { HarvestWorkspace } from './components/HarvestWorkspace';
+import { HarvestWorkspace, type SavedHarvest } from './components/HarvestWorkspace';
+import { FarmerLanguage, FarmerNavigation } from './components/FarmerNavigation';
 import { AdminFishpenAssignments } from './components/AdminFishpenAssignments';
 import {
   Activity,
   AlertTriangle,
   BarChart3,
   Check,
-  Clock3,
+  ChevronDown,
   Database,
   Download,
   Droplets,
+  Eye,
   Fish,
   History,
   Lock,
   LogOut,
-  Menu,
   CalendarDays,
+  Radio,
+  Thermometer,
   Plus,
   Settings,
   Shield,
@@ -49,13 +51,15 @@ import { HarvestReview } from "./components/HarvestReview";
 import { FishpenSmsSettings, manualSmsPenKey } from "./components/FishpenSmsSettings";
 import { WaterSmsLogs } from "./components/WaterSmsLogs";
 import { ManualWaterForm } from "./components/ManualWaterForm";
+import { ManualAssessment, ManualRecommendedActions } from "./components/ManualAssessment";
+import { WaterQualityTrends } from './components/WaterQualityTrends';
+import { manualParameters } from "./lib/manualValidation";
 import { PublicMonitoring } from './components/PublicMonitoring';
 import { measuredStatus, parameterStatus } from './lib/measurementStatus';
 import { chartValue, classCGuidelines, classCSource, classCUrl } from './lib/waterGuidelines';
 import { clearLegacyBrowserCredentials, storage, type AppUser } from "./lib/storage";
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
 
-type AppTab = "analysis" | "history" | "harvest";
 type AdminTab = "overview" | "users" | "fish" | "records" | "settings";
 type Lang = "en" | "tl";
 type AdminPath = "/admin/login" | "/admin/dashboard" | "/admin/users" | "/admin/logs" | "/admin/thresholds" | "/admin/settings";
@@ -76,24 +80,13 @@ type SensorTelemetry = {
   temperatureC: number | null;
   ph: number | null;
   recordedAt: string;
+  sampledAt?: string | null;
   receivedAt?: string;
 };
 
-const SENSOR_LIVE_MS = 15_000;
+type RequestState = 'loading' | 'ready' | 'error';
+
 const SENSOR_OFFLINE_MS = 60_000;
-
-function sensorAgeMs(telemetry: SensorTelemetry | null, now: number): number {
-  if (!telemetry) return Infinity;
-  const sampledAt = new Date(telemetry.recordedAt).getTime();
-  const receivedAt = new Date(telemetry.receivedAt || telemetry.recordedAt).getTime();
-  if (!Number.isFinite(sampledAt) || !Number.isFinite(receivedAt)) return Infinity;
-  return Math.max(0, now - Math.min(sampledAt, receivedAt));
-}
-
-function sensorConnectionState(telemetry: SensorTelemetry | null, now: number): "live" | "stale" | "offline" {
-  const age = sensorAgeMs(telemetry, now);
-  return age < SENSOR_LIVE_MS ? "live" : age < SENSOR_OFFLINE_MS ? "stale" : "offline";
-}
 
 function sensorMeasuredStatus(telemetry: SensorTelemetry): AlertLevel | 'partial' {
   return measuredStatus({ ph: telemetry.ph, temperature: telemetry.temperatureC, turbidity: telemetry.turbidityNtu });
@@ -479,15 +472,16 @@ function historyStatus(row: SessionRecord) {
 const farmerHistoryParameters = parameterMeta.filter(meta => meta.key !== "ammonia");
 
 function isPartialSession(row: SessionRecord) {
-  return farmerHistoryParameters.some(meta => row[meta.key] == null);
+  return (row.inputMode === 'manual' && row.ammonia == null) || farmerHistoryParameters.some(meta => row[meta.key] == null);
 }
 
 function historyFishDisplay(row: SessionRecord, fishDb: FishSpecies[], lang: Lang) {
   const fit = isPartialSession(row) && !row.bestFish && row.score == null ? historyFishFit(row, fishDb) : null;
   if (fit) return {
-    fish: `${lang === 'tl' ? 'Paunang tugma' : 'Preliminary match'}: ${fit.fish}`,
+    fish: fit.hasMatch ? `${lang === 'tl' ? 'Paunang tugma' : 'Preliminary match'}: ${fit.fish}` :
+      (lang === 'tl' ? 'Walang natukoy na angkop na isda' : 'No suitable fish identified'),
     score: `${fit.fit} ${lang === 'tl' ? 'nasukat' : 'measured'}`,
-    note: fit.hasMatch ? null : (lang === 'tl' ? 'Pinakamalapit lamang; walang sukat na pasok.' : 'Closest only; no measured value is in range.')
+    note: fit.hasMatch ? null : (lang === 'tl' ? `Pinakamalapit sa saklaw: ${fit.fish}; walang sukat na pasok.` : `Closest by range: ${fit.fish}; no measured value is in range.`)
   };
   return { fish: row.bestFish || '--', score: row.score == null ? '--' : `${row.score}%`, note: null };
 }
@@ -645,7 +639,6 @@ async function apiJson<T>(url: string, options: RequestInit = {}): Promise<{ dat
 export default function App() {
   const savedUser = storage.currentUser();
   const [lang, setLangState] = useState<Lang>(storage.language());
-  const [tab, setTab] = useState<AppTab>("analysis");
   const [loginDestination, setLoginDestination] = useState<UserPath>("/dashboard");
   const [params, setParams] = useState<WaterParams>(defaultParams);
   const [fishDb, setFishDb] = useState<FishSpecies[]>(fishDatabase.filter(fish => fish.id !== "mamali"));
@@ -660,6 +653,8 @@ export default function App() {
   }, []);
   const [selectedFishId, setSelectedFishId] = useState("tilapia");
   const [sessions, setSessions] = useState<SessionRecord[]>(storage.sessions(savedUser));
+  const [historyState, setHistoryState] = useState<RequestState>('loading');
+  const [historyAttempt, setHistoryAttempt] = useState(0);
   const [currentUser, setCurrentUser] = useState<AppUser | null>(null);
   const [sessionLoading, setSessionLoading] = useState(true);
   const [sessionError, setSessionError] = useState<string | null>(null);
@@ -670,7 +665,10 @@ export default function App() {
   const [clock, setClock] = useState(new Date());
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
   const [sensorTelemetry, setSensorTelemetry] = useState<SensorTelemetry | null>(null);
+  const [sensorState, setSensorState] = useState<RequestState>('loading');
   const [sensorTrend, setSensorTrend] = useState<SensorTelemetry[]>([]);
+  const [trendState, setTrendState] = useState<RequestState>('loading');
+  const retryTrendRef = useRef<(() => void) | null>(null);
   const [sensorAnalysis, setSensorAnalysis] = useState<SensorAnalysisState | null>(null);
   const paramsRef = useRef(params);
   const sensorAutoTimerRef = useRef<number | null>(null);
@@ -718,13 +716,16 @@ export default function App() {
     let active = true;
     const cachedSessions = storage.sessions(currentUser);
     setSessions(cachedSessions);
+    setHistoryState('loading');
 
     if (!currentUser) return () => {
       active = false;
     };
 
     apiJson<{ sessions: SessionRecord[] }>("/api/readings").then((result) => {
-      if (!active || !result.data?.sessions) return;
+      if (!active) return;
+      if (!result.data?.sessions) { setHistoryState('error'); return; }
+      setHistoryState('ready');
       setSessions(result.data.sessions);
       storage.saveSessions(result.data.sessions, currentUser);
     });
@@ -732,7 +733,7 @@ export default function App() {
     return () => {
       active = false;
     };
-  }, [currentUser?.id, currentUser?.phone, path]);
+  }, [currentUser?.id, currentUser?.phone, path, historyAttempt]);
 
   useEffect(() => {
     if (!sensorTelemetry || !currentUser) return;
@@ -740,7 +741,7 @@ export default function App() {
       id: `sensor-${sensorTelemetry.id}`,
       timestamp: new Date(sensorTelemetry.recordedAt).toLocaleString("en-PH"),
       inputMode: "sensor",
-      turbidityEstimated: sensorTelemetry.turbidityNtu === null,
+      turbidityEstimated: false,
       ph: sensorTelemetry.ph,
       temperature: sensorTelemetry.temperatureC,
       dissolvedOxygen: null,
@@ -764,10 +765,12 @@ export default function App() {
     let latestController: AbortController | undefined;
     let trendController: AbortController | undefined;
     let failures = 0;
+    setSensorState('loading');
+    setTrendState('loading');
+    setSensorTrend([]);
 
     if (!currentUser || currentUser.mustChangePassword || !currentUser.fishpenAssignment) {
       setSensorTelemetry(null);
-      setSensorTrend([]);
       return () => { active = false; };
     }
 
@@ -784,35 +787,38 @@ export default function App() {
 
       if (result.data) {
         failures = 0;
+        setSensorState('ready');
         setSensorTelemetry(result.data.telemetry);
         if (result.data.telemetry) {
           const latest = result.data.telemetry;
           setSensorTrend((previous) => previous.some((reading) => reading.id === latest.id)
             ? previous
-            : [...previous, latest].sort((a, b) => a.id - b.id).slice(-60));
+            : [...previous, latest].sort(compareSensorSamples).slice(-60));
         }
       } else {
         failures += 1;
+        setSensorState('error');
       }
       const delay = failures ? Math.min(30_000, 5_000 * 2 ** (failures - 1)) : Math.max(0, 5_000 - (Date.now() - startedAt));
       latestTimer = window.setTimeout(() => void loadLatest(), delay);
     };
 
     const loadTrend = async () => {
-      if (!active) return;
+      if (!active || trendController) return;
       trendController = new AbortController();
       const timeout = window.setTimeout(() => trendController?.abort(), 8_000);
       const result = await apiJson<{ readings: SensorTelemetry[] }>("/api/sensors/trend", { signal: trendController.signal });
       window.clearTimeout(timeout);
       trendController = undefined;
       if (!active) return;
-      if (result.data) {
+      if (Array.isArray(result.data?.readings)) {
+        setTrendState('ready');
         setSensorTrend((previous) => {
           const merged = new Map(result.data!.readings.map((reading) => [reading.id, reading]));
           for (const reading of previous) merged.set(reading.id, reading);
-          return [...merged.values()].sort((a, b) => a.id - b.id).slice(-60);
+          return [...merged.values()].sort(compareSensorSamples).slice(-60);
         });
-      }
+      } else setTrendState('error');
       trendTimer = window.setTimeout(() => void loadTrend(), 30_000);
     };
 
@@ -825,6 +831,12 @@ export default function App() {
 
     void loadLatest();
     void loadTrend();
+    retryTrendRef.current = () => {
+      if (!active || trendController) return;
+      window.clearTimeout(trendTimer);
+      setTrendState('loading');
+      void loadTrend();
+    };
     window.addEventListener("online", reconnect);
 
     return () => {
@@ -833,9 +845,10 @@ export default function App() {
       window.clearTimeout(trendTimer);
       latestController?.abort();
       trendController?.abort();
+      retryTrendRef.current = null;
       window.removeEventListener("online", reconnect);
     };
-  }, [currentUser?.id, currentUser?.phone]);
+  }, [currentUser?.id, currentUser?.phone, currentUser?.fishpenAssignment?.deviceId]);
 
   useEffect(() => {
     const syncPath = () => setPath(window.location.pathname);
@@ -849,10 +862,8 @@ export default function App() {
   }, []);
 
   useEffect(() => {
-    if (path === "/dashboard") setTab("analysis");
-    if (path === "/history") setTab("history");
     if (path === "/guide") navigate("/dashboard");
-    if (path === "/harvest") setTab("harvest");
+    window.scrollTo(0, 0);
   }, [path]);
 
   const setLang = (next: Lang) => {
@@ -1043,68 +1054,58 @@ export default function App() {
     );
   }
 
-  if (currentUser?.mustChangePassword) return <OwnerPasswordChange onDone={() => window.location.assign('/dashboard')} onLogout={async () => { await postJson('/api/logout', {}); storage.saveCurrentUser(null); setCurrentUser(null); navigate('/login'); }} />;
+  if (currentUser?.mustChangePassword) return <OwnerPasswordChange lang={lang} onDone={() => window.location.assign('/dashboard')} onLogout={async () => { await postJson('/api/logout', {}); storage.saveCurrentUser(null); setCurrentUser(null); navigate('/login'); }} />;
   if (currentUser && !currentUser.fishpenAssignment) return <main className="mx-auto max-w-lg space-y-4 p-6"><h1 className="text-xl font-bold">Fishpen assignment needed</h1><p>No fishpen is assigned to your account. Contact your administrator. / Ipa-assign muna sa administrator ang iyong fishpen.</p><button className="soft-button" onClick={() => window.location.reload()}>Check again</button><button className="soft-button" onClick={async () => { await postJson('/api/logout', {}); storage.saveCurrentUser(null); setCurrentUser(null); navigate('/login'); }}>Logout</button></main>;
 
   if (!currentUser) return <OwnerLogin navigate={navigate} onLogin={(user, message) => { setCurrentUser(user); storage.saveCurrentUser(user); setSms(message); navigate('/dashboard'); }} />;
-  if (path === "/profile") {
-    return <ProfilePage currentUser={currentUser} navigate={navigate} />;
-  }
+  const farmerPath = ["/analysis", "/history", "/harvest", "/profile", "/profile/device-sms"].includes(path) ? path : "/dashboard";
+  const logout = async () => {
+    await apiJson("/api/logout", { method: "POST", body: "{}" });
+    storage.saveCurrentUser(null);
+    setCurrentUser(null);
+    setParams(defaultParams);
+    setHasAnalyzed(false);
+    setSensorTelemetry(null);
+    setSensorTrend([]);
+    setSensorAnalysis(null);
+    setSessions(storage.sessions(null));
+    navigate("/login");
+  };
 
   return (
     <div className="farmer-shell min-h-screen bg-slate-100">
       {sms && (
         <button
-          className="fixed inset-x-3 bottom-4 z-50 rounded-2xl bg-slate-950 px-4 py-3 text-left text-sm font-medium text-white shadow-2xl sm:inset-x-auto sm:right-5 sm:max-w-sm sm:px-5 sm:py-4"
+          className="farmer-toast fixed inset-x-3 z-50 rounded-lg bg-slate-950 px-4 py-3 text-left text-sm font-medium text-white shadow-lg sm:inset-x-auto sm:right-5 sm:max-w-sm"
           onClick={() => setSms("")}
         >
           {sms}
         </button>
       )}
 
-      <Header
+      <FarmerNavigation
+        path={farmerPath}
+        navigate={navigate}
         lang={lang}
         setLang={setLang}
-        clock={clock}
-        currentUser={currentUser}
-        activeTab={tab}
-        onTabChange={(nextTab) => {
-          setTab(nextTab);
-          navigate(nextTab === "history" ? "/history" : nextTab === "harvest" ? "/harvest" : "/dashboard");
-        }}
-        onHome={() => navigate("/dashboard")}
-        onProfile={() => navigate("/profile")}
-        onAuth={() => navigate("/login")}
-        onLogout={async () => {
-          await apiJson("/api/logout", { method: "POST", body: "{}" });
-          storage.saveCurrentUser(null);
-          setCurrentUser(null);
-          setParams(defaultParams);
-          setHasAnalyzed(false);
-          setSensorTelemetry(null);
-          setSensorTrend([]);
-          setSensorAnalysis(null);
-          setSessions(storage.sessions(null));
-          navigate("/login");
-        }}
-        text={text}
+        name={currentUser.fullName}
+        fishpen={currentUser.fishpenAssignment?.name || ''}
+        clockText={formattedClock(clock)}
+        onLogout={logout}
       />
 
-      <Tabs active={tab} onChange={(nextTab) => {
-        setTab(nextTab);
-        navigate(nextTab === "history" ? "/history" : nextTab === "harvest" ? "/harvest" : "/dashboard");
-      }} text={text} />
-
-      {tab === "analysis" && (
+      <div className="farmer-workspace">
+      {(farmerPath === "/dashboard" || farmerPath === "/analysis") && (
         <AnalysisPage
           key={currentUser?.id || 'guest'}
           ownerId={currentUser?.id}
           lang={lang}
           params={params}
-          setParams={setParams}
           sensorTelemetry={sensorTelemetry}
+          sensorState={sensorState}
           sensorTrend={sensorTrend}
-          sensorAnalysis={sensorAnalysis}
+          trendState={trendState}
+          retryTrend={() => retryTrendRef.current?.()}
           now={clock.getTime()}
           sessions={sessions}
           fishDb={fishDb}
@@ -1115,19 +1116,22 @@ export default function App() {
           best={best}
           currentStatus={currentStatus}
           hasAnalyzed={hasAnalyzed}
-          onAnalyze={runAnalysis}
-          onManualSaved={record => { setSessions(previous => { const next = [record, ...previous].slice(0, 10); storage.saveSessions(next, currentUser); return next; }); }}
-          onTestSms={testSms}
+          onManualSaved={record => { setSessions(previous => { const next = [record, ...previous.filter(item => item.id !== record.id)].slice(0, 10); storage.saveSessions(next, currentUser); return next; }); }}
           onSelectFish={setSelectedFishId}
           text={text}
+          showManual={farmerPath === '/analysis'}
+          onModeChange={manual => navigate(manual ? '/analysis' : '/dashboard')}
         />
       )}
 
-      {tab === "history" && (
-        <HistoryPage sessions={sessions} onExport={exportCsv} text={text} lang={lang} fishDb={fishDb} />
+      {farmerPath === "/history" && (
+        <HistoryPage sessions={sessions} requestState={historyState} onRetry={() => setHistoryAttempt(n => n + 1)} onExport={exportCsv} text={text} lang={lang} fishDb={fishDb} />
       )}
 
-      {tab === "harvest" && <HarvestPage currentUser={currentUser} lang={lang} fishDb={fishDb} navigate={navigate} />}
+      {farmerPath === "/harvest" && <HarvestPage currentUser={currentUser} lang={lang} fishDb={fishDb} navigate={navigate} />}
+
+      {farmerPath.startsWith('/profile') && <ProfilePage currentUser={currentUser} lang={lang} setLang={setLang} telemetry={sensorTelemetry} now={clock.getTime()} focusDevice={farmerPath === '/profile/device-sms'} onLogout={logout} onTestSms={hasAnalyzed && scores.length ? testSms : undefined} />}
+      </div>
 
       {authOpen && (
         <AuthModal
@@ -1149,232 +1153,6 @@ export default function App() {
   );
 }
 
-function Header({
-  lang,
-  setLang,
-  clock,
-  currentUser,
-  activeTab,
-  onTabChange,
-  onHome,
-  onProfile,
-  onAuth,
-  onLogout,
-  text
-}: {
-  lang: Lang;
-  setLang: (lang: Lang) => void;
-  clock: Date;
-  currentUser: AppUser | null;
-  activeTab: AppTab;
-  onTabChange: (tab: AppTab) => void;
-  onHome: () => void;
-  onProfile: () => void;
-  onAuth: () => void;
-  onLogout: () => void;
-  text: typeof ui.en;
-}) {
-  const [menuOpen, setMenuOpen] = useState(false);
-  const mobileTabs: Array<{ id: AppTab; label: string; icon: typeof BarChart3 }> = [
-    { id: "analysis", label: text.analysis, icon: BarChart3 },
-    { id: "history", label: text.history, icon: History },
-    { id: "harvest", label: text.harvest, icon: CalendarDays }
-  ];
-
-  const chooseTab = (nextTab: AppTab) => {
-    onTabChange(nextTab);
-    setMenuOpen(false);
-  };
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const previousOverflow = document.body.style.overflow;
-    const previousFocus = document.activeElement as HTMLElement | null;
-    const focusable = () => Array.from(document.querySelectorAll<HTMLElement>('.farmer-menu button, .farmer-menu a, .farmer-menu input, .farmer-menu select')).filter(element => !element.hasAttribute('disabled'));
-    focusable()[0]?.focus();
-    const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false);
-      if (event.key !== 'Tab') return;
-      const items = focusable();
-      const first = items[0]; const last = items[items.length - 1];
-      if (event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
-      else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
-    };
-    document.addEventListener('keydown', onKey);
-    document.body.style.overflow = "hidden";
-    return () => {
-      document.body.style.overflow = previousOverflow;
-      document.removeEventListener('keydown', onKey);
-      previousFocus?.focus();
-    };
-  }, [menuOpen]);
-
-  return (
-    <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
-      <div className="mx-auto flex max-w-[1500px] items-center justify-between gap-3 px-3 py-3 sm:px-6 sm:py-4 lg:flex-row lg:items-center lg:justify-between">
-        <button className="flex min-w-0 items-center gap-2 text-left sm:gap-3" onClick={onHome} title="PondSense dashboard">
-          <span className="grid h-10 w-10 shrink-0 place-items-center overflow-hidden rounded-xl bg-white ring-1 ring-teal-100 sm:h-12 sm:w-12 sm:rounded-2xl">
-            <img src="/logofishpond.png?v=logo-20260612" alt="PondSense of Us logo" className="h-full w-full object-cover" />
-          </span>
-          <span className="min-w-0">
-            <span className="block truncate text-base font-black leading-tight text-slate-950 sm:text-lg">PondSense of Us</span>
-            <span className="block truncate text-xs text-slate-500 sm:text-sm">{text.subtitle}</span>
-          </span>
-        </button>
-
-        <button
-          className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-xl border border-slate-200 bg-white text-slate-700 shadow-sm transition hover:bg-slate-50 md:hidden"
-          onClick={() => setMenuOpen((open) => !open)}
-          aria-label="Open menu"
-          aria-expanded={menuOpen}
-        >
-          {menuOpen ? <X size={20} /> : <Menu size={20} />}
-        </button>
-
-        <div className="hidden items-center gap-2 md:flex md:flex-wrap">
-          <div className="flex rounded-xl bg-slate-100 p-1">
-            {(["en", "tl"] as const).map((item) => (
-              <button
-                key={item}
-                className={`flex-1 rounded-lg px-3 py-1.5 text-xs font-black transition ${lang === item ? "bg-teal-600 text-white shadow-sm" : "text-slate-500 hover:text-teal-700"}`}
-                onClick={() => setLang(item)}
-              >
-                {item.toUpperCase()}
-              </button>
-            ))}
-          </div>
-          <span className="inline-flex items-center justify-center gap-2 rounded-xl bg-slate-100 px-3 py-2 text-sm font-semibold text-slate-600">
-            <Clock3 size={16} /> {formattedClock(clock)}
-          </span>
-          <button className="inline-flex min-w-0 items-center justify-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-bold text-amber-700 ring-1 ring-amber-100 hover:bg-amber-100" onClick={currentUser ? onProfile : onAuth} title={currentUser ? "Profile and ESP32 pairing" : "Login"}>
-            <User size={16} className="shrink-0" /> <span className="truncate">{currentUser ? currentUser.fullName : text.guest}</span>
-          </button>
-          {currentUser ? (
-            <button className="soft-button" onClick={onLogout}>
-              <LogOut size={16} /> {text.logout}
-            </button>
-          ) : (
-            <button className="primary-button py-2" onClick={onAuth}>
-              <Lock size={16} /> {text.loginRegister}
-            </button>
-          )}
-        </div>
-      </div>
-      {menuOpen && createPortal(
-        <>
-          <button
-            className="fixed inset-0 z-50 bg-slate-950/35 backdrop-blur-[2px] md:hidden"
-            aria-label="Close menu"
-            onClick={() => setMenuOpen(false)}
-          />
-          <div className="farmer-menu fixed inset-y-0 right-0 z-[60] w-full max-w-sm overflow-y-auto border-l border-slate-200 bg-white p-5 shadow-xl md:hidden" role="dialog" aria-modal="true" aria-label="Navigation">
-            <div className="mb-4 flex items-center justify-between gap-3">
-              <div className="flex min-w-0 items-center gap-3">
-                <span className="grid h-11 w-11 shrink-0 place-items-center overflow-hidden rounded-2xl bg-white ring-1 ring-teal-100">
-                  <img src="/logofishpond.png?v=logo-20260612" alt="PondSense of Us logo" className="h-full w-full object-cover" />
-                </span>
-                <div className="min-w-0">
-                  <p className="truncate text-base font-black leading-tight text-slate-950">PondSense of Us</p>
-                  <p className="truncate text-xs font-semibold text-slate-500">{text.subtitle}</p>
-                </div>
-              </div>
-              <button
-                className="grid h-10 w-10 shrink-0 place-items-center rounded-2xl border border-slate-200 bg-slate-50 text-slate-600"
-                onClick={() => setMenuOpen(false)}
-                aria-label="Close menu"
-              >
-                <X size={19} />
-              </button>
-            </div>
-
-            <div className="grid gap-2">
-              {mobileTabs.map(({ id, label, icon: Icon }) => (
-                <button
-                  key={id}
-                  className={`flex min-h-12 items-center gap-3 rounded-lg border px-3 text-left text-base font-semibold transition ${
-                    activeTab === id
-                      ? "border-teal-200 bg-teal-50 text-teal-800 shadow-sm"
-                      : "border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100"
-                  }`}
-                  onClick={() => chooseTab(id)}
-                >
-                  <span className={`grid h-9 w-9 place-items-center rounded-full ${activeTab === id ? "bg-white text-teal-600" : "bg-white text-slate-400"}`}>
-                    <Icon size={18} />
-                  </span>
-                  <span className="leading-tight">{label}</span>
-                </button>
-              ))}
-            </div>
-
-            <div className="mt-3 rounded-2xl border border-slate-200 bg-slate-50 p-2">
-              <div className="grid grid-cols-2 gap-2">
-                <div className="flex rounded-xl bg-white p-1 ring-1 ring-slate-200">
-                  {(["en", "tl"] as const).map((item) => (
-                    <button
-                      key={item}
-                      className={`flex-1 rounded-lg px-3 py-2 text-xs font-black transition ${lang === item ? "bg-teal-600 text-white shadow-sm" : "text-slate-500 hover:text-teal-700"}`}
-                      onClick={() => setLang(item)}
-                    >
-                      {item.toUpperCase()}
-                    </button>
-                  ))}
-                </div>
-                <span className="inline-flex items-center justify-center gap-2 rounded-xl bg-white px-3 py-2 text-sm font-bold text-slate-600 ring-1 ring-slate-200">
-                  <Clock3 size={16} /> {formattedClock(clock)}
-                </span>
-              </div>
-              <button className="mt-2 inline-flex w-full min-w-0 items-center justify-center gap-2 rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-700 ring-1 ring-amber-100" onClick={() => { currentUser ? onProfile() : onAuth(); setMenuOpen(false); }}>
-                <User size={16} className="shrink-0" /> <span className="truncate">{currentUser ? currentUser.fullName : text.guest}</span>
-              </button>
-            </div>
-
-            <div className="mt-3 grid gap-2">
-              {currentUser ? (
-                <button className="soft-button min-h-12 rounded-2xl bg-white" onClick={() => { onLogout(); setMenuOpen(false); }}>
-                  <LogOut size={16} /> {text.logout}
-                </button>
-              ) : (
-                <button className="primary-button col-span-2 min-h-12 rounded-2xl py-2" onClick={() => { onAuth(); setMenuOpen(false); }}>
-                  <Lock size={16} /> {text.loginRegister}
-                </button>
-              )}
-            </div>
-          </div>
-        </>
-        ,
-        document.body
-      )}
-    </header>
-  );
-}
-
-function Tabs({ active, onChange, text }: { active: AppTab; onChange: (tab: AppTab) => void; text: typeof ui.en }) {
-  const tabs: Array<{ id: AppTab; label: string; icon: typeof BarChart3 }> = [
-    { id: "analysis", label: text.analysis, icon: BarChart3 },
-    { id: "history", label: text.history, icon: History },
-    { id: "harvest", label: text.harvest, icon: CalendarDays }
-  ];
-
-  return (
-    <nav className="mx-auto hidden max-w-[1500px] gap-2 overflow-x-auto px-3 py-3 sm:px-6 sm:py-4 md:flex">
-      <div className="flex flex-wrap gap-2 border-b border-slate-200 pb-2">
-        {tabs.map(({ id, label, icon: Icon }) => (
-          <button
-            key={id}
-            onClick={() => onChange(id)}
-            className={`inline-flex min-h-11 items-center justify-center gap-1.5 rounded-xl px-2 py-2 text-xs font-black transition sm:gap-2 sm:px-4 sm:py-2.5 sm:text-sm ${
-              active === id ? "bg-white text-slate-950 shadow-sm ring-1 ring-slate-200" : "text-slate-500 hover:bg-white/70 hover:text-slate-800"
-            }`}
-          >
-            <Icon size={17} className={active === id ? "text-teal-600" : ""} />
-            {label}
-          </button>
-        ))}
-      </div>
-    </nav>
-  );
-}
-
 function ConnectEsp32({ lang, telemetry, now }: { lang: Lang; telemetry: SensorTelemetry | null; now: number }) {
   const [checked, setChecked] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1393,7 +1171,7 @@ function ConnectEsp32({ lang, telemetry, now }: { lang: Lang; telemetry: SensorT
   useEffect(() => { void connect(); }, []);
   const live = sensorConnectionState(telemetry, now) === "live";
   return <section className="card p-4 sm:p-5">
-    <div><h2 className="text-base font-black text-slate-950">{lang === 'tl' ? 'Kalagayan ng sensor' : 'Sensor status'}</h2><p className="text-xs text-slate-600">{busy ? (lang === 'tl' ? 'Sinusuri...' : 'Checking...') : (lang === 'tl' ? 'Mga sensor ng account mo' : "Your account's sensors")}</p></div>
+    <div><h2 className="flex items-center gap-2 text-lg font-bold text-slate-950"><Radio size={20} className="text-teal-700" aria-hidden="true" />{lang === 'tl' ? 'Aking Device' : 'My Device'}</h2><p className="mt-1 text-sm text-slate-600">{busy ? (lang === 'tl' ? 'Sinusuri...' : 'Checking...') : (lang === 'tl' ? 'Sensor na itinalaga ng administrator' : 'Monitoring device assigned by your administrator')}</p></div>
     {checked && <div className="mt-3 border-t border-slate-100 pt-3">
       {devices.length > 0 && <><p className="mb-2 text-xs font-semibold text-slate-500">{devices.length} {lang === "tl" ? "naka-assign na ESP32" : "assigned ESP32 device(s)"}</p><ul className="space-y-2 text-sm text-slate-700">{devices.map((device) => <li key={device.id} className="flex items-center justify-between gap-2"><span className="font-semibold">{device.deviceName} <span className="text-slate-500">#{device.id}</span></span><span className={`rounded-full px-2 py-1 text-xs font-bold ${live && telemetry?.deviceId === device.id ? "bg-emerald-100 text-emerald-800" : "bg-amber-100 text-amber-900"}`}>{live && telemetry?.deviceId === device.id ? "Live" : (lang === "tl" ? "Walang bagong reading" : "No recent reading")}</span></li>)}</ul></>}
       {message && <p className="text-sm font-semibold text-slate-700" role="status">{message}</p>}
@@ -1403,13 +1181,16 @@ function ConnectEsp32({ lang, telemetry, now }: { lang: Lang; telemetry: SensorT
 
 function AnalysisPage({
   onManualSaved,
+  showManual,
+  onModeChange,
   ownerId,
   lang,
   params,
-  setParams,
   sensorTelemetry,
+  sensorState,
   sensorTrend,
-  sensorAnalysis,
+  trendState,
+  retryTrend,
   now,
   sessions,
   fishDb,
@@ -1420,19 +1201,20 @@ function AnalysisPage({
   best,
   currentStatus,
   hasAnalyzed,
-  onAnalyze,
-  onTestSms,
   onSelectFish,
   text
 }: {
   onManualSaved: (record: SessionRecord) => void;
+  showManual: boolean;
+  onModeChange: (manual: boolean) => void;
   ownerId?: string;
   lang: Lang;
   params: WaterParams;
-  setParams: (params: WaterParams) => void;
   sensorTelemetry: SensorTelemetry | null;
+  sensorState: RequestState;
   sensorTrend: SensorTelemetry[];
-  sensorAnalysis: SensorAnalysisState | null;
+  trendState: RequestState;
+  retryTrend: () => void;
   now: number;
   sessions: SessionRecord[];
   fishDb: FishSpecies[];
@@ -1443,82 +1225,44 @@ function AnalysisPage({
   best: FishScore;
   currentStatus: AlertLevel;
   hasAnalyzed: boolean;
-  onAnalyze: (values: WaterParams) => void | Promise<void>;
-  onTestSms: () => void;
   onSelectFish: (id: string) => void;
   text: typeof ui.en;
 }) {
   const [showParameterDetails, setShowParameterDetails] = useState(false);
   const [showAllActions, setShowAllActions] = useState(false);
-  const sensorFresh = sensorConnectionState(sensorTelemetry, now) === "live";
-  const [mode, setMode] = useState<"monitoring" | "manual">("monitoring");
-  const showManual = mode === "manual";
-  const [partialManual, setPartialManual] = useState<Partial<WaterParams> | null>(null);
+  const sensorFresh = sensorState === 'ready' && sensorConnectionState(sensorTelemetry, now) === "live";
+  const [manualResult, setManualResult] = useState<{ id: string; values: Partial<WaterParams> } | null>(null);
+  const partialManual = manualResult?.values ?? null;
   const showManualResults = hasAnalyzed && scores.length > 0 && showManual && !partialManual;
-  const submitManual = async (values: Partial<WaterParams>) => {
-    if (Object.keys(values).length === 5) {
-      await onAnalyze(values as WaterParams);
-      setPartialManual(null);
-    } else {
-      const result = await postJson<{ saved: boolean; session: SessionRecord }>('/api/readings', { ...values, partialManual: true });
-      if (result.error || !result.data?.saved) throw new Error(result.error || 'Manual test was not saved.');
-      onManualSaved(result.data.session);
-      setPartialManual({ ...values });
+  const submitManual = async (values: Partial<WaterParams>, manualSaveTime: string) => {
+    const result = await postJson<{ saved: boolean; session: SessionRecord }>('/api/readings', { ...values, partialManual: true, manualSaveTime });
+    if (result.error || !result.data?.saved || !result.data.session) {
+      throw new Error(result.error || 'Manual test was not saved.', { cause: result.status });
     }
+    const session = result.data.session;
+    onManualSaved(session);
+    const saved: Partial<WaterParams> = {};
+    for (const key of manualParameters) if (session[key] !== null && session[key] !== undefined) saved[key] = session[key];
+    setManualResult({ id: session.id, values: saved });
   };
 
   return (
     <main className={`farmer-analysis ${showManual ? "manual-mode" : "monitoring-mode"} mx-auto grid max-w-[1500px] grid-cols-1 gap-5 px-4 pb-8 sm:px-6`}>
       <div className="analysis-heading flex flex-wrap items-center justify-between gap-4 py-4">
-        <div><h1 className="text-2xl font-bold">{lang === "tl" ? "Kalagayan ng tubig" : "Water monitoring"}</h1><p className="mt-1 text-sm text-slate-600">{lang === "tl" ? "Mga sukat at susunod na hakbang para sa iyong palaisdaan." : "Measurements and next steps for your fishpen."}</p></div>
-        <div className="flex rounded-lg border border-slate-300 bg-white p-1" aria-label="Analysis mode">
-          {(["monitoring", "manual"] as const).map(value => <button key={value} aria-pressed={mode === value} onClick={() => setMode(value)} className={`min-h-11 rounded-md px-4 text-sm font-semibold ${mode === value ? "bg-teal-700 text-white" : "text-slate-600"}`}>{value === "monitoring" ? (lang === "tl" ? "Mga sensor" : "Monitoring") : (lang === "tl" ? "Manu-mano" : "Manual test")}</button>)}
+        <div><h1>{showManual ? (lang === 'tl' ? 'Pagsusuri' : 'Analysis') : (lang === 'tl' ? 'Pagsubaybay sa Tubig' : 'Water Monitoring')}</h1><p className="mt-1 text-slate-600">{showManual ? (lang === 'tl' ? 'Manu-manong pagsusuri at paghahambing ng isda.' : 'Manual water testing and fish suitability comparison.') : (lang === 'tl' ? 'Mga sukat, kalagayan ng sensor at rekomendasyon.' : 'Sensor readings, water conditions, and recommended actions.')}</p></div>
+        <div role="group" className={showManual ? 'manual-mode-switch' : 'flex rounded-lg border border-slate-300 bg-white p-1'} aria-label={lang === 'tl' ? 'Uri ng pagsusuri' : 'Analysis mode'}>
+          {[false, true].map(manual => <button key={String(manual)} aria-pressed={showManual === manual} onClick={() => { if (showManual !== manual) onModeChange(manual); }} className={`min-h-11 rounded-md px-3 text-sm font-semibold ${showManual === manual ? "bg-teal-700 text-white" : "text-slate-600"}`}>{showManual && (manual ? <Activity size={16} aria-hidden="true" /> : <Radio size={16} aria-hidden="true" />)}{manual ? (lang === 'tl' ? 'Manu-mano' : 'Manual test') : (lang === 'tl' ? 'Mga sensor' : 'Monitoring')}</button>)}
         </div>
       </div>
-      <aside className="analysis-inputs space-y-5">
-        {showManual ? <ManualWaterForm lang={lang} fish={fishDb} onAnalyze={submitManual} /> : <WaterParametersPanel
-          lang={lang}
-          params={params}
-          setParams={setParams}
-          sensorTelemetry={sensorTelemetry}
-          sensorFresh={sensorFresh}
-          showManual={false}
-          onAnalyze={() => {}}
-          text={text}
-        />}
-        <details className="card p-4"><summary className="cursor-pointer py-2 font-semibold">{lang === "tl" ? "Mga setting ng device at SMS" : "Device & SMS settings"}</summary><div className="mt-4 space-y-4"><ConnectEsp32 lang={lang} telemetry={sensorTelemetry} now={now} />{ownerId && <FishpenSmsSettings key={ownerId} ownerId={ownerId} lang={lang} />}</div></details>
-        {showManualResults && (
-          <>
-            <FeedingCard params={params} lang={lang} text={text} />
-            <button
-              className="w-full rounded-2xl border border-emerald-200 bg-emerald-100 px-4 py-3 text-sm font-black text-emerald-800 shadow-sm transition hover:bg-emerald-200"
-              onClick={onTestSms}
-            >
-              Test SMS Alert
-            </button>
-          </>
-        )}
-      </aside>
+      {!showManual && <LiveMonitoringOverview telemetry={sensorTelemetry} requestState={sensorState} lang={lang} now={now} onManual={() => onModeChange(true)} />}
+      {showManual && <aside className="analysis-inputs space-y-4">
+        <ManualWaterForm lang={lang} fish={fishDb} onAnalyze={submitManual} />
+        {showManualResults && <FeedingCard params={params} lang={lang} text={text} />}
+      </aside>}
 
       <section className="analysis-results min-w-0 space-y-5">
-        {!showManual && (sensorTelemetry ? <LiveSensorTrends telemetry={sensorTelemetry} readings={sensorTrend} lang={lang} now={now} /> : <section className="card p-5"><h2 className="text-lg font-bold">{lang === "tl" ? "Wala pang sukat ng tubig" : "No water measurement yet"}</h2><p className="mt-2 text-base text-slate-600">{lang === "tl" ? "Hindi pa matutukoy ang kalagayan ng tubig. Suriin ang sensor o gumamit ng manu-manong pagsusuri." : "Water condition is not yet known. Check your sensor or enter a manual water test."}</p></section>)}
-        {ownerId && !showManual && <RecommendedActions lang={lang} refreshKey={`${sensorTelemetry?.id || 0}:${sessions[0]?.id || ""}`} />}
-        {showManual && partialManual && <section className="card space-y-4 p-5" aria-live="polite">
-          <h2 className="text-lg font-bold">{lang === "tl" ? "Bahagyang manu-manong pagsusuri" : "Partial manual assessment"}</h2>
-          <p className="text-sm text-amber-800">{lang === "tl" ? "Batay lamang sa mga isinumiteng sukat. Hindi nito kinukumpirma na ligtas ang tubig." : "Based only on submitted measurements. This does not confirm overall water safety."}</p>
-          {parameterMeta.filter(meta => partialManual[meta.key] !== undefined).map(meta => {
-            const value = partialManual[meta.key]!;
-            const status = statusFor(meta.key, value);
-            return <div key={meta.key} className={`rounded-lg border p-4 ${levelClasses(status)}`}>
-              <h3 className="font-semibold">{meta.key === "ph" ? "pH" : meta.key === "dissolvedOxygen" ? "Dissolved oxygen" : meta.key}</h3>
-              <span className={measurementBadge(status)}>{lang === 'tl' ? (status === 'safe' ? 'Ligtas sa saklaw' : status === 'warning' ? 'Babala' : 'Kritikal') : status === 'safe' ? 'Safe' : status === 'warning' ? 'Warning' : 'Critical'}</span>
-              <p className="text-xl font-bold">{value} {meta.key === "temperature" ? "°C" : meta.key === "turbidity" ? "NTU" : meta.key === "ph" ? "" : "mg/L"}</p>
-              <p>{status === "safe" ? (lang === "tl" ? "Pasok sa saklaw para sa sukat na ito" : "Within range for this parameter") : localize(status === "critical" ? "Critical Water Condition" : "Water Quality Warning", lang)}</p>
-              {status !== "safe" && <p className="mt-2 text-sm">{lang === "tl" ? "Ulitin ang pagsukat, obserbahan ang isda, at kumonsulta sa BFAR/LGU kung may senyales ng stress." : "Recheck the measurement, observe the fish, and consult BFAR/LGU if fish show distress."}</p>}
-            </div>;
-          })}
-          <p className="text-sm text-slate-600">{lang === "tl" ? "Nai-save sa Session History. Hindi nasukat ang mga blangkong field. Walang SMS na ipinadala para sa bahagyang pagsusuring ito." : "Saved to Session History. Blank fields are unmeasured. No SMS was sent for this partial assessment."}</p>
-        </section>}
+        {ownerId && !showManual && <div id="farmer-recommended-actions"><RecommendedActions lang={lang} snapshot={sensorFresh ? sensorTelemetry : null} now={now} refreshKey={`${sensorTelemetry?.id || 0}:${sessions[0]?.id || ""}`} /></div>}
+        {showManual && partialManual && <ManualAssessment values={partialManual} lang={lang} />}
         {!showManual || partialManual ? null : showManualResults ? (
           <>
             <p className="rounded-lg border border-sky-200 bg-sky-50 p-3 text-sm font-semibold text-sky-900">{lang === "tl" ? "Manu-manong analysis ito, hindi galing sa ESP32." : "Manual analysis only. These values did not come from the ESP32."}</p>
@@ -1526,7 +1270,7 @@ function AnalysisPage({
             <SummaryBanner status={currentStatus} lang={lang} />
             <WhatToDoNow alerts={alerts} status={currentStatus} lang={lang} />
             <QuickStatusCards lang={lang} params={params} />
-            {sessions.length > 0 && <DashboardTrends params={params} sessions={sessions} text={text} />}
+            {sessions.length > 0 && <DashboardTrends sessions={sessions} text={text} lang={lang} />}
             <BestMatchCard selectedScore={selectedScore} selectedRank={selectedRank} best={best} lang={lang} text={text} />
             <CollapsiblePanel
               title={lang === "tl" ? "Detalyadong Parameter Analysis" : "Detailed Parameter Analysis"}
@@ -1562,7 +1306,7 @@ function AnalysisPage({
       </section>
 
       {!showManual && sensorTelemetry ? (
-        <aside className="card h-fit space-y-3 p-5">
+        <aside className="analysis-comparison card h-fit space-y-3 p-5">
           <h2 className="font-black">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
           <div className="flex flex-wrap items-center gap-2"><span className={`rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(sensorMeasuredStatus(sensorTelemetry))}`}>{statusText(sensorMeasuredStatus(sensorTelemetry), lang)}</span><span className="text-xs text-slate-600">{sensorTelemetry.turbidityNtu === null ? (lang === 'tl' ? 'Bahagyang pagsusuri; walang DO reading at hindi kasama ang tantiya sa turbidity.' : 'Partial assessment; DO is missing and estimated turbidity is excluded.') : (lang === 'tl' ? 'Bahagyang pagsusuri; walang DO reading.' : 'Partial assessment; DO is missing.')}</span></div>
           {!sensorFresh && <p className="rounded-md bg-amber-50 p-3 text-sm font-semibold text-amber-900">{lang === 'tl' ? 'Batay sa huling sukat, hindi live. Kumuha ng bagong sukat bago magpasya.' : 'Based on the last reading, not live. Obtain fresh measurements before making decisions.'}</p>}
@@ -1601,47 +1345,64 @@ function AnalysisPage({
           })()}
         </aside>
       ) : showManual && partialManual ? (
-        <aside className="card h-fit space-y-4 p-5">
-          <h2 className="text-lg font-bold">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
-          <p className="text-sm text-amber-800">{lang === "tl" ? "Batay lamang sa nasukat; hindi kumpletong rekomendasyon sa pag-aalaga." : "Measured parameters only; not a complete stocking recommendation."}</p>
+        <section className="analysis-comparison card manual-ranking h-fit min-w-0 p-4 sm:p-5" aria-labelledby="manual-ranking-heading">
+          <h2 id="manual-ranking-heading" className="text-lg font-bold">{lang === "tl" ? "Paunang ranggo ng mga isda" : "Fish suitability ranking"}</h2>
           {(() => {
             const ranked = rankPartialFish(fishDb.filter(fish => activeSpecies.some(species => species.id === fish.id)), partialManual);
             const measuredCount = Object.values(partialManual).filter(value => value !== null && Number.isFinite(value)).length;
             const tied = (a: typeof ranked[number], b: typeof ranked[number]) => a.matches.length === b.matches.length && Math.abs(a.distance - b.distance) < 0.000001;
             const leaders = ranked.filter(item => ranked[0] && tied(item, ranked[0]));
+            const noMatch = leaders.length > 0 && leaders[0].matches.length === 0;
             return <>
-              {leaders.length > 0 && <p className="border-l-4 border-teal-600 bg-teal-50 p-3 text-sm font-semibold text-teal-950">
+              {noMatch && <div className="manual-ranking-note text-sm text-slate-600">
+                <AlertTriangle size={16} aria-hidden="true" />
+                <p className="font-semibold">{lang === 'tl' ? 'Walang natukoy na angkop na isda batay sa mga nasukat' : 'No suitable fish identified from the measured parameters'}</p>
+              </div>}
+              {!noMatch && leaders.length > 0 && <p className="border-l-4 border-teal-600 bg-teal-50 p-3 text-sm font-semibold text-teal-950">
                 {lang === 'tl' ? `${leaders.length > 1 ? 'Magkakatabla sa unang puwesto' : 'Pinakamalapit sa nasukat'}: ${leaders.map(item => item.fish.name).join(', ')}. ${leaders[0].matches.length} sa ${measuredCount} sukat ang pasok. Hindi pa ito kumpirmadong ligtas na ilagay sa fishpen.` : `${leaders.length > 1 ? 'Tied for top measured fit' : 'Top measured fit'}: ${leaders.map(item => item.fish.name).join(', ')}. ${leaders[0].matches.length} of ${measuredCount} measurements in range. This does not confirm the fish is safe to stock.`}
               </p>}
-              {ranked.map((item, index) => {
+              {!leaders.length && <p className="text-sm text-slate-600">{lang === 'tl' ? 'Walang species na maihahambing sa ngayon.' : 'No species are available for comparison.'}</p>}
+              <div className="manual-fish-list">{ranked.map((item, index) => {
                 const rank = ranked.findIndex(other => tied(other, item)) + 1;
-                return <section key={item.fish.id} className="border-t border-slate-200 pt-3">
-                  <div className="flex items-center gap-3"><span className="w-6 shrink-0 text-sm font-bold text-teal-800">#{rank}</span><img src={fishImageSrc(item.fish.id)} alt="" className="h-12 w-12 rounded-md object-cover" /><h3 className="font-bold">{item.fish.name}</h3></div>
-                  <p className="mt-2 text-sm font-semibold">{lang === 'tl' ? `${item.matches.length} sa ${measuredCount} sukat ang pasok` : `${item.matches.length} of ${measuredCount} measurements in range`}</p>
-                  {item.checks.map(check => <p key={check.key} className="mt-1 text-sm">{check.key === 'ph' ? 'pH' : check.key === 'temperature' ? (lang === 'tl' ? 'Temperatura' : 'Temperature') : check.key === 'dissolvedOxygen' ? 'Dissolved oxygen' : check.key === 'turbidity' ? (lang === 'tl' ? 'Labo ng tubig' : 'Turbidity') : 'Ammonia'}: {check.result === 'within' ? (lang === 'tl' ? 'Pasok sa saklaw' : 'Within range') : check.result === 'unknown' ? (lang === 'tl' ? 'Walang beripikadong saklaw' : 'No verified range') : (lang === 'tl' ? 'Labas sa saklaw' : 'Outside range')} ({check.min}–{check.max})</p>)}
-                  {index > 0 && tied(item, ranked[index - 1]) && <p className="mt-2 text-xs text-slate-600">{lang === 'tl' ? 'Tabla sa nasa itaas; nakaayos ayon sa pangalan.' : 'Tied with the fish above; listed alphabetically.'}</p>}
-                </section>;
-              })}
+                const fit = item.matches.length === 0 ? 'none' : item.matches.length === measuredCount ? 'measured' : 'partial';
+                return <details key={`${manualResult?.id}:${item.fish.id}`} className="manual-fish-row manual-disclosure">
+                  <summary>
+                    <strong className="manual-fish-name"><span className="sr-only">#{rank} </span>{item.fish.name}</strong>
+                    <span className="manual-fish-count">{lang === 'tl' ? `${item.matches.length} sa ${measuredCount} sukat ang pasok` : `${item.matches.length} of ${measuredCount} measurements in range`}</span>
+                    <span className="manual-fish-fit" data-fit={fit}>{fit === 'none' ? (lang === 'tl' ? 'Walang pasok' : 'No match') :
+                      fit === 'partial' ? (lang === 'tl' ? 'Bahagyang tugma' : 'Partial match') : (lang === 'tl' ? 'Pasok ang nasukat' : 'Measured fit')}</span>
+                    <ChevronDown size={17} className="manual-disclosure-chevron" aria-hidden="true" />
+                  </summary>
+                  <div className="manual-disclosure-content text-sm">
+                    <dl className="space-y-1">
+                      {item.checks.map(check => {
+                        const label = parameterMeta.find(meta => meta.key === check.key)?.label[lang] ?? check.key;
+                        const unit = check.key === 'temperature' ? ' °C' : check.key === 'turbidity' ? ' NTU' : check.key === 'ph' ? '' : ' mg/L';
+                        const within = check.result === 'within';
+                        const known = check.result !== 'unknown';
+                        return <div key={check.key} className="flex flex-wrap justify-between gap-x-2">
+                          <dt className="font-medium">{label}: {check.value}{unit}</dt>
+                          <dd className="text-slate-700">{!known ? (lang === 'tl' ? 'Walang beripikadong saklaw' : 'No verified range') : <>{within ? (lang === 'tl' ? 'Pasok sa saklaw' : 'Within range') : (lang === 'tl' ? 'Labas sa saklaw' : 'Outside range')} ({check.min}–{check.max}{unit})</>}</dd>
+                        </div>;
+                      })}
+                    </dl>
+                    {noMatch && <p className="mt-2 text-xs text-slate-600">{lang === 'tl' ? 'Batay sa lapit sa saklaw ang ranggo, hindi rekomendasyon na mag-stock.' : 'Ranked by closeness to range, not recommended for stocking.'}</p>}
+                    {index > 0 && tied(item, ranked[index - 1]) && <p className="mt-2 text-xs text-slate-600">{lang === 'tl' ? 'Tabla sa nasa itaas; nakaayos ayon sa pangalan.' : 'Tied with the fish above; listed alphabetically.'}</p>}
+                  </div>
+                </details>;
+              })}</div>
             </>;
           })()}
-        </aside>
+        </section>
       ) : showManual && showManualResults ? (
-        <>
+        <aside className="analysis-comparison space-y-3">
           <FishRankingPanel scores={scores} selectedId={selectedScore.fish.id} onSelectFish={onSelectFish} lang={lang} text={text} />
           <p className="text-sm">Mamali: {lang === "tl" ? "hinihintay ang beripikadong saklaw" : "threshold validation pending"}.</p>
-        </>
-      ) : (
-        <aside className="card h-fit p-6">
-          <h2 className="flex items-center gap-2 text-lg font-black text-slate-950">
-            <Fish className="text-teal-600" size={21} /> Fish Suitability Ranking
-          </h2>
-          <p className="mt-3 text-sm font-medium leading-6 text-slate-600">
-            {sensorFresh
-              ? "Fish comparison is paused until the turbidity sensor is submerged and calibrated. A signal in air is not a valid water measurement."
-              : "No fish ranking yet. Enter at least one measured value and run a manual analysis."}
-          </p>
         </aside>
-      )}
+      ) : null}
+      {showManual && manualResult && <ManualRecommendedActions key={manualResult.id} values={manualResult.values} lang={lang} />}
+      {!showManual && <WaterQualityTrends readings={sensorTrend} state={trendState} now={now} lang={lang} onRetry={retryTrend}
+        connection={sensorState === 'loading' ? 'checking' : sensorState === 'error' ? 'unverified' : !sensorTelemetry ? 'no-upload' : sensorConnectionState(sensorTelemetry, now)} />}
     </main>
   );
 }
@@ -1668,78 +1429,48 @@ function AnalysisEmptyState({ sensorAnalysis, hasSensor }: { sensorAnalysis: Sen
   );
 }
 
-function LiveSensorTrends({ telemetry, readings, lang, now }: { telemetry: SensorTelemetry; readings: SensorTelemetry[]; lang: Lang; now: number }) {
-  const value = sensorTurbidityValue(telemetry);
-  const level = statusFor("turbidity", value);
-  const calibrated = telemetry.turbidityNtu !== null;
-  const measured = sensorMeasuredStatus(telemetry);
-  const chart = readings.map((reading) => ({
-    time: new Date(reading.recordedAt).toLocaleTimeString("en-PH"),
-    // Show the same provisional value used in Water Parameters until the probe is calibrated.
-    turbidity: chartValue('turbidity', reading.turbidityNtu),
-    temperature: chartValue('temperature', reading.temperatureC),
-    ph: chartValue('ph', reading.ph)
-  }));
-  const connectionState = sensorConnectionState(telemetry, now);
-  const live = connectionState === "live";
-  return (
-    <section className="card p-4 sm:p-5" aria-live="polite">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div>
-          <h2 className="flex items-center gap-2 text-lg font-black text-slate-950"><Activity size={20} className="text-teal-600" /> {lang === "tl" ? "Live na Trend ng Kalidad ng Tubig" : "Live Water Quality Trends"}</h2>
-          <p className="mt-1 text-sm text-slate-600">{lang === "tl" ? "Pinagmulan" : "Source"}: {telemetry.deviceName} · Device #{telemetry.deviceId}</p>
-          <p className="text-xs text-slate-500">{lang === "tl" ? "Huling sukat" : "Last measurement"}: {new Date(telemetry.recordedAt).toLocaleString("en-PH", { timeZone: "Asia/Manila" })} (PHT)</p>
-        </div>
-        <div className="flex flex-wrap items-center gap-2"><span className={`rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(measured)}`}>{statusText(measured, lang)}</span><span className={`rounded-full px-3 py-1 text-xs font-black ${live ? "bg-emerald-100 text-emerald-800" : connectionState === "stale" ? "bg-amber-100 text-amber-800" : "bg-slate-200 text-slate-700"}`}>{connectionState === "live" ? "Live" : connectionState === "stale" ? (lang === "tl" ? "Luma" : "Stale") : "Offline"}</span></div>
-      </div>
-      <p className="mt-2 text-xs text-slate-600">{telemetry.turbidityNtu === null ? (lang === 'tl' ? 'Status ng mga nasukat lamang. Walang DO reading at hindi kasama ang tantiya sa turbidity; hindi pa matitiyak ang kabuuang kaligtasan ng tubig.' : 'Measured values only. DO is missing and estimated turbidity is excluded; overall water safety is not confirmed.') : (lang === 'tl' ? 'Status ng mga nasukat lamang. Walang DO reading; hindi pa matitiyak ang kabuuang kaligtasan ng tubig.' : 'Measured values only. DO is missing; overall water safety is not confirmed.')}</p>
-      <div className="mt-4 grid gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4"><p className="text-xs font-bold text-slate-500">pH</p><strong className="mt-1 block text-2xl text-slate-950">{telemetry.ph === null ? "--" : telemetry.ph.toFixed(2)}</strong>{telemetry.ph !== null && <span className={`mt-1 inline-block rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(statusFor('ph', telemetry.ph))}`}>{shortStatusText(statusFor('ph', telemetry.ph), lang)}</span>}<p className="mt-1 text-xs text-slate-500">{telemetry.ph === null ? (lang === "tl" ? "Walang pH na natanggap mula sa device" : "No pH sent by device") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p></div>
-        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-          <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Temperatura" : "Temperature"}</p>
-          <strong className="mt-1 block text-2xl text-slate-950">{telemetry.temperatureC === null ? "--" : `${telemetry.temperatureC.toFixed(1)} °C`}</strong>
-          {telemetry.temperatureC !== null && <span className={`mt-1 inline-block rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(statusFor('temperature', telemetry.temperatureC))}`}>{shortStatusText(statusFor('temperature', telemetry.temperatureC), lang)}</span>}
-          <p className="mt-1 text-xs text-slate-500">{telemetry.temperatureC === null ? (lang === "tl" ? "Walang sukat. Ipasuri ang sensor sa administrator." : "No measurement. Ask the administrator to check the sensor.") : live ? "Live" : (lang === "tl" ? "Huling sukat" : "Last reading")}</p>
-        </div>
-        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4">
-          <p className="text-xs font-bold text-slate-500">{lang === "tl" ? "Labo ng tubig" : "Turbidity"}</p>
-          <strong className="mt-1 block text-2xl text-slate-950">{calibrated ? "" : "~"}{value} <span className="text-base">NTU</span></strong>
-          {calibrated && <span className={`mt-1 inline-block rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(level)}`}>{shortStatusText(level, lang)}</span>}
-        </div>
-      </div>
-      {!live && <p className="mt-2 rounded-lg bg-amber-50 p-2 text-xs font-bold text-amber-900">{lang === "tl" ? "Hindi live ang sukat na ito. Tingnan ang koneksyon ng device o makipag-ugnayan sa administrator." : "This reading is not live. Check device connectivity or contact the administrator."}</p>}
-      <div className="mt-4 h-40 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chart}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-            <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={25} />
-            <YAxis domain={[0, 500]} tick={{ fontSize: 10 }} width={34} />
-            <Tooltip />
-             <Line type="monotone" dataKey="turbidity" name="Verified turbidity (NTU)" stroke="#0d9488" strokeWidth={3} dot={false} connectNulls={false} isAnimationActive={false} />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>
-      <p className="mt-2 text-xs text-slate-600">{lang === 'tl' ? 'Turbidity (NTU): walang beripikadong opisyal na LLDA limit. Walang guideline line.' : 'Turbidity (NTU): no verified official LLDA limit; no guideline line.'}</p>
-      {chart.some((point) => point.temperature !== null) && <div className="mt-3 h-40 w-full">
-        <ResponsiveContainer width="100%" height="100%">
-          <LineChart data={chart}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" />
-            <XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={25} />
-            <YAxis domain={[10, 40]} tick={{ fontSize: 10 }} width={34} />
-            <Tooltip />
-             <ReferenceLine y={25} stroke="#334155" strokeDasharray="4 4" />
-             <ReferenceLine y={31} stroke="#334155" strokeDasharray="4 4" />
-            <Line type="monotone" dataKey="temperature" name="Temperature (°C)" stroke="#ea580c" strokeWidth={3} dot={false} connectNulls={false} isAnimationActive={false} />
-          </LineChart>
-        </ResponsiveContainer>
-      </div>}
-      <p className="mt-2 text-xs text-slate-600">Class C freshwater temperature: 25–31 °C · <a className="underline" href={classCUrl} target="_blank" rel="noreferrer">{classCSource}</a>. {lang === 'tl' ? 'Gabay pangkapaligiran, hindi limit ng isda o Critical alert.' : 'Environmental guideline, not fish-fit or Critical alert threshold.'}</p>
-      {chart.some((point) => point.ph !== null) && <div className="mt-3 h-40 w-full"><ResponsiveContainer width="100%" height="100%"><LineChart data={chart}><CartesianGrid strokeDasharray="3 3" stroke="#e2e8f0" /><XAxis dataKey="time" tick={{ fontSize: 10 }} minTickGap={25} /><YAxis domain={[0, 14]} tick={{ fontSize: 10 }} width={34} /><Tooltip /><ReferenceLine y={6.5} stroke="#334155" strokeDasharray="4 4" /><ReferenceLine y={9} stroke="#334155" strokeDasharray="4 4" /><Line type="monotone" dataKey="ph" name="pH" stroke="#7c3aed" strokeWidth={3} dot={false} connectNulls={false} isAnimationActive={false} /></LineChart></ResponsiveContainer></div>}
-      <p className="mt-2 text-xs text-slate-600">Class C freshwater pH: 6.5–9.0 · <a className="underline" href={classCUrl} target="_blank" rel="noreferrer">{classCSource}</a>. {lang === 'tl' ? 'Gabay pangkapaligiran, hindi limit ng isda o Critical alert.' : 'Environmental guideline, not fish-fit or Critical alert threshold.'}</p>
-      <p className="mt-2 text-xs text-slate-600">{lang === 'tl' ? 'Dissolved oxygen (mg/L): walang konektadong DO sensor; walang sukat na ipapakita. Class C minimum ay 5 mg/L.' : 'Dissolved oxygen (mg/L): no connected DO sensor, so no measured series. Class C minimum is 5 mg/L.'}</p>
-      <p className="mt-2 text-xs font-semibold text-slate-600">{lang === "tl" ? "Ang walang reading ay hindi zero. Hindi sapat ang bahagyang sensor data upang matiyak ang pangkalahatang kaligtasan ng tubig." : "Missing readings are not zero. Partial sensor data cannot confirm overall water safety."}</p>
-    </section>
-  );
+function LiveMonitoringOverview({ telemetry, requestState, lang, now, onManual }: { telemetry: SensorTelemetry | null; requestState: RequestState; lang: Lang; now: number; onManual: () => void }) {
+  const tl = lang === 'tl';
+  const connection = sensorConnectionState(telemetry, now);
+  const live = connection === 'live';
+  const measured = telemetry ? sensorMeasuredStatus(telemetry) : 'partial';
+  const lastUpload = telemetry ? Date.parse(telemetry.receivedAt || telemetry.recordedAt) : NaN;
+  const online = Number.isFinite(lastUpload) && Math.max(0, now - lastUpload) < SENSOR_OFFLINE_MS;
+  const connectionLabel = requestState === 'loading' ? (tl ? 'Sinusuri...' : 'Checking...') : requestState === 'error' ? (tl ? 'Hindi makumpirma' : 'Unable to verify') : telemetry ? (online ? 'Online' : 'Offline') : (tl ? 'Wala pang upload' : 'No upload yet');
+  const timestampUnknown = telemetry?.sampledAt === null;
+  const freshness = timestampUnknown ? (tl ? 'Hindi alam ang oras ng sukat' : 'Sample time unknown') : live && requestState !== 'error' ? 'Live' : telemetry ? (tl ? 'Lumang sukat' : 'Stale') : (tl ? 'Wala pang sukat' : 'No measurement');
+  const partialSafe = measured === 'safe';
+  const assessment = live && requestState === 'ready' ? (partialSafe ? (tl ? 'Pasok ang mga nasukat' : 'Measured values in range') : statusText(measured, lang)) : (tl ? 'Walang live na pagtatasa' : 'No live assessment');
+  const hasAssessment = live && requestState === 'ready' && measured !== 'partial';
+  const hasTurbiditySignal = telemetry !== null && Number.isFinite(telemetry.rawValue) && telemetry.rawValue >= 0 && telemetry.rawValue <= 4095;
+  const cards = [
+    { label: 'pH', key: 'ph', value: telemetry?.ph ?? null, unit: '', decimals: 2, Icon: Droplets },
+    { label: tl ? 'Temperatura' : 'Temperature', key: 'temperature', value: telemetry?.temperatureC ?? null, unit: ' °C', decimals: 1, Icon: Thermometer },
+    { label: 'Dissolved oxygen', key: 'dissolvedOxygen', value: null, unit: ' mg/L', decimals: 1, Icon: Droplets },
+    { label: tl ? 'Labo ng tubig' : 'Turbidity', key: 'turbidity', value: telemetry && (telemetry.turbidityNtu !== null || hasTurbiditySignal) ? sensorTurbidityValue(telemetry) : null, unit: ' NTU', decimals: 0, Icon: Droplets, estimated: telemetry?.turbidityNtu === null },
+  ] as const;
+  const tone = live && requestState === 'ready' && measured !== 'partial' ? measured : 'neutral';
+  const ConditionIcon = tone === 'safe' ? Activity : tone === 'neutral' ? Activity : AlertTriangle;
+  return <section className="monitor-overview" aria-label={tl ? 'Kasalukuyang mga sukat' : 'Current measurements'}>
+    <div className="monitor-summary">
+      <div className={`monitor-summary-card monitor-condition-${tone}`}><ConditionIcon size={28} aria-hidden="true" /><div><h2>{tl ? 'Kalagayan ng tubig' : 'Water Condition'}</h2><strong>{assessment}</strong><p>{hasAssessment ? (tl ? 'Bahagyang pagtatasa' : 'Partial assessment') : (tl ? 'Walang napapanahong sukat' : 'No current measurements')}</p></div></div>
+      <div className="monitor-summary-card"><CalendarDays size={27} aria-hidden="true" /><div><h2>{timestampUnknown ? (tl ? 'Huling natanggap' : 'Last Received') : (tl ? 'Huling sukat' : 'Last Measurement')}</h2><p>{telemetry && Number.isFinite(Date.parse(telemetry.recordedAt)) ? `${new Date(telemetry.recordedAt).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })} (PHT)` : '—'}</p><p className="font-semibold">{freshness}</p></div></div>
+      <div className="monitor-summary-card"><Radio size={27} aria-hidden="true" /><div><h2>{tl ? 'Kalagayan ng device' : 'Device Status'}</h2><p>{telemetry ? `${telemetry.deviceName} · #${telemetry.deviceId} · ` : ''}{connectionLabel}</p></div></div>
+    </div>
+    <div className="monitor-measurements">
+      {cards.map(card => {
+        const { label, key, value, unit, decimals, Icon } = card;
+        const estimated = 'estimated' in card && card.estimated;
+        const valid = typeof value === 'number' && Number.isFinite(value) && (estimated || chartValue(key, value) !== null);
+        const status = valid && !estimated && hasAssessment ? statusFor(key, value) : null;
+        return <article className="monitor-metric" key={key}><h2><Icon size={19} aria-hidden="true" />{label}</h2><strong>{!valid ? '—' : `${estimated ? '~' : ''}${key === 'turbidity' ? value : value.toFixed(decimals)}${unit}`}</strong>
+          {status && <span className={measurementBadge(status)}>{shortStatusText(status, lang)}</span>}
+          <p>{value === null ? (tl ? 'Walang sukat' : 'Missing') : !valid ? (tl ? 'Hindi wastong sukat' : 'Invalid reading') : estimated ? `${tl ? 'Tantiya' : 'Estimated'} · ${freshness}` : freshness}</p></article>;
+      })}
+      <article className={`monitor-metric monitor-priority ${hasAssessment ? '' : 'monitor-priority-neutral'}`}><h2>{hasAssessment ? <AlertTriangle size={19} aria-hidden="true" /> : <Activity size={19} aria-hidden="true" />}{tl ? 'Susunod na Hakbang' : 'Next Step'}</h2><p>{!hasAssessment ? (tl ? 'Walang kasalukuyang sukat mula sa sensor. Itala ang manu-manong sukat kung mayroon.' : 'No current sensor assessment. Record a manual measurement when available.') : tl ? 'Tingnan ang gabay para sa mga nasukat.' : 'Review the guidance for your measured values.'}</p>{hasAssessment ? <a href="#farmer-recommended-actions">{tl ? 'Tingnan ang mga hakbang' : 'View sensor recommendations'}</a> : <button className="soft-button mt-2" onClick={onManual}>{tl ? 'Manu-manong pagsusuri' : 'Open manual test'}</button>}</article>
+    </div>
+    <p className="text-sm text-slate-600">{tl ? 'Ang nawawalang sukat ay hindi zero. Hindi sapat ang bahagyang sukat para masabing ligtas ang buong tubig.' : 'Missing readings are not zero. Partial readings do not confirm overall water safety.'}</p>
+  </section>;
 }
 
 function turbidityMatches(value: number, fish: FishSpecies[]) {
@@ -1949,83 +1680,6 @@ function CollapsiblePanel({
   );
 }
 
-function WaterParametersPanel({
-  lang,
-  params,
-  setParams,
-  sensorTelemetry,
-  sensorFresh,
-  showManual,
-  onAnalyze,
-  text
-}: {
-  lang: Lang;
-  params: WaterParams;
-  setParams: (params: WaterParams) => void;
-  sensorTelemetry: SensorTelemetry | null;
-  sensorFresh: boolean;
-  showManual: boolean;
-  onAnalyze: () => void;
-  text: typeof ui.en;
-}) {
-  if (!showManual && !sensorTelemetry) return <section className="card p-5"><h2 className="mb-4 text-lg font-bold">{text.waterParameters}</h2><dl className="divide-y divide-slate-100">{parameterMeta.map(meta => <div key={meta.key} className="flex flex-wrap justify-between gap-2 py-3 text-sm"><dt>{meta.label[lang]}</dt><dd className="text-slate-500">{lang === "tl" ? "Wala pang sukat" : "No measurement"}</dd></div>)}</dl></section>;
-  return (
-    <section className="card h-fit p-4 sm:p-5">
-      <h2 className="mb-5 flex items-center gap-2 text-lg font-black text-slate-950">
-        <Droplets className="text-teal-600" size={21} /> {text.waterParameters}
-      </h2>
-      {sensorTelemetry && !showManual && (
-        <div className="space-y-3 text-sm">
-          <p className={`rounded-lg p-3 font-bold ${sensorFresh ? "bg-teal-50 text-teal-800" : "bg-amber-50 text-amber-900"}`}>{sensorFresh ? (lang === "tl" ? "Awtomatikong nag-a-update ang mga sukat ng sensor." : "Sensor measurements update automatically.") : (lang === "tl" ? "Walang bagong reading. Ang value sa ibaba ay huling natanggap lamang." : "No recent reading. The values below are the last received, not live.")}</p>
-          {parameterMeta.filter(meta => meta.key !== "ammonia").map((meta) => (
-            <div key={meta.key} className="flex items-center justify-between border-b border-slate-100 py-2">
-              <span className="font-semibold text-slate-700">{meta.label[lang]}</span>
-              <span className={meta.key === "turbidity" || meta.key === "temperature" || meta.key === "ph" ? "font-black text-teal-700" : "font-semibold text-slate-500"}>{meta.key === "turbidity" ? `${sensorTelemetry.turbidityNtu === null ? "~" : ""}${sensorTurbidityValue(sensorTelemetry)} NTU${sensorTelemetry.turbidityNtu === null ? " (est.)" : ""}` : meta.key === "temperature" && sensorTelemetry.temperatureC !== null ? `${sensorTelemetry.temperatureC.toFixed(1)} °C` : meta.key === "ph" && sensorTelemetry.ph !== null ? sensorTelemetry.ph.toFixed(2) : (lang === "tl" ? "Walang sensor reading" : "No sensor reading")}</span>
-            </div>
-          ))}
-          <p className="text-xs text-slate-600">{lang === "tl" ? "Ang dash ay hindi zero. Wala pang nakakabit na sensor para sa ibang parameter." : "Missing is not zero. No connected sensor has measured the other parameters."}</p>
-        </div>
-      )}
-      {sensorTelemetry && !showManual ? null : <>
-      <p className="mb-4 text-xs font-semibold leading-5 text-slate-600">{lang === "tl" ? "Manu-manong input ang mga slider sa ibaba. Halimbawa lamang ang panimulang value; hindi ito galing sa sensor. Ipasok ang aktuwal na sukat bago mag-full analysis." : "The sliders below are manual inputs. Starting values are examples, not sensor measurements. Enter actual measurements before a full analysis."}</p>
-      <div className="space-y-5 sm:space-y-6">
-        {parameterMeta.filter(meta => meta.key !== "ammonia").map((meta) => {
-          const status = statusFor(meta.key, params[meta.key]);
-          const isSafe = status === "safe";
-          return (
-            <label key={meta.key} className="block">
-              <div className="mb-2 flex items-center justify-between gap-3">
-                <span className="text-sm font-bold text-slate-800">{meta.label[lang]}</span>
-                <span className="inline-flex items-center gap-1 text-sm font-black text-teal-700">
-                  {valueText(meta.key, params[meta.key])}{meta.unit}
-                  {isSafe ? <Check size={16} className="text-emerald-500" /> : <X size={16} className="text-red-500" />}
-                </span>
-              </div>
-              <input
-                className="range-rainbow"
-                type="range"
-                min={meta.min}
-                max={meta.max}
-                step={meta.step}
-                value={params[meta.key]}
-                onChange={(event) => setParams({ ...params, [meta.key]: Number(event.target.value) })}
-              />
-              <div className="mt-2 flex items-center justify-between text-xs font-semibold text-slate-500">
-                <span>{meta.min}{meta.unit}</span>
-                <span className="text-teal-700">safe {meta.safe}</span>
-                <span>{meta.max}{meta.unit}</span>
-              </div>
-            </label>
-          );
-        })}
-      </div>
-      <button className="primary-button mt-5 w-full py-3.5 sm:mt-6 sm:py-4" onClick={onAnalyze}>
-        <Fish size={18} /> {text.analyze}
-      </button>
-      </>}
-    </section>
-  );
-}
 
 
 function AlertBanner({ alert, lang }: { alert: AlertItem; lang: Lang }) {
@@ -2428,14 +2082,15 @@ function FishRankingPanel({
 }
 
 function DashboardTrends({
-  params,
   sessions,
-  text
+  text,
+  lang
 }: {
-  params: WaterParams;
   sessions: SessionRecord[];
   text: typeof ui.en;
+  lang: Lang;
 }) {
+  const tl = lang === 'tl';
   const chartData = [...sessions].reverse();
   const data = chartData.map(row => ({ ...row,
     ph: chartValue('ph', row.ph), temperature: chartValue('temperature', row.temperature),
@@ -2444,40 +2099,36 @@ function DashboardTrends({
   }));
   const trendCards = [
     { key: "ph", label: "pH", color: "#0d9488", domain: [4, 11] },
-    { key: "temperature", label: "Temp (°C)", color: "#f59e0b", domain: [10, 40] },
+    { key: "temperature", label: tl ? 'Temperatura (°C)' : 'Temperature (°C)', color: "#b45b13", domain: [10, 40] },
     { key: "dissolvedOxygen", label: "DO (mg/L)", color: "#2563eb", domain: [0, 15] },
-    { key: "turbidity", label: "Turbidity (NTU)", color: "#8b5cf6", domain: [0, 500] },
+    { key: "turbidity", label: tl ? 'Labo ng tubig (NTU)' : 'Turbidity (NTU)', color: "#736346", domain: [0, 500] },
   ] as const;
 
   return (
-    <section className="card p-4 sm:p-5">
+    <section aria-label={text.trendTitle}>
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
           <h2 className="flex items-center gap-2 text-xl font-black text-slate-950">
             <BarChart3 className="text-teal-600" size={22} /> {text.trendTitle}
           </h2>
           <p className="mt-1 text-sm font-semibold text-slate-500">
-            {sessions.length ? `Last ${sessions.length} readings saved from the dashboard` : "Run Analyze Water Quality to start building trend history"}
+            {tl ? `${sessions.length} na naitalang sukat` : `${sessions.length} saved readings`}
           </p>
         </div>
-        <span className="rounded-full bg-teal-50 px-3 py-1.5 text-xs font-black text-teal-700 ring-1 ring-teal-100">
-          Dashboard Trends
-        </span>
       </div>
 
-      <div className="mt-4 flex snap-x gap-3 overflow-x-auto pb-2 md:grid md:grid-cols-2 md:overflow-visible md:pb-0 2xl:grid-cols-5">
+      <div className="mt-4 grid gap-3 xl:grid-cols-2">
         {trendCards.map((card) => (
-          <article key={card.key} className="min-w-[230px] snap-start rounded-2xl border border-slate-200 bg-white p-3 shadow-sm sm:min-w-[260px] sm:p-4 md:min-w-0">
+          <article key={card.key} className="min-w-0 rounded-lg border border-slate-200 bg-white p-3 sm:p-4">
             <div className="flex items-center justify-between gap-3">
               <h3 className="text-sm font-black uppercase tracking-wide text-slate-600">{card.label}</h3>
-               <span className="text-sm font-black text-slate-950">{chartValue(card.key, params[card.key]) === null ? '—' : valueText(card.key, params[card.key])}</span>
             </div>
-            <div className="mt-3 h-28 sm:h-32">
+            {data.some(row => row[card.key] !== null) ? <div className="mt-3 h-32 sm:h-40">
               <ResponsiveContainer width="100%" height="100%">
                 <LineChart data={data}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#eef2f7" />
                   <XAxis dataKey="timestamp" hide />
-                  <YAxis domain={card.domain} hide />
+                  <YAxis domain={card.domain} width={34} tick={{ fontSize: 11 }} />
                   <Tooltip />
                    {classCGuidelines[card.key]?.min !== undefined && <ReferenceLine y={classCGuidelines[card.key]?.min} stroke="#334155" strokeDasharray="4 4" />}
                    {classCGuidelines[card.key]?.max !== undefined && <ReferenceLine y={classCGuidelines[card.key]?.max} stroke="#334155" strokeDasharray="4 4" />}
@@ -2492,7 +2143,7 @@ function DashboardTrends({
                   />
                 </LineChart>
               </ResponsiveContainer>
-            </div>
+            </div> : <p className="my-5 text-sm text-slate-600">{tl ? 'Walang wastong naitalang sukat.' : 'No valid saved measurements.'}</p>}
              <p className="mt-2 text-xs text-slate-600">{card.key === 'turbidity' ? 'No verified official LLDA NTU limit; no guideline line.' : `Dashed: Class C freshwater ${classCGuidelines[card.key]?.min}${classCGuidelines[card.key]?.max !== undefined ? `–${classCGuidelines[card.key]?.max}` : ' minimum'} ${classCGuidelines[card.key]?.unit}.`}</p>
           </article>
         ))}
@@ -2507,13 +2158,24 @@ function historyMeasurements(row: SessionRecord): [string, string | number | nul
     ["pH", row.ph],
     ["Temperature", row.temperature == null ? "--" : `${row.temperature} °C`],
     ["DO", row.dissolvedOxygen == null ? "--" : `${row.dissolvedOxygen} mg/L`],
-    ["Turbidity", row.turbidity == null ? "--" : `${row.turbidity} NTU`]
+    ["Turbidity", row.turbidity == null ? "--" : `${row.turbidityEstimated ? '~' : ''}${row.turbidity} NTU${row.turbidityEstimated ? ' (est.)' : ''}`],
+    ["Ammonia", row.ammonia == null ? "--" : `${row.ammonia} mg/L`]
   ];
 }
 
-function HistoryPage({ sessions, onExport, text, lang, fishDb }: { sessions: SessionRecord[]; onExport: () => void; text: typeof ui.en; lang: Lang; fishDb: FishSpecies[] }) {
+function HistoryPage({ sessions, requestState, onRetry, onExport, text, lang, fishDb }: { sessions: SessionRecord[]; requestState: RequestState; onRetry: () => void; onExport: () => void; text: typeof ui.en; lang: Lang; fishDb: FishSpecies[] }) {
+  const tl = lang === 'tl';
   const [query, setQuery] = useState("");
   const [statusFilter, setStatusFilter] = useState("all");
+  const [sourceFilter, setSourceFilter] = useState('all');
+  const [record, setRecord] = useState<SessionRecord | null>(null);
+  const detailDialog = useRef<HTMLDialogElement>(null);
+  useEffect(() => { if (record && !detailDialog.current?.open) detailDialog.current?.showModal(); }, [record]);
+  const detailLabel = lang === 'tl' ? 'Tingnan ang tala' : 'View record';
+  const recordStatus = (status: AlertLevel | 'partial') => status === 'partial' ? (tl ? 'Bahagya' : 'Partial') : shortStatusText(status, lang);
+  const sourceLabel = (row: SessionRecord) => row.inputMode === 'manual' ? (tl ? 'Manu-manong pagsusuri' : 'Manual Analysis') : row.inputMode === 'sensor' ? (tl ? 'Tala ng sensor' : 'Sensor Reading') : (tl ? 'Di-tiyak ang pinagmulan' : 'Unknown source');
+  const sourceBadge = (row: SessionRecord) => <span className="history-source" data-source={row.inputMode}>{sourceLabel(row)}</span>;
+  const partialLabel = tl ? 'Bahagyang pagsusuri · sinukat lamang' : 'Partial assessment · measured values only';
   const counts = sessions.reduce(
     (acc, row) => {
       acc[historyStatus(row)] += 1;
@@ -2523,77 +2185,84 @@ function HistoryPage({ sessions, onExport, text, lang, fishDb }: { sessions: Ses
   );
   const filteredSessions = sessions.filter((row) => {
     const status = historyStatus(row);
-    const haystack = `${row.timestamp} ${historyFishDisplay(row, fishDb, lang).fish} ${status}`.toLowerCase();
-    return haystack.includes(query.toLowerCase()) && (statusFilter === "all" || statusFilter === 'partial' && isPartialSession(row) || status === statusFilter);
+    const haystack = `${row.timestamp} ${historyFishDisplay(row, fishDb, lang).fish} ${status} ${sourceLabel(row)}`.toLowerCase();
+    return haystack.includes(query.trim().toLowerCase()) && (sourceFilter === 'all' || row.inputMode === sourceFilter) && (statusFilter === 'all' || statusFilter === 'partial' && isPartialSession(row) || status === statusFilter);
   });
+  const noResults = sessions.length ? (tl ? 'Walang tumugmang tala sa mga filter.' : 'No records match your filters.') : text.noHistory;
   return (
-    <main className="mx-auto max-w-[1500px] space-y-5 px-4 pb-8 sm:px-6">
-      <section className="card p-5">
-        <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h2 className="text-2xl font-black text-slate-950">{text.history}</h2>
-            <p className="text-sm font-semibold text-slate-500">{filteredSessions.length} of {sessions.length} records shown</p>
-          </div>
-          <div className="grid gap-2 sm:grid-cols-3">
-            <span className="rounded-xl bg-emerald-50 px-3 py-2 text-sm font-black text-emerald-700">Safe {counts.safe}</span>
-            <span className="rounded-xl bg-amber-50 px-3 py-2 text-sm font-black text-amber-700">Warning {counts.warning}</span>
-            <span className="rounded-xl bg-red-50 px-3 py-2 text-sm font-black text-red-700">Critical {counts.critical}</span>
-            <span className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-black text-slate-700">Partial {sessions.filter(isPartialSession).length}</span>
-          </div>
+    <main className="space-y-5">
+      <header><h1>{text.history}</h1><p className="mt-1 text-slate-600">{lang === 'tl' ? 'Mga sukat ng tubig at resulta ng pagsusuri.' : 'Water measurements and analysis results.'}</p></header>
+      {requestState === 'loading' && <p role="status" className="text-sm text-slate-600">{tl ? 'Kinukuha ang mga tala...' : 'Loading sessions...'}</p>}
+      {requestState === 'error' && <div role="alert" className="farmer-alert farmer-alert-error"><p>{tl ? 'Hindi makuha ang pinakabagong mga tala.' : 'Could not refresh session history.'} {sessions.length > 0 && (tl ? 'Ipinapakita ang dating nakuha sa device.' : 'Showing the available saved readings.')}</p><button className="soft-button" onClick={onRetry}>{tl ? 'Subukan muli' : 'Try again'}</button></div>}
+      {(sessions.length > 0 || requestState === 'ready') &&
+      <section>
+        <div className="history-counts">
+          <span className="bg-emerald-50 px-3 py-2 text-sm font-bold text-emerald-800">{tl ? 'Pasok sa saklaw' : 'Safe'} {counts.safe}</span>
+          <span className="bg-amber-50 px-3 py-2 text-sm font-bold text-amber-800">{tl ? 'Babala' : 'Warning'} {counts.warning}</span>
+          <span className="bg-red-50 px-3 py-2 text-sm font-bold text-red-800">{tl ? 'Kritikal' : 'Critical'} {counts.critical}</span>
+          <span className="bg-white px-3 py-2 text-sm font-bold text-slate-700">{tl ? 'Bahagya' : 'Partial'} {sessions.filter(isPartialSession).length}</span>
         </div>
         <p className="mt-3 text-sm text-slate-600">{lang === 'tl' ? 'Ang Safe, Warning, at Critical ay para lamang sa mga sinukat na parameter. Hindi kinukumpirma ng bahagyang pagsusuri na ligtas ang buong tubig.' : 'Safe, Warning, and Critical describe measured parameters only. A partial test does not confirm overall water safety.'}</p>
         <p className="mt-1 text-sm text-slate-600">{lang === 'tl' ? 'Ang paunang tugma at measured fit ay kinuwenta mula sa naitalang sukat gamit ang kasalukuyang fish ranges; hindi ito naka-save na full score o pahintulot nang mag-stock.' : 'Preliminary match and measured fit are calculated from saved readings using current fish ranges; they are not saved full scores or stocking approval.'}</p>
-        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-          <div className="flex flex-col gap-2 sm:flex-row">
+        <div className="mt-4 flex flex-col gap-2 sm:flex-row sm:flex-wrap sm:items-center">
+          <div className="flex flex-1 flex-col gap-2 sm:flex-row">
             <input
-              className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100"
-              placeholder="Search fish, date, status..."
+              className="min-h-11 min-w-0 flex-1 rounded-md border border-slate-300 bg-white px-4 py-2 outline-none focus:border-teal-600"
+              placeholder={tl ? 'Hanapin ang isda, petsa o status...' : 'Search fish, date, status...'}
               aria-label={lang === "tl" ? "Hanapin ang tala" : "Search records"}
               value={query}
               onChange={(event) => setQuery(event.target.value)}
             />
             <select
-              className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-black text-slate-600"
+              className="min-h-11 rounded-md border border-slate-300 bg-white px-3 py-2 text-slate-800"
               value={statusFilter}
               aria-label={lang === "tl" ? "Salain ayon sa kalagayan" : "Filter by status"}
               onChange={(event) => setStatusFilter(event.target.value)}
             >
-              <option value="all">All status</option>
-              <option value="safe">Safe</option>
-              <option value="warning">Warning</option>
-              <option value="critical">Critical</option>
-              <option value="partial">Partial</option>
+              <option value="all">{tl ? 'Lahat ng status' : 'All statuses'}</option>
+              <option value="safe">{tl ? 'Pasok sa saklaw' : 'Safe'}</option>
+              <option value="warning">{tl ? 'Babala' : 'Warning'}</option>
+              <option value="critical">{tl ? 'Kritikal' : 'Critical'}</option>
+              <option value="partial">{tl ? 'Bahagyang sukat' : 'Partial'}</option>
+            </select>
+            <select className="min-h-11 rounded-md border border-slate-300 bg-white px-3 py-2 text-slate-800" aria-label={tl ? 'Salain ayon sa pinagmulan' : 'Filter by source'} value={sourceFilter} onChange={event => setSourceFilter(event.target.value)}>
+              <option value="all">{tl ? 'Lahat ng pinagmulan' : 'All sources'}</option>
+              <option value="manual">{tl ? 'Manu-manong pagsusuri' : 'Manual tests'}</option>
+              <option value="sensor">{tl ? 'Mga tala ng sensor' : 'Sensor readings'}</option>
             </select>
           </div>
-          <button className="soft-button" onClick={onExport}>
+          <button className="soft-button" disabled={!sessions.length} onClick={onExport}>
             <Download size={16} /> {text.exportCsv}
           </button>
         </div>
+        <p className="mt-3 text-sm font-semibold text-slate-600" role="status">{tl ? `${filteredSessions.length} sa ${sessions.length} na tala` : `${filteredSessions.length} of ${sessions.length} records shown`}</p>
+        {filteredSessions.length ? <>
         <div className="mt-5 space-y-3 sm:hidden">
-          {filteredSessions.map(row => <article key={row.id} className="rounded-lg border border-slate-200 p-4">
-            <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">{row.timestamp}</h3><span className={measurementBadge(historyStatus(row))}>{historyStatus(row)}</span></div>
-            <p className="text-sm text-slate-600">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : (lang === 'tl' ? 'Tala ng sensor' : 'Sensor Reading')}</p>
+          {filteredSessions.map(row => <article key={row.id} className="card p-4">
+            <div className="flex flex-wrap items-center justify-between gap-2"><h3 className="font-bold">{row.timestamp}</h3><span className={measurementBadge(historyStatus(row))}>{recordStatus(historyStatus(row))}</span></div>
+            <div className="mt-1">{sourceBadge(row)}</div>
             {row.turbidityEstimated && row.turbidity !== null && <p className="text-sm text-amber-800">{lang === 'tl' ? 'Tantya lamang ang turbidity; hindi kasama sa status.' : 'Turbidity is an estimate; excluded from status.'}</p>}
-            {isPartialSession(row) && <p className="text-sm text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri - sinukat na values lamang' : 'Partial test - measured values only'}</p>}
+            {isPartialSession(row) && <p className="mt-1 text-sm text-slate-600">{partialLabel}</p>}
             <dl className="mt-3 grid grid-cols-2 gap-3 text-sm">
-              {[["pH", row.ph], ["Temperature", row.temperature == null ? '--' : `${row.temperature} °C`], ["DO", row.dissolvedOxygen == null ? '--' : `${row.dissolvedOxygen} mg/L`], ["Turbidity", row.turbidity == null ? '--' : `${row.turbidity} NTU`], ["Ammonia", row.ammonia == null ? '--' : `${row.ammonia} mg/L`]].map(([label, value]) => <div key={label}><dt className="text-slate-600">{label}</dt><dd className="font-semibold">{value ?? "--"}</dd></div>)}
+              {historyMeasurements(row).map(([label, value]) => <div key={label}><dt className="text-slate-600">{label}</dt><dd className="font-semibold">{value ?? '—'}</dd></div>)}
             </dl><p className="mt-3 border-t border-slate-100 pt-3 font-semibold">{historyFishDisplay(row, fishDb, lang).fish} · {historyFishDisplay(row, fishDb, lang).score}</p>
             {historyFishDisplay(row, fishDb, lang).note && <p className="mt-1 text-xs text-amber-800">{historyFishDisplay(row, fishDb, lang).note}</p>}
+            <button className="soft-button mt-3" onClick={() => setRecord(row)}><Eye size={17} />{detailLabel}</button>
           </article>)}
-          {!filteredSessions.length && <p className="py-6 text-sm text-slate-600">{text.noHistory}</p>}
         </div>
-        <div className="mt-5 hidden overflow-x-auto sm:block">
+        <div className="farmer-table-frame mt-5 hidden sm:block" tabIndex={0} aria-label={text.history}>
           <table className="min-w-full text-left text-sm">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-xs uppercase text-slate-500">
+              <tr>
                 <th className="px-4 py-3">{text.dateTime}</th>
                 <th className="px-4 py-3">pH</th>
-                <th className="px-4 py-3">Temp</th>
-                <th className="px-4 py-3">DO</th>
-                <th className="px-4 py-3">Turbidity</th>
+                <th className="px-4 py-3">Temp (°C)</th>
+                <th className="px-4 py-3">DO (mg/L)</th>
+                <th className="px-4 py-3">Turbidity (NTU)</th>
                 <th className="px-4 py-3">Best Fish</th>
                 <th className="px-4 py-3">Score</th>
                 <th className="px-4 py-3">{text.status}</th>
+                <th>{lang === 'tl' ? 'Aksyon' : 'Actions'}</th>
               </tr>
             </thead>
             <tbody>
@@ -2602,7 +2271,7 @@ function HistoryPage({ sessions, onExport, text, lang, fishDb }: { sessions: Ses
                 const fishDisplay = historyFishDisplay(row, fishDb, lang);
                 return (
                   <tr key={row.id} className="border-b border-slate-100">
-                    <td className="px-4 py-3 font-semibold text-slate-700">{row.timestamp}<span className="block text-xs font-normal">{row.inputMode === 'manual' ? (lang === 'tl' ? 'Manu-manong pagsusuri' : 'Manual Analysis') : (lang === 'tl' ? 'Tala ng sensor' : 'Sensor Reading')}</span></td>
+                    <td className="px-4 py-3 font-semibold text-slate-700">{row.timestamp}<div className="mt-1">{sourceBadge(row)}</div></td>
                     <td className="px-4 py-3">{row.ph ?? '--'}</td>
                     <td className="px-4 py-3">{row.temperature ?? '--'}</td>
                     <td className="px-4 py-3">{row.dissolvedOxygen ?? '--'}</td>
@@ -2610,19 +2279,26 @@ function HistoryPage({ sessions, onExport, text, lang, fishDb }: { sessions: Ses
                     <td className="px-4 py-3 font-bold">{fishDisplay.fish}{fishDisplay.note && <span className="mt-1 block text-xs font-normal text-amber-800">{fishDisplay.note}</span>}</td>
                     <td className="px-4 py-3 font-black text-teal-700">{fishDisplay.score}</td>
                     <td className="px-4 py-3">
-                      <span className={measurementBadge(status)}>{status}</span>
-                      {isPartialSession(row) && <span className="mt-1 block text-xs text-slate-600">{lang === 'tl' ? 'Bahagyang pagsusuri - sinukat lamang' : 'Partial test - measured only'}</span>}
+                      <span className={measurementBadge(status)}>{recordStatus(status)}</span>
+                      {isPartialSession(row) && <span className="mt-1 block text-xs text-slate-600">{partialLabel}</span>}
                     </td>
+                    <td><button className="farmer-icon-button" type="button" title={detailLabel} aria-label={`${detailLabel}: ${row.timestamp}`} onClick={() => setRecord(row)}><Eye size={18} /></button></td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
-          {!sessions.length && <p className="py-8 text-center text-sm font-semibold text-slate-500">{text.noHistory}</p>}
-          {sessions.length > 0 && !filteredSessions.length && <p className="py-8 text-center text-sm font-semibold text-slate-500">No records match your filters.</p>}
         </div>
-      </section>
-
+        </> : <p className="card mt-4 p-5 text-sm text-slate-600">{noResults}</p>}
+      </section>}
+      {sessions.length > 0 && <details className="farmer-history-trends"><summary>{tl ? 'Mga trend sa kalidad ng tubig' : 'Historical water quality charts'}</summary><DashboardTrends sessions={sessions} text={text} lang={lang} /></details>}
+      <dialog className="farmer-record-dialog" ref={detailDialog} onClose={() => setRecord(null)} aria-labelledby="water-record-title">
+        {record && <><div className="flex items-start justify-between gap-3"><div><h2 id="water-record-title" className="text-xl font-bold">{lang === 'tl' ? 'Tala ng Pagsukat' : 'Measurement Record'}</h2><p>{record.timestamp}</p></div><form method="dialog"><button title={lang === 'tl' ? 'Isara' : 'Close'} aria-label={lang === 'tl' ? 'Isara' : 'Close'} className="farmer-icon-button" autoFocus><X size={20} /></button></form></div>
+          <dl className="my-4 grid grid-cols-2 gap-3">{historyMeasurements(record).map(([label, value]) => <div key={label}><dt className="text-sm text-slate-600">{label}</dt><dd className="font-semibold">{value ?? '—'}</dd></div>)}</dl>
+          <div className="flex flex-wrap items-center gap-2">{sourceBadge(record)}<span className={measurementBadge(historyStatus(record))}>{statusText(historyStatus(record), lang)}</span></div>
+          {isPartialSession(record) && <p className="mt-2 text-sm text-slate-600">{partialLabel}</p>}
+          <p className="mt-3 font-semibold">{historyFishDisplay(record, fishDb, lang).fish} · {historyFishDisplay(record, fishDb, lang).score}</p><p className="text-sm text-slate-600">{historyFishDisplay(record, fishDb, lang).note}</p></>}
+      </dialog>
     </main>
   );
 }
@@ -2632,25 +2308,40 @@ function AuthPage({ navigate, onLogin }: { initialMode?: 'login' | 'register'; t
   return <OwnerLogin navigate={navigate} onLogin={onLogin} />;
 }
 
-function ProfilePage({ currentUser, navigate }: { currentUser: AppUser | null; navigate: (path: string) => void }) {
-  if (!currentUser) {
-    navigate("/login");
-    return null;
-  }
-
-  return (
-    <div className="min-h-screen bg-slate-100 p-4 sm:p-6">
-      <section className="mx-auto max-w-xl rounded-2xl bg-white p-6 shadow">
-        <h1 className="text-2xl font-black text-slate-950">Profile</h1>
-        <div className="mt-5 space-y-3 text-sm">
-          <p><span className="font-black text-slate-500">Name:</span> {currentUser.fullName}</p>
-          <p><span className="font-black text-slate-500">Phone:</span> {currentUser.phone}</p>
-          <p><span className="font-black text-slate-500">Role:</span> {currentUser.role || "user"}</p>
-        </div>
-        <button className="primary-button mt-6" onClick={() => navigate("/dashboard")}>Back to Dashboard</button>
-      </section>
+function ProfilePage({ currentUser, lang, setLang, telemetry, now, focusDevice, onLogout, onTestSms }: { currentUser: AppUser; lang: Lang; setLang: (lang: Lang) => void; telemetry: SensorTelemetry | null; now: number; focusDevice: boolean; onLogout: () => void; onTestSms?: () => void }) {
+  const tl = lang === 'tl';
+  const deviceSection = useRef<HTMLDivElement>(null);
+  const [passwordSaved, setPasswordSaved] = useState(false);
+  useEffect(() => {
+    if (!focusDevice) return;
+    const frame = requestAnimationFrame(() => { deviceSection.current?.focus({ preventScroll: true }); deviceSection.current?.scrollIntoView({ block: 'start' }); });
+    return () => cancelAnimationFrame(frame);
+  }, [focusDevice]);
+  return <main className="space-y-6">
+    <header><h1>{tl ? 'Account at Settings' : 'Account & Settings'}</h1><p className="mt-1 text-slate-600">{currentUser.fishpenAssignment?.name}</p></header>
+    <div className="farmer-account-grid">
+      <div className="space-y-4">
+        <section className="card p-5">
+          <h2 className="flex items-center gap-2 text-lg font-bold"><User size={20} className="text-teal-700" />{tl ? 'Aking Profile' : 'My Profile'}</h2>
+          <dl className="mt-3 divide-y divide-slate-200">
+            {[[tl ? 'Pangalan' : 'Name', currentUser.fullName], [tl ? 'Numero ng cellphone' : 'Mobile number', currentUser.phone], [tl ? 'Tungkulin' : 'Role', currentUser.role === 'farmer' ? (tl ? 'May-ari' : 'Fishpen owner') : currentUser.role], ['Fishpen', currentUser.fishpenAssignment?.name]].map(([label, value]) => <div key={label} className="grid gap-1 py-3 sm:grid-cols-2"><dt className="text-slate-600">{label}</dt><dd className="break-words font-semibold">{value || '—'}</dd></div>)}
+          </dl>
+        </section>
+        <section className="card p-5"><h2 className="mb-3 text-lg font-bold">{tl ? 'Wika' : 'Language'}</h2><FarmerLanguage lang={lang} setLang={setLang} /></section>
+        <section className="card p-5">
+          <h2 className="flex items-center gap-2 text-lg font-bold"><Lock size={19} className="text-teal-700" />{tl ? 'Password at Seguridad' : 'Password & Security'}</h2>
+          {passwordSaved && <p role="status" className="mt-2 text-sm font-semibold text-teal-800">{tl ? 'Napalitan na ang password.' : 'Password changed.'}</p>}
+          <details className="mt-2" onToggle={e => { if (e.currentTarget.open) setPasswordSaved(false); }}><summary className="py-2 font-semibold text-teal-800">{tl ? 'Palitan ang password' : 'Change password'}</summary><OwnerPasswordForm lang={lang} onDone={() => setPasswordSaved(true)} /></details>
+        </section>
+        <button type="button" className="soft-button" onClick={onLogout}><LogOut size={17} />{tl ? 'Mag-logout' : 'Logout'}</button>
+      </div>
+      <div className="farmer-device-settings space-y-4" ref={deviceSection} tabIndex={-1} aria-label={tl ? 'Device at SMS' : 'Device & SMS Settings'}>
+        <ConnectEsp32 lang={lang} telemetry={telemetry} now={now} />
+        <FishpenSmsSettings key={currentUser.id} ownerId={currentUser.id} lang={lang} defaultOpen />
+        {onTestSms && <button type="button" className="soft-button" onClick={onTestSms}>{tl ? 'Subukan ang SMS alert' : 'Test SMS Alert'}</button>}
+      </div>
     </div>
-  );
+  </main>;
 }
 
 function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: AppUser | null; lang: Lang; fishDb: FishSpecies[]; navigate: (path: string) => void }) {
@@ -2665,25 +2356,28 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
   const [selectedId, setSelectedId] = useState<number | null>(null);
   const [action, setAction] = useState<"batch" | "harvest" | "sample" | "mortality">("batch");
   const [eventForm, setEventForm] = useState({ harvestType: "partial", harvestDate: today, fishCount: "", weightKg: "", pricePerKg: "", notes: "" });
+  const [savedHarvest, setSavedHarvest] = useState<SavedHarvest | null>(null);
   const [sampleForm, setSampleForm] = useState({ sampledAt: today, sampleSize: "", averageWeightG: "", notes: "" });
   const [mortalityForm, setMortalityForm] = useState({ mortalityDate: today, deadCount: "", notes: "" });
   const [penFilter, setPenFilter] = useState("");
   const [speciesFilter, setSpeciesFilter] = useState("");
   const [dateFilter, setDateFilter] = useState("");
-  const [message, setMessage] = useState("");
+  const [message, setMessage] = useState<{ text: string; error?: boolean } | null>(null);
+  const [loadError, setLoadError] = useState('');
   const [busy, setBusy] = useState(false);
   const [loading, setLoading] = useState(true);
   const refresh = async () => {
+    setLoadError('');
     const result = await apiJson<{ harvests: HarvestBatch[]; fishpenAssignment: { id: number; name: string; deviceId: number | null } | null }>("/api/harvests");
     setLoading(false);
     if (result.data) { setRecords(result.data.harvests); setAssignment(result.data.fishpenAssignment); }
-    else setMessage(result.error || "Unable to load harvest records.");
+    else setLoadError(result.error || (lang === 'tl' ? 'Hindi makuha ang mga tala ng ani.' : 'Unable to load harvest records.'));
   };
   useEffect(() => { setRecords([]); if (currentUser) { void refresh(); void apiJson<{ devices: Array<{ id: number; deviceName: string }> }>("/api/sensors/devices").then(r => setDevices(r.data?.devices || [])); } }, [currentUser?.id]);
   const save = async () => {
-    if (!assignment) return setMessage(lang === 'tl' ? 'Ipa-assign muna sa administrator ang iyong fishpen.' : 'Ask the administrator to assign your fishpen first.');
+    if (!assignment) return setMessage({ error: true, text: lang === 'tl' ? 'Ipa-assign muna sa administrator ang iyong fishpen.' : 'Ask the administrator to assign your fishpen first.' });
     if (!form.species || !form.stockingDate || !form.targetHarvestDate || !Number(form.stockedCount)) {
-      setMessage(lang === "tl" ? "Punan ang isda, petsa, at dami ng inalagaan." : "Enter species, dates, and number stocked.");
+      setMessage({ error: true, text: lang === "tl" ? "Punan ang isda, petsa, at dami ng inalagaan." : "Enter species, dates, and number stocked." });
       return;
     }
     setBusy(true);
@@ -2692,14 +2386,15 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
       body: JSON.stringify({ species: form.species, notes: form.notes, reminderSms: form.reminderSms, stockingDate: form.stockingDate, targetHarvestDate: form.targetHarvestDate, stockedCount: Number(form.stockedCount), targetWeightG: form.targetWeightG || null, actualHarvestDate: form.actualHarvestDate || null, harvestedKg: form.harvestedKg || null, sellingPrice: form.sellingPrice || null })
     });
     setBusy(false);
-    if (result.error) return setMessage(result.error);
-    setMessage(lang === "tl" ? "Nai-save ang tala ng ani." : "Harvest record saved.");
+    if (result.error) return setMessage({ text: result.error, error: true });
+    setMessage({ text: lang === 'tl' ? 'Nai-save ang grupo ng isda.' : 'Fish group saved.' });
     setShowForm(false);
     setForm(emptyForm);
     setEditingId(null);
     void refresh();
   };
   const edit = (row: HarvestBatch) => {
+    setMessage(null);
     setEditingId(row.id);
     setShowForm(true);
     setForm({ notes: row.notes || "", sensorDeviceId: row.sensorDeviceId ? String(row.sensorDeviceId) : "", species: row.species, fishpenName: row.fishpenName || "", targetWeightG: row.targetWeightG === null ? "" : String(row.targetWeightG), reminderSms: Boolean(row.reminderSms), stockingDate: String(row.stockingDate).slice(0, 10), stockedCount: String(row.stockedCount), targetHarvestDate: String(row.targetHarvestDate).slice(0, 10), actualHarvestDate: row.actualHarvestDate ? String(row.actualHarvestDate).slice(0, 10) : "", harvestedKg: row.harvestedKg === null ? "" : String(row.harvestedKg), sellingPrice: row.sellingPrice === null ? "" : String(row.sellingPrice) });
@@ -2709,13 +2404,13 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
   const remove = async (id: number) => {
     if (!window.confirm(lang === "tl" ? "Burahin ang batch at lahat ng sample, mortality, obserbasyon at ani nito? Hindi ito maibabalik." : "Delete this batch and all its samples, mortality, observations and harvests? This cannot be undone.")) return;
     const result = await apiJson(`/api/harvests/${id}`, { method: "DELETE" });
-    setMessage(result.error || (lang === "tl" ? "Nabura ang tala." : "Record deleted."));
+    setMessage({ error: Boolean(result.error), text: result.error || (lang === "tl" ? "Nabura ang tala." : "Record deleted.") });
     if (!result.error) void refresh();
   };
   const completed = records.filter((row) => row.actualHarvestDate);
   const activeBatchCount = records.length - completed.length;
   const createBatch = () => {
-    setAction('batch'); setEditingId(null); setForm(emptyForm); setShowForm(true); setMessage('');
+    setAction('batch'); setEditingId(null); setForm(emptyForm); setShowForm(true); setMessage(null); setSavedHarvest(null);
     window.setTimeout(() => document.getElementById('harvest-workspace')?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 0);
   };
   const totalKg = records.reduce((sum, row) => sum + (row.harvestEvents?.length ? row.harvestEvents.reduce((part, event) => part + Number(event.weightKg), 0) : Number(row.harvestedKg || 0)), 0);
@@ -2730,10 +2425,20 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
     setBusy(true);
     const endpoint = action === "harvest" ? "events" : action === "sample" ? "samples" : "mortalities";
     const payload = action === "harvest" ? { ...eventForm, confirmComplete } : action === "sample" ? sampleForm : mortalityForm;
-    const result = await apiJson(`/api/harvests/${selected.id}/${endpoint}`, { method: "POST", body: JSON.stringify(payload) });
+    const result = await apiJson<{ id: number }>(`/api/harvests/${selected.id}/${endpoint}`, { method: "POST", body: JSON.stringify(payload) });
     setBusy(false);
-    setMessage(result.error || (lang === "tl" ? "Nai-save ang tala." : "Record saved."));
-    if (!result.error) { setEventForm({ harvestType: "partial", harvestDate: today, fishCount: "", weightKg: "", pricePerKg: "", notes: "" }); setSampleForm({ sampledAt: today, sampleSize: "", averageWeightG: "", notes: "" }); setMortalityForm({ mortalityDate: today, deadCount: "", notes: "" }); void refresh(); }
+    setMessage({ error: Boolean(result.error), text: result.error || (lang === "tl" ? "Nai-save ang tala." : "Record saved.") });
+    if (!result.error) {
+      if (action === 'harvest' && result.data?.id) {
+        setSavedHarvest({ group: `${selected.species} #${selected.id}`, date: eventForm.harvestDate, kg: Number(eventForm.weightKg), complete: confirmComplete });
+        setShowForm(false);
+        setMessage(null);
+      }
+      setEventForm({ harvestType: "partial", harvestDate: today, fishCount: "", weightKg: "", pricePerKg: "", notes: "" });
+      setSampleForm({ sampledAt: today, sampleSize: "", averageWeightG: "", notes: "" });
+      setMortalityForm({ mortalityDate: today, deadCount: "", notes: "" });
+      void refresh();
+    }
   };
   const exportCsv = () => {
     const lines = [["Fishpen", "Species", "Stocking date", "Stocked fish", "Target harvest", "Actual harvest", "Harvest type", "Fish harvested", "Harvested kg", "Price per kg", "Estimated gross sales"]];
@@ -2754,14 +2459,14 @@ function HarvestPage({ currentUser, lang, fishDb, navigate }: { currentUser: App
   const recentHarvests = records.flatMap(row => row.harvestEvents.map(event => ({ ...event, species: row.species, fishpen: row.fishpenName }))).sort((a, b) => b.harvestDate.localeCompare(a.harvestDate) || b.id - a.id).slice(0, 5);
   if (!currentUser) return <main className="mx-auto max-w-3xl p-5"><p>{lang === 'tl' ? 'Mag-login upang makita ang tala ng pag-aani.' : 'Log in to view your harvest records.'}</p><button className="primary-button mt-4" onClick={() => navigate('/login')}>Login</button></main>;
   return <HarvestWorkspace lang={lang} today={today} assignment={assignment} records={records} filtered={filtered}
-    totalKg={totalKg} grossSales={grossSales} loading={loading} busy={busy} message={message}
+    totalKg={totalKg} grossSales={grossSales} loading={loading} busy={busy} message={message} loadError={loadError}
     editingId={editingId} action={action} showForm={showForm} selectedId={selectedId} setSelectedId={setSelectedId}
     form={form} setForm={setForm} eventForm={eventForm} setEventForm={setEventForm}
     sampleForm={sampleForm} setSampleForm={setSampleForm} mortalityForm={mortalityForm} setMortalityForm={setMortalityForm}
-    species={activeSpecies.map(f => f.name)} onCreate={createBatch} onAction={(next, id) => { setAction(next); setSelectedId(id || null); setShowForm(true); setMessage(''); }}
-    onCancel={() => { setShowForm(false); setEditingId(null); setAction('batch'); setMessage(''); }}
+    species={activeSpecies.map(f => f.name)} speciesImages={Object.fromEntries(fishDb.map(fish => [fish.name, fishImageSrc(fish.id)]))} savedHarvest={savedHarvest} onCreate={createBatch} onAction={(next, id) => { setAction(next); setSelectedId(id || null); setShowForm(true); setMessage(null); setSavedHarvest(null); }}
+    onCancel={() => { setShowForm(false); setEditingId(null); setAction('batch'); setMessage(null); setSavedHarvest(null); }}
     onSave={() => void save()} onSubmit={() => void submitAction()} onEdit={edit} onRemove={id => void remove(id)}
-    onExport={exportCsv} onRetry={() => void refresh()} penFilter={penFilter} setPenFilter={setPenFilter}
+    onExport={exportCsv} onRetry={() => { setLoading(true); void refresh(); }} penFilter={penFilter} setPenFilter={setPenFilter}
     speciesFilter={speciesFilter} setSpeciesFilter={setSpeciesFilter} dateFilter={dateFilter} setDateFilter={setDateFilter} />;
 }
 

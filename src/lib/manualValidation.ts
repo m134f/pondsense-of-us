@@ -1,5 +1,7 @@
 import type { FishSpecies, WaterParams } from '../types';
 
+export const manualParameters = ['ph', 'temperature', 'dissolvedOxygen', 'turbidity'] as const;
+
 export function isManualDecimalDraft(value: string) {
   return /^\d*(?:[.,]\d*)?$/.test(value);
 }
