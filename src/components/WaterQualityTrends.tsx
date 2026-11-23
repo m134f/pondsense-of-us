@@ -2,7 +2,7 @@ import { useMemo, useState } from 'react';
 import { BookOpen, Droplet, Droplets, Thermometer, TrendingUp, Waves } from 'lucide-react';
 import { CartesianGrid, Line, LineChart, ReferenceArea, ReferenceLine, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { classCGuidelines, classCUrl } from '../lib/waterGuidelines';
-import { compareClassC, filterTrendReadings, makeTrendSeries, trendParameters, trendRanges, type TrendParameter, type TrendRange, type TrendReading } from '../lib/sensorTrends';
+import { compareClassC, compareTurbidityResearch, filterTrendReadings, makeTrendSeries, trendParameters, trendRanges, turbidityResearchReference, type TrendParameter, type TrendRange, type TrendReading } from '../lib/sensorTrends';
 
 type Lang = 'en' | 'tl';
 type RequestState = 'loading' | 'ready' | 'error';
@@ -14,10 +14,19 @@ const metadata = {
   temperature: { en: 'Temperature', tl: 'Temperatura', unit: '\u00b0C', axis: '\u00b0C', digits: 2, Icon: Thermometer },
   turbidity: { en: 'Turbidity', tl: 'Labo ng Tubig', unit: 'NTU', axis: 'NTU', digits: 2, Icon: Droplets }
 };
+const { moderate, severeAbove, url: turbiditySource } = turbidityResearchReference;
+const turbidityLines = [
+  { value: moderate, color: '#8a5c10' },
+  { value: severeAbove, color: '#a42b32' }
+] as const;
+
+function researchTitle(tl: boolean) {
+  return tl ? 'Sanggunian sa Pananaliksik sa Aquaculture' : 'Aquaculture Research Reference';
+}
 
 function referenceText(parameter: TrendParameter, tl: boolean) {
   const limit = classCGuidelines[parameter];
-  if (!limit) return tl ? 'Walang NTU limit sa talahanayan' : 'No NTU limit in Table 3';
+  if (!limit) return tl ? 'Walang NTU limit sa Talahanayan 3 ng DENR' : 'No DENR NTU limit in Table 3';
   const suffix = parameter === 'ph' ? '' : ` ${limit.unit}`;
   return limit.max === undefined ? `\u2265 ${limit.min}${suffix}` : `${limit.min}\u2013${limit.max}${suffix}`;
 }
@@ -37,6 +46,7 @@ function yDomain(parameter: TrendParameter, rows: Point[]): [number, number] {
   const values = rows.flatMap(row => row.value === null ? [] : [row.value]);
   if (limit?.min !== undefined) values.push(limit.min);
   if (limit?.max !== undefined) values.push(limit.max);
+  if (parameter === 'turbidity') values.push(moderate, severeAbove);
   if (parameter === 'dissolvedOxygen' || parameter === 'turbidity' || !values.length) values.push(0);
   const min = Math.min(...values);
   const max = Math.max(...values);
@@ -46,8 +56,13 @@ function yDomain(parameter: TrendParameter, rows: Point[]): [number, number] {
 
 function EmptyReferencePlot({ parameter, range, tl }: { parameter: TrendParameter; range: [number, number]; tl: boolean }) {
   const limit = classCGuidelines[parameter];
-  if (limit?.min === undefined) return <div className="water-trend-empty-frame" aria-hidden="true" />;
   const position = (value: number) => (range[1] - value) * 100 / (range[1] - range[0]);
+  if (parameter === 'turbidity') return <div className="water-trend-empty-frame" role="img" aria-label={`${researchTitle(tl)}: ${moderate} NTU, ${severeAbove} NTU`}>
+    <span className="water-trend-frame-axis" aria-hidden="true">NTU</span>
+    {turbidityLines.map(({ value, color }) => <div key={value} className="water-trend-frame-line"
+      style={{ top: `${position(value)}%`, borderColor: color, color }}><span>{value} NTU</span></div>)}
+  </div>;
+  if (limit?.min === undefined) return <div className="water-trend-empty-frame" aria-hidden="true" />;
   const lower = position(limit.min);
   const upper = limit.max === undefined ? null : position(limit.max);
   return <div className="water-trend-empty-frame" role="img" aria-label={`${metadata[parameter][tl ? 'tl' : 'en']}: ${referenceText(parameter, tl)}`}>
@@ -66,6 +81,7 @@ function TrendChart({ parameter, points, untimedIds, lang, emptyText }: {
   const { Icon, unit, axis } = metadata[parameter];
   const title = metadata[parameter][lang];
   const limit = classCGuidelines[parameter];
+  const research = parameter === 'turbidity';
   const { rows, segments, latest } = useMemo(() => makeTrendSeries(points, parameter, untimedIds), [points, parameter, untimedIds]);
   const range = yDomain(parameter, rows);
   const start = rows[0]?.time;
@@ -78,15 +94,23 @@ function TrendChart({ parameter, points, untimedIds, lang, emptyText }: {
     ...(span > 30 * 3_600_000 ? { month: 'short', day: 'numeric' } :
       { hour: 'numeric', minute: '2-digit', ...(span < 180_000 ? { second: '2-digit' } : {}) })
   });
-  const comparison = latest ? compareClassC(parameter, latest.value) : 'missing';
+  const comparison = latest ? (research ? compareTurbidityResearch(latest.value) : compareClassC(parameter, latest.value)) :
+    rows.some(row => row.uncalibrated) ? 'uncalibrated' : 'missing';
+  const uncalibrated = tl ? 'Walang calibrated na sukat' : 'No calibrated reading';
   const labels = {
     missing: tl ? 'Walang valid na sukat' : 'No valid reading',
-    unreferenced: tl ? 'Walang DENR NTU limit sa talahanayan' : 'No DENR NTU limit in Table 3',
+    uncalibrated,
+    favorable: tl ? 'Paborable' : 'Favorable',
+    moderate: tl ? 'Katamtamang limitasyon' : 'Moderate limitation',
+    severe: tl ? 'Matinding limitasyon' : 'Severe limitation',
+    unreferenced: referenceText(parameter, tl),
     within: parameter === 'temperature' ? (tl ? 'Pasok sa saklaw sa talahanayan' : 'Within table range') : (tl ? 'Pasok sa sanggunian' : 'Within reference range'),
     below: tl ? 'Mas mababa sa sanggunian' : 'Below reference range',
     above: tl ? 'Mas mataas sa sanggunian' : 'Above reference range'
   };
   const measuredName = tl ? 'Sukat ng sensor' : 'Sensor reading';
+  const pointLabel = (row: Point) => row.value !== null ? readingLabel(parameter, row.value, locale) :
+    row.uncalibrated ? uncalibrated : (tl ? 'Wala o hindi valid' : 'Missing or invalid');
   return <section className="card water-trend-card" aria-labelledby={`water-trend-${parameter}`}>
     <header className="water-trend-card-header">
       <Icon size={23} className="water-trend-icon" aria-hidden="true" />
@@ -95,6 +119,7 @@ function TrendChart({ parameter, points, untimedIds, lang, emptyText }: {
         <p className="text-sm text-slate-600">{tl ? 'Huling valid na sukat' : 'Latest valid reading'}: <strong>{latest ? readingLabel(parameter, latest.value, locale) : '\u2014'}</strong>
           {latest && <time className="water-trend-timestamp" dateTime={new Date(latest.time).toISOString()}>{sampleTime(latest.time, locale)} PHT</time>}
         </p>
+        {latest && rows.at(-1)?.uncalibrated && <p className="text-sm text-slate-600">{tl ? 'Walang calibrated na sukat sa pinakahuling sample.' : 'Latest sample has no calibrated reading.'}</p>}
       </div>
       <span className="water-trend-status" data-comparison={comparison}>{labels[comparison]}</span>
     </header>
@@ -114,11 +139,13 @@ function TrendChart({ parameter, points, untimedIds, lang, emptyText }: {
             label={{ value: `${tl ? 'Min.' : 'Min'} ${limit.min}`, position: 'insideTopRight', fill: '#28478f', fontSize: 11 }} />}
           {limit?.max !== undefined && <ReferenceLine y={limit.max} stroke="#bb3e42" strokeWidth={1.5} strokeDasharray="5 4"
             label={{ value: `${tl ? 'Max.' : 'Max'} ${limit.max}`, position: 'insideTopRight', fill: '#a42b32', fontSize: 11 }} />}
+          {research && turbidityLines.map(({ value, color }) => <ReferenceLine key={value} y={value} stroke={color} strokeWidth={1.5} strokeDasharray="5 4"
+            label={{ value: `${value} NTU`, position: 'insideTopRight', fill: color, fontSize: 11 }} />)}
           <Tooltip filterNull={false} content={({ active, label }) => {
             const row = active && typeof label === 'number' ? rows.find(point => point.time === label) : null;
             return row ? <div className="water-trend-tooltip" role="status" aria-live="polite">
               <p>{sampleTime(row.time, locale)} PHT</p>
-              <strong>{title}: {row.value === null ? (tl ? 'Wala o hindi valid' : 'Missing or invalid') : readingLabel(parameter, row.value, locale)}</strong>
+              <strong>{title}: {pointLabel(row)}</strong>
             </div> : null;
           }} />
           {segments.map(segment => <Line key={segment} type="linear"
@@ -128,8 +155,16 @@ function TrendChart({ parameter, points, untimedIds, lang, emptyText }: {
             connectNulls={false} isAnimationActive={false} />)}
         </LineChart>
       </ResponsiveContainer> : <EmptyReferencePlot parameter={parameter} range={range} tl={tl} />}
-      {!latest && <div className="water-trend-empty"><p>{rows.length ? (tl ? 'Walang valid na sukat para sa parameter na ito.' : 'No valid readings for this parameter.') : emptyText}</p></div>}
+      {!latest && <div className="water-trend-empty"><p>{comparison === 'uncalibrated' ? (tl ? 'Hindi ipinapakita ang mga tantya.' : 'Estimates are not plotted.') : rows.length ? (tl ? 'Walang valid na sukat para sa parameter na ito.' : 'No valid readings for this parameter.') : emptyText}</p></div>}
     </div>
+    {research && <div className="water-trend-research text-sm">
+      <strong>{researchTitle(tl)}</strong>
+      <div className="water-trend-legend" aria-label={tl ? 'Mga kategorya ng labo ng tubig' : 'Turbidity research categories'}>
+        <span><i className="water-trend-band" data-band="favorable" aria-hidden="true" />{labels.favorable} ({tl ? 'bahagyang limitasyon' : 'slight limitation'}): &lt;{moderate} NTU</span>
+        <span><i className="water-trend-key water-trend-key-research" data-band="moderate" aria-hidden="true" />{labels.moderate}: {moderate}{'\u2013'}{severeAbove} NTU</span>
+        <span><i className="water-trend-key water-trend-key-research" data-band="severe" aria-hidden="true" />{labels.severe}: &gt;{severeAbove} NTU</span>
+      </div>
+    </div>}
     <div className="water-trend-legend text-sm" aria-label={tl ? 'Mga simbolo ng tsart' : 'Chart legend'}>
       <span><i className="water-trend-key water-trend-key-measurement" aria-hidden="true" />{measuredName}</span>
       {limit && <span><i className="water-trend-key water-trend-key-reference" aria-hidden="true" />
@@ -140,7 +175,7 @@ function TrendChart({ parameter, points, untimedIds, lang, emptyText }: {
       <summary>{tl ? 'Talaan ng mga sukat' : 'View readings'}</summary>
       <dl>{rows.map(row => <div key={row.time}>
         <dt><time dateTime={new Date(row.time).toISOString()}>{sampleTime(row.time, locale)} PHT</time></dt>
-        <dd>{row.value === null ? (tl ? 'Wala o hindi valid' : 'Missing or invalid') : readingLabel(parameter, row.value, locale)}</dd>
+        <dd>{pointLabel(row)}</dd>
       </div>)}</dl>
     </details>}
   </section>;
@@ -171,7 +206,7 @@ export function WaterQualityTrends({ readings, state, connection, now, lang, onR
       <div className="flex min-w-0 items-start gap-3">
         <TrendingUp size={25} className="water-trend-icon" aria-hidden="true" />
         <div><h2 id="water-quality-trends-heading">{tl ? 'Mga Trend sa Kalidad ng Tubig' : 'Water Quality Trends'}</h2>
-          <p className="text-sm text-slate-600">{tl ? 'Mga naitalang sukat ng sensor at sangguniang DENR Class C.' : 'Recorded sensor readings with DENR Class C references.'}</p></div>
+          <p className="text-sm text-slate-600">{tl ? 'Mga naitalang sukat ng sensor at mga sanggunian sa bawat parameter.' : 'Recorded sensor readings and parameter-specific references.'}</p></div>
       </div>
       <select className="water-trends-range" aria-label={tl ? 'Saklaw ng petsa' : 'Time range'} value={days}
         onChange={event => { const choice = trendRanges.find(value => String(value) === event.target.value); if (choice) setDays(choice); }}>
@@ -201,11 +236,19 @@ export function WaterQualityTrends({ readings, state, connection, now, lang, onR
     <div className="card water-trends-source text-sm">
       <div className="water-trends-source-line">
         <strong><BookOpen size={17} className="water-trend-icon" aria-hidden="true" /> DENR Class C</strong>
-        {trendParameters.map(key => <span key={key}>{key === 'dissolvedOxygen' ? 'DO' : metadata[key][lang]}: {referenceText(key, tl)}</span>)}
+        {trendParameters.filter(key => key !== 'turbidity').map(key => <span key={key}>{key === 'dissolvedOxygen' ? 'DO' : metadata[key][lang]}: {referenceText(key, tl)}</span>)}
         <a href={classCUrl} target="_blank" rel="noreferrer">DAO 2016-08, Table 3</a>
       </div>
       <p>{tl ? 'Sangguniang pangkapaligiran, hindi patakaran ng Warning o Critical. Sa Note (b), maaaring manaig ang natural na temperatura na tinukoy ng EMB. Ang opisyal na DO sampling ay 9 AM–4 PM. Ang TSS (80 mg/L) ay iba sa turbidity (NTU).' :
         'Environmental references, not the app’s Warning or Critical thresholds. Under Note (b), EMB-determined natural background temperature may apply. Official DO sampling is 9 AM–4 PM. TSS (80 mg/L) is not turbidity (NTU).'}</p>
+      <div className="water-trend-research">
+        <div className="water-trends-source-line">
+          <strong>{researchTitle(tl)}: {metadata.turbidity[lang]}</strong>
+          <a href={turbiditySource} target="_blank" rel="noreferrer">Hajek &amp; Boyd (1994), {tl ? 'Talahanayan' : 'Table'} 2 (LAJAR)</a>
+        </div>
+        <p>{tl ? 'Para sa freshwater pond aquaculture at gabay lamang. Hindi ito pamantayan ng DENR o LLDA, at hindi ginagamit sa mga alerto o pagsuri ng pagsunod sa DENR Class C.' :
+          'Informational bands for freshwater pond aquaculture. Not a DENR or LLDA standard, an alert threshold, or a measure of DENR Class C compliance.'} {referenceText('turbidity', tl)}.</p>
+      </div>
     </div>
   </section>;
 }

@@ -11,7 +11,21 @@ export type TrendReading = {
   dissolvedOxygen?: number | null;
   temperatureC: number | null;
   turbidityNtu: number | null;
+  rawValue?: number | null;
+  turbidityEstimated?: boolean;
 };
+
+// Informational pond-aquaculture bands from Table 2, not operational or DENR limits.
+export const turbidityResearchReference = {
+  moderate: 25,
+  severeAbove: 100,
+  url: 'https://www.scielo.cl/pdf/lajar/v51n2/0718-560X-lajar-51-02-0160.pdf'
+};
+
+export function compareTurbidityResearch(value: number) {
+  if (value < turbidityResearchReference.moderate) return 'favorable';
+  return value <= turbidityResearchReference.severeAbove ? 'moderate' : 'severe';
+}
 
 const dayMs = 86_400_000;
 // Do not draw a continuous trace across the existing device offline timeout.
@@ -38,17 +52,20 @@ export function makeTrendSeries(points: ReturnType<typeof filterTrendReadings>['
   let previousValid: { time: number; id: number } | null = null;
   const rows = points.map(([time, reading]) => {
     const raw = parameter === 'temperature' ? reading.temperatureC : parameter === 'turbidity' ? reading.turbidityNtu : reading[parameter];
-    const value = chartValue(parameter, raw);
+    // The sensor API supplies null NTU for raw-only uploads; never convert raw counts here.
+    const estimated = parameter === 'turbidity' && (reading.turbidityEstimated === true ||
+      (raw == null && typeof reading.rawValue === 'number' && Number.isFinite(reading.rawValue)));
+    const value = chartValue(parameter, raw, estimated);
     if (value === null) {
       previousValid = null;
-      return { time, value, segment: null };
+      return { time, value, segment: null, uncalibrated: estimated };
     }
     // An untimed upload cannot be plotted. Conservatively break the trace if it
     // arrived between these two records rather than assigning it a sample time.
     if (previousValid === null || time - previousValid.time >= trendGapMs || untimedIds.some(id =>
       previousValid !== null && id > Math.min(previousValid.id, reading.id) && id < Math.max(previousValid.id, reading.id))) segments.push(segments.length);
     previousValid = { time, id: reading.id };
-    return { time, value, segment: segments.length - 1 };
+    return { time, value, segment: segments.length - 1, uncalibrated: false };
   });
   const last = [...rows].reverse().find(row => row.value !== null);
   return { rows, segments, latest: last?.value != null ? { time: last.time, value: last.value } : null };

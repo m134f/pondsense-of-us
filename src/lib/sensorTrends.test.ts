@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { compareClassC, filterTrendReadings, makeTrendSeries, type TrendReading } from './sensorTrends';
+import { compareClassC, compareTurbidityResearch, filterTrendReadings, makeTrendSeries, type TrendReading } from './sensorTrends';
 
 const now = Date.parse('2026-11-23T03:00:00Z');
 const day = 86_400_000;
@@ -41,6 +41,24 @@ test('missing DO and estimated-only turbidity never become measured zero', () =>
     assert.equal(series.rows[0].value, null);
   }
   assert.equal(makeTrendSeries(filterTrendReadings([row(1, 0, { turbidityNtu: 0 })], 1, now).points, 'turbidity').latest?.value, 0);
+});
+
+test('turbidity research bands include both breakpoints in Moderate limitation', () => {
+  for (const [ntu, band] of [[0, 'favorable'], [24.99, 'favorable'], [25, 'moderate'], [100, 'moderate'], [100.01, 'severe']] as const) {
+    assert.equal(compareTurbidityResearch(ntu), band);
+    assert.equal(compareClassC('turbidity', ntu), 'unreferenced');
+  }
+});
+
+test('raw, estimated, missing and invalid turbidity samples are excluded and break the trace', () => {
+  const input = [row(1, 40_000, { turbidityNtu: 0 }), row(2, 30_000, { turbidityNtu: null, rawValue: 250 }),
+    row(3, 20_000, { turbidityNtu: 120, turbidityEstimated: true }), row(4, 15_000, { turbidityNtu: null }),
+    row(5, 10_000, { turbidityNtu: -5, rawValue: 250 }), row(6, 0, { turbidityNtu: 100 })];
+  const { rows, latest } = makeTrendSeries(filterTrendReadings(input, 1, now).points, 'turbidity');
+  assert.deepEqual(rows.map(point => [point.value, point.segment, point.uncalibrated]), [
+    [0, 0, false], [null, null, true], [null, null, true], [null, null, false], [null, null, false], [100, 1, false]
+  ]);
+  assert.deepEqual(latest, { time: now, value: 100 });
 });
 
 test('Class C comparisons include boundaries and do not assign an NTU guideline', () => {

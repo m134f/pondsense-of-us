@@ -258,8 +258,9 @@
 .water-trend-timestamp { display: block; font-size: .8125rem; }
 .water-trend-status { display: inline-flex; align-items: center; gap: 5px; min-height: 24px; padding: 2px 7px; border: 1px solid #dce4eb; border-radius: 6px; background: #f4f6f8; color: #495d6a; font-size: .75rem; font-weight: 600; }
 .water-trend-status::before { content: ''; width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; }
-.water-trend-status[data-comparison='within'] { border-color: #b5dfcd; background: #eaf6ee; color: #146147; }
-.water-trend-status:is([data-comparison='above'], [data-comparison='below']) { border-color: #efc1bc; background: #fff0ee; color: #8f2f32; }
+.water-trend-status:is([data-comparison='within'], [data-comparison='favorable']) { border-color: #b5dfcd; background: #eaf6ee; color: #146147; }
+.water-trend-status[data-comparison='moderate'] { border-color: #efd69c; background: #fff7e3; color: #72500f; }
+.water-trend-status:is([data-comparison='above'], [data-comparison='below'], [data-comparison='severe']) { border-color: #efc1bc; background: #fff0ee; color: #8f2f32; }
 .water-trend-plot { height: 220px; min-width: 0; position: relative; margin-top: 8px; }
 .water-trend-plot svg:focus-visible { outline: 2px solid #0f766e; outline-offset: 2px; }
 .water-trend-plot .recharts-cartesian-axis-tick text { fill: #4b606e; }
@@ -277,6 +278,12 @@
 .water-trend-key { width: 18px; flex: none; border-top: 2px solid #12664f; }
 .water-trend-key-reference { border-top: 2px dashed #3558a9; }
 .water-trend-key-upper { border-top: 2px dashed #bb3e42; }
+.water-trend-research { margin-top: 10px; padding-top: 9px; border-top: 1px solid #dce4eb; }
+.water-trend-research > strong { color: #263a44; }
+.water-trend-research .water-trend-legend { justify-content: flex-start; margin-top: 4px; }
+.water-trend-band { width: 8px; height: 8px; margin-inline: 5px; flex: none; border-radius: 50%; background: #146147; }
+.water-trend-key-research[data-band='moderate'] { border-top: 2px dashed #8a5c10; }
+.water-trend-key-research[data-band='severe'] { border-top: 2px dashed #a42b32; }
 .water-trend-tooltip { max-width: 200px; padding: 7px 10px; border: 1px solid #cbd8e1; border-radius: 6px; background: #fff; color: #293d49; font-size: .8125rem; box-shadow: 0 2px 7px #142f3814; }
 .water-trend-readings { margin-top: 5px; color: #0f6659; font-size: .8125rem; }
 .water-trend-readings > summary { align-content: center; font-weight: 600; }

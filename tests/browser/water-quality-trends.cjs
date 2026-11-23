@@ -6,7 +6,7 @@ const fs = require('node:fs');
 async function main() {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   try {
-    const output = 'outputs/water-quality-trends';
+    const output = 'outputs/turbidity-research';
     fs.mkdirSync(output, { recursive: true });
     const page = await browser.newPage({ serviceWorkers: 'block' });
     page.setDefaultTimeout(8_000);
@@ -37,22 +37,30 @@ async function main() {
       if (path === '/api/sensors/trend') {
         if (fixture === 'loading') await new Promise(resolve => setTimeout(resolve, 350));
         if (fixture === 'error') return route.fulfill({ status: 503, json: {} });
-        return route.fulfill({ json: { readings: fixture === 'records' || fixture === 'stale' ? rows : [] } });
+        const readings = fixture === 'records' || fixture === 'stale' ? rows :
+          fixture === 'raw' ? [sample(10, 160_000, null, null, null)] : [];
+        return route.fulfill({ json: { readings } });
       }
+      const staleTime = new Date(Date.now() - 20_000).toISOString();
+      const stale = { ...sample(9, 0, null, null, null), sampledAt: staleTime, receivedAt: staleTime, recordedAt: staleTime };
       const response = {
         '/api/session': { user: { id: 499, fullName: 'Test Owner', role: 'farmer', mustChangePassword: false }, fishpenAssignment: { id: 42, name: 'Test Fishpen', deviceId: 14 } },
-        '/api/sensors/latest': { telemetry: fixture === 'records' ? rows[6] : fixture === 'stale' ? sample(9, Date.now() - now + 20_000, null, null, null) : null },
+        '/api/sensors/latest': { telemetry: fixture === 'records' ? rows[6] : fixture === 'stale' ? stale : null },
         '/api/readings': { sessions: [] }
       };
       return route.fulfill({ json: response[path] ?? {} });
     });
-    const go = () => page.goto('http://localhost:5175/dashboard');
+    const go = () => page.goto('http://localhost:5175/dashboard', { waitUntil: 'domcontentloaded', timeout: 30_000 });
     for (const width of [320, 390, 768, 1024, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await go();
       await trend.getByText('No historical readings yet').first().waitFor();
       assert.equal(await trend.getByRole('heading', { level: 3 }).count(), 4);
       await card('dissolvedOxygen').getByText('Min 5', { exact: true }).waitFor();
+      await card('turbidity').getByText('25 NTU', { exact: true }).waitFor();
+      await card('turbidity').getByText('100 NTU', { exact: true }).waitFor();
+      await card('turbidity').getByText('Aquaculture Research Reference', { exact: true }).waitFor();
+      assert.equal(await card('turbidity').locator('.recharts-line-dot').count(), 0);
       const phBox = await card('ph').boundingBox(), doBox = await card('dissolvedOxygen').boundingBox();
       assert.equal(phBox.y === doBox.y, width >= 720);
       assert.ok(await trend.evaluate(el => el.scrollWidth <= el.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth));
@@ -70,6 +78,11 @@ async function main() {
         });
       }
     }
+    fixture = 'raw';
+    await go();
+    await card('turbidity').getByText('No calibrated reading', { exact: true }).waitFor();
+    await card('turbidity').getByText('Estimates are not plotted.', { exact: true }).waitFor();
+    assert.equal(await card('turbidity').locator('.recharts-line-dot').count(), 0);
     fixture = 'loading';
     await go();
     await trend.getByRole('status').getByText('Loading historical readings...').or(trend.getByRole('status').filter({ hasText: 'Loading historical readings...' })).first().waitFor();
@@ -85,8 +98,14 @@ async function main() {
     await trend.getByText('1 sample omitted', { exact: false }).waitFor();
     await card('ph').getByText('Within reference range', { exact: true }).waitFor();
     await card('temperature').getByText('Above reference range', { exact: true }).waitFor();
-    await card('turbidity').getByText('No DENR NTU limit in Table 3', { exact: true }).waitFor();
-    assert.equal(await card('turbidity').locator('.recharts-reference-line').count(), 0);
+    await card('turbidity').locator('.water-trend-status').getByText('Severe limitation', { exact: true }).waitFor();
+    assert.equal(await card('turbidity').locator('.recharts-reference-line').count(), 2);
+    assert.equal(await card('turbidity').locator('.recharts-line-dot').count(), 4);
+    await card('turbidity').getByText('Favorable (slight limitation): <25 NTU', { exact: true }).waitFor();
+    await card('turbidity').getByText('Moderate limitation: 25–100 NTU', { exact: true }).waitFor();
+    await card('turbidity').getByText('Severe limitation: >100 NTU', { exact: true }).waitFor();
+    const researchSource = trend.getByRole('link', { name: /Hajek & Boyd/ });
+    assert.match(await researchSource.getAttribute('href'), /0718-560X-lajar-51-02-0160\.pdf$/);
     assert.equal(await card('dissolvedOxygen').locator('.recharts-line-dot').count(), 0);
     assert.equal(await card('ph').locator('path.recharts-line-curve').count(), 2);
     const phChart = card('ph').locator('svg.recharts-surface[tabindex="0"]');
@@ -109,13 +128,15 @@ async function main() {
     await page.getByRole('button', { name: 'Filipino', exact: true }).click();
     await trend.getByRole('combobox', { name: 'Saklaw ng petsa' }).waitFor();
     await trend.getByText('7 tala sa panahong ito.', { exact: false }).waitFor();
+    await trend.getByRole('button', { name: 'Labo ng Tubig', exact: true }).click();
+    await card('turbidity').getByText('Sanggunian sa Pananaliksik sa Aquaculture', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'English', exact: true }).click();
     fixture = 'stale';
     await go();
     await trend.getByText(/The latest sample is stale/).waitFor();
     assert.deepEqual(errors, []);
     assert.ok(requests.length > 0);
-    console.log('Passed five viewports, empty-state captures, loading/error/retry, offline/stale, filters, guidelines, gaps, and keyboard tooltips. No API writes.');
+    console.log('Passed five viewports, empty-state captures, missing calibration, research bands, DENR references, loading/error/retry, offline/stale, filters, gaps, and keyboard tooltips. No API writes.');
   } finally {
     await browser.close();
   }
