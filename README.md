@@ -20,11 +20,13 @@ Pin connections (ESP32 DevKit WROOM-32):
 
 The LCD and dashboard display raw turbidity **ADC signal**, not NTU, until the probe is calibrated against known turbidity standards. The analog module can produce a signal in air; it cannot detect immersion reliably, so a nonzero signal does not prove that water was measured. Do not make a safe/dirty or fish-suitability decision from uncalibrated signal. A disconnected DS18B20 is sent as `null` and displayed as a sensor error, never as a sample temperature. If the LCD shows a temperature but the dashboard does not, check that the LCD says `Server: Updated` and that the dashboard's last-reading timestamp advances. Only temperature and turbidity are measured by this sketch. pH, dissolved oxygen, and ammonia are not implied to be live or zero. A full five-parameter fish recommendation still requires measured values for all five parameters through manual analysis or future sensors.
 
-The new sketch includes the public Google Trust Services Root R4 certificate in `server_ca_cert.h`. This currently verifies the Render API certificate chain, so `device_secrets.h` needs only the private Wi-Fi details and device key. The sketch waits for NTP time and will not upload before the clock is set. If the API host changes its certificate chain, update the public CA from a trusted source and reflash the ESP32. The older turbidity-only sketch still needs a PEM CA in its private header. Use the admin device assignment screen to migrate old devices before relying on the new owner-scoped telemetry. Apply the database changes through normal startup migrations, or update the corresponding `sensor_telemetry` columns and `harvest_batches` table from `server/schema.sql` in the target MySQL database. Back up the database before any manual schema import; the full schema file contains seed data and is not intended as an incremental migration script.
+The new sketch includes the public Google Trust Services Root R4 certificate in `server_ca_cert.h`. This currently verifies the Render API certificate chain, so `device_secrets.h` needs only the private Wi-Fi details and device key. The sketch waits for NTP time and will not upload before the clock is set. If the API host changes its certificate chain, update the public CA from a trusted source and reflash the ESP32. The older turbidity-only sketch still needs a PEM CA in its private header. Use the admin device assignment screen to migrate old devices before relying on the new owner-scoped telemetry. The API validates the existing database at startup without running migrations. Do not import the full schema into production as an upgrade: it contains seed data and is not an incremental migration script.
 
 ## Fish harvesting
 
 Farmers can open Harvests to record stocked batches, planned harvest dates, actual harvest weight, and optional selling price. Each batch belongs to the signed-in farmer. Days remaining are calculated from the farmer's chosen target date; this is a schedule, not a biological growth or yield prediction.
+
+Opted-in harvest reminders are checked at backend startup and hourly while the backend is running. Render Free sleeps when idle, so scheduled checks do not run while it is asleep. A reminder may be delayed until a later startup or hourly check, and a date-specific reminder may be missed if that date has already passed. Existing reminder eligibility and database deduplication still apply. No keep-alive requests or external scheduler are used.
 
 Full-stack capstone project for **A Digital Decision Support System for Fish Pond Management**.
 
@@ -71,7 +73,10 @@ MYSQL_PASSWORD=
 MYSQL_DATABASE=pondsense
 ```
 
-7. Restart `npm run dev`.
+7. For a new local database, set `ADMIN_USERNAME`, `ADMIN_PHONE`, `ADMIN_PASSWORD`, and `ADMIN_PIN` in your ignored local `.env`.
+8. Run `npm run db:prepare:local` once to apply the existing setup to the local database, then start `npm run dev`. The preparation command writes to the database and is not part of normal startup or any deployment.
+
+Production runs `npm run start:api` against an already provisioned MySQL database. If a required table, column, key, or administrator configuration is missing, the API exits before accepting requests. Review the error and the target schema before attempting any repair; startup will not change production tables.
 
 The schema follows the Replit database blueprint:
 

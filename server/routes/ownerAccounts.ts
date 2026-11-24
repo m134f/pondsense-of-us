@@ -34,7 +34,7 @@ export function ownerAccountsRouter(db: Pool | null) {
       const [pen] = await c.execute<ResultSetHeader>('INSERT INTO sms_fishpens (owner_user_id, name, device_id) VALUES (?, ?, ?)', [result.insertId, fishpenName.trim(), device.insertId]);
       await c.execute('INSERT INTO owner_fishpen_assignments (owner_user_id, fishpen_id, updated_by) VALUES (?, ?, ?)', [result.insertId, pen.insertId, req.auth!.sub]);
       await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth!.sub, 'owner_provisioned', JSON.stringify({ ownerId: result.insertId, fishpenId: pen.insertId, deviceId: device.insertId })]);
-      await c.commit(); res.json({ id: result.insertId, temporaryPassword, deviceKey, deviceId: device.insertId, expiresInHours: 24 });
+      await c.commit(); res.set('Cache-Control', 'no-store').json({ id: result.insertId, temporaryPassword, deviceKey, deviceId: device.insertId, expiresInHours: 24 });
     } catch (error) { await c.rollback(); res.status((error as {code?: string}).code === 'ER_DUP_ENTRY' ? 409 : 503).json({ message: (error as {code?: string}).code === 'ER_DUP_ENTRY' ? 'That mobile number already has an account. Manage the existing account instead.' : 'Unable to create owner account.' }); }
     finally { c.release(); }
   });
@@ -65,6 +65,8 @@ export function ownerAccountsRouter(db: Pool | null) {
   router.post('/admin/owners/:id/device-key', requireAdmin, async (req: AuthRequest, res) => {
     const owner = Number(req.params.id);
     if (!Number.isSafeInteger(owner) || owner <= 0) return res.status(400).json({ message: 'Invalid owner.' });
+    const expectedDeviceId = req.body?.expectedDeviceId;
+    if (expectedDeviceId !== undefined && (!Number.isSafeInteger(expectedDeviceId) || expectedDeviceId <= 0)) return res.status(400).json({ message: 'Invalid device.' });
     const deviceKey = `ps_${crypto.randomBytes(24).toString('base64url')}`;
     const hash = await bcrypt.hash(deviceKey, 10);
     const c = await db!.getConnection();
@@ -75,10 +77,13 @@ export function ownerAccountsRouter(db: Pool | null) {
         JOIN sensor_devices d ON d.id = p.device_id AND d.owner_user_id = a.owner_user_id AND d.is_active = 1
         WHERE a.owner_user_id = ? FOR UPDATE`, [owner]);
       if (!rows.length) { await c.rollback(); return res.status(404).json({ message: 'No active fishpen monitor is assigned to this owner.' }); }
+      if (expectedDeviceId !== undefined && Number(rows[0].id) !== expectedDeviceId) {
+        await c.rollback(); return res.status(409).json({ message: 'The monitoring device changed. Refresh the Devices page before replacing its key.' });
+      }
       await c.execute('UPDATE sensor_devices SET api_key_hash = ? WHERE id = ?', [hash, rows[0].id]);
       await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)',
         [req.auth!.sub, 'device_key_replaced', JSON.stringify({ ownerId: owner, deviceId: rows[0].id })]);
-      await c.commit(); res.json({ deviceId: Number(rows[0].id), deviceKey });
+      await c.commit(); res.set('Cache-Control', 'no-store').json({ deviceId: Number(rows[0].id), deviceKey });
     } catch { await c.rollback(); res.status(503).json({ message: 'Unable to replace device key.' }); }
     finally { c.release(); }
   });
@@ -94,7 +99,7 @@ export function ownerAccountsRouter(db: Pool | null) {
       if (!rows.length) { await c.rollback(); return res.status(404).json({ message: 'Owner not found.' }); }
       await c.execute(`UPDATE users SET password_hash = ?, must_change_password = TRUE, temporary_password_expires_at = DATE_ADD(UTC_TIMESTAMP(), INTERVAL 24 HOUR), auth_version = auth_version + 1 WHERE id = ?`, [hash, id]);
       await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth!.sub, 'owner_password_reset', JSON.stringify({ ownerId: id })]);
-      await c.commit(); res.json({ temporaryPassword, expiresInHours: 24 });
+      await c.commit(); res.set('Cache-Control', 'no-store').json({ temporaryPassword, expiresInHours: 24 });
     } catch { await c.rollback(); res.status(503).json({ message: 'Unable to reset password.' }); }
     finally { c.release(); }
   });

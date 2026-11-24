@@ -19,11 +19,14 @@ test('planning HTTP, database isolation, history, stock locks and SMS deduplicat
   await scoped.query(schema);
   const secret = 'isolated-planning-test-signing-secret';
   const origin = 'http://localhost:5173';
-  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { windowsHide: true, env: {
+  const env = {
     ...process.env, PORT: '5001', MYSQL_HOST: '127.0.0.1', MYSQL_PORT: '3307', MYSQL_USER: 'root', MYSQL_PASSWORD: '', MYSQL_DATABASE: database,
     MYSQL_SSL: 'false', SESSION_SECRET: secret, IPROG_SMS_API_TOKEN: '', NODE_ENV: 'test', FRONTEND_URL: origin,
     ADMIN_USERNAME: 'staging-admin', ADMIN_PHONE: '+639199999999', ADMIN_PASSWORD: 'planning-test-password', ADMIN_PIN: 'planning-test-pin'
-  }, stdio: ['ignore', 'pipe', 'pipe'] });
+  };
+  const prepare = spawn(process.execPath, ['--import', 'tsx', 'server/prepare-local-database.ts'], { windowsHide: true, env, stdio: 'inherit' });
+  assert.equal(await new Promise(resolve => prepare.once('exit', resolve)), 0);
+  const child = spawn(process.execPath, ['--import', 'tsx', 'server/index.ts'], { windowsHide: true, env, stdio: ['ignore', 'pipe', 'pipe'] });
   let output = '';
   child.stdout.on('data', b => { output += b.toString(); }); child.stderr.on('data', b => { output += b.toString(); });
   const sessions = new Map<number, string>();

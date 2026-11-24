@@ -3,18 +3,17 @@ import { sensorTurbidityValue, compareSensorSamples, sensorConnectionState } fro
 import { SessionLoading } from './components/SessionLoading';
 import { apiErrorMessage } from './lib/apiError';
 import { OwnerLogin, OwnerPasswordChange, OwnerPasswordForm, sessionOwner, type OwnerSession } from './components/OwnerAuthentication';
-import { ProvisionOwner } from './components/ProvisionOwner';
-import { AdminDeviceEnrollment, AdminDeviceSettings, verifyAdminDevice } from './components/AdminDeviceSecurity';
+import { AdminDeviceEnrollment, verifyAdminDevice } from './components/AdminDeviceSecurity';
+import { AdminWorkspace, type AdminAccount as AdminUser, type AdminSection } from './components/AdminWorkspace';
+import { farmerBrand } from './lib/farmerBrand';
 import { HarvestWorkspace, type SavedHarvest } from './components/HarvestWorkspace';
 import { FarmerLanguage, FarmerNavigation } from './components/FarmerNavigation';
-import { AdminFishpenAssignments } from './components/AdminFishpenAssignments';
 import {
   Activity,
   AlertTriangle,
   BarChart3,
   Check,
   ChevronDown,
-  Database,
   Download,
   Droplets,
   Eye,
@@ -26,8 +25,6 @@ import {
   Radio,
   Thermometer,
   Plus,
-  Settings,
-  Shield,
   User,
   X
 } from "lucide-react";
@@ -49,7 +46,6 @@ import { daysUntilHarvest, estimatedRemainingStock, harvestReminderDue, harvestS
 import { RecommendedActions, type WaterContext } from "./components/RecommendedActions";
 import { HarvestReview } from "./components/HarvestReview";
 import { FishpenSmsSettings, manualSmsPenKey } from "./components/FishpenSmsSettings";
-import { WaterSmsLogs } from "./components/WaterSmsLogs";
 import { ManualWaterForm } from "./components/ManualWaterForm";
 import { ManualAssessment, ManualRecommendedActions } from "./components/ManualAssessment";
 import { WaterQualityTrends } from './components/WaterQualityTrends';
@@ -60,9 +56,8 @@ import { chartValue, classCGuidelines, classCSource, classCUrl } from './lib/wat
 import { clearLegacyBrowserCredentials, storage, type AppUser } from "./lib/storage";
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
 
-type AdminTab = "overview" | "users" | "fish" | "records" | "settings";
 type Lang = "en" | "tl";
-type AdminPath = "/admin/login" | "/admin/dashboard" | "/admin/users" | "/admin/logs" | "/admin/thresholds" | "/admin/settings";
+type AdminPath = '/admin/login' | AdminSection;
 type UserPath = "/login" | "/register" | "/dashboard" | "/history" | "/profile" | "/harvest";
 type SmsResult = {
   configured: boolean;
@@ -129,16 +124,6 @@ type SensorAnalysisState = {
   turbidity: number;
   isEstimated: boolean;
   recordedAt: string;
-};
-type AdminUser = {
-  accountStatus?: 'PENDING' | 'ACTIVE' | 'REJECTED' | 'SUSPENDED';
-  id: number;
-  fullName: string;
-  username?: string | null;
-  email?: string | null;
-  phone?: string | null;
-  role: "admin" | "farmer";
-  createdAt?: string;
 };
 
 const defaultParams: WaterParams = {
@@ -1028,7 +1013,7 @@ export default function App() {
 
 
   if (path.startsWith("/admin")) {
-    return <AdminRouter path={path as AdminPath} navigate={navigate} text={text} />;
+    return <AdminRouter path={path as AdminPath} navigate={navigate} />;
   }
   if (sessionLoading) return <SessionLoading error={sessionError} onRetry={() => setSessionAttempt(value => value + 1)} lang={lang} />;
 
@@ -2474,103 +2459,46 @@ function AuthModal({ onClose, onLogin }: { text: typeof ui.en; onClose: () => vo
   return <OwnerLogin navigate={() => onClose()} onLogin={onLogin} />;
 }
 
-function AdminRouter({ path, navigate, text }: { path: AdminPath; navigate: (path: string) => void; text: typeof ui.en }) {
+function AdminRouter({ path, navigate }: { path: AdminPath; navigate: (path: string) => void }) {
   const [admin, setAdmin] = useState<AdminUser | null>(null);
-  const [loading, setLoading] = useState(path !== "/admin/login");
-  const routes: Array<{ path: AdminPath; label: string; icon: typeof Shield }> = [
-    { path: "/admin/dashboard", label: "Dashboard", icon: BarChart3 },
-    { path: "/admin/users", label: "Users", icon: User },
-    { path: "/admin/logs", label: "Logs", icon: Database },
-    { path: "/admin/thresholds", label: "Thresholds", icon: Fish },
-    { path: "/admin/settings", label: "Settings", icon: Settings }
-  ];
+  const [error, setError] = useState('');
+  const [attempt, setAttempt] = useState(0);
+  const loginPage = path === '/admin/login';
 
   useEffect(() => {
-    if (path === "/admin/login") {
-      setLoading(false);
-      return;
-    }
+    setError('');
+    if (loginPage) { setAdmin(null); return; }
     let active = true;
-    setLoading(true);
     apiJson<{ admin: AdminUser | null }>("/api/admin/session").then((result) => {
       if (!active) return;
-      if (!result.data?.admin) {
+      if (result.status === 401 || result.status === 403 || (result.data && !result.data.admin)) {
+        setAdmin(null);
         navigate("/admin/login");
         return;
       }
-      setAdmin(result.data.admin);
-      setLoading(false);
+      if (result.data?.admin) setAdmin(result.data.admin);
+      else setError(result.error || 'Could not verify the administrator session.');
     });
     return () => {
       active = false;
     };
-  }, [path, navigate]);
+  }, [path, loginPage, navigate, attempt]);
 
   if (path === "/admin/login") {
     return <AdminLoginPage navigate={navigate} />;
   }
 
-  if (loading) {
+  if (!admin) {
     return (
-      <div className="grid min-h-screen place-items-center bg-slate-100">
-        <div className="rounded-2xl bg-white px-6 py-5 text-sm font-black text-slate-600 shadow">Checking admin session...</div>
+      <div className="admin-access-screen">
+        <section className="admin-access-card admin-access-status" aria-live="polite">
+          <p>{error || 'Checking admin session...'}</p>
+          {error && <button className="soft-button" onClick={() => setAttempt(value => value + 1)}>Try again</button>}
+        </section>
       </div>
     );
   }
-
-  return (
-    <div className="min-h-screen bg-slate-100">
-      <header className="sticky top-0 z-40 border-b border-slate-200 bg-white/95 backdrop-blur">
-        <div className="mx-auto flex max-w-[1500px] flex-col gap-3 px-4 py-4 sm:px-6 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex items-center gap-3">
-            <span className="grid h-11 w-11 place-items-center overflow-hidden rounded-xl bg-white ring-1 ring-teal-100">
-              <img src="/logofishpond.png?v=logo-20260612" alt="PondSense of Us logo" className="h-full w-full object-cover" />
-            </span>
-            <div>
-              <h1 className="text-lg font-black text-slate-950">Admin Console</h1>
-              <p className="text-sm font-semibold text-slate-500">Signed in as {admin?.fullName || "Administrator"}</p>
-            </div>
-          </div>
-          <div className="flex flex-wrap gap-2">
-            <button className="soft-button" onClick={() => navigate("/")}>Farmer Dashboard</button>
-            <button
-              className="soft-button"
-              onClick={async () => {
-                await apiJson("/api/admin/logout", { method: "POST", body: "{}" });
-                navigate("/admin/login");
-              }}
-            >
-              <LogOut size={16} /> Logout
-            </button>
-          </div>
-        </div>
-      </header>
-
-      <main className="mx-auto grid max-w-[1500px] gap-5 px-4 py-5 sm:px-6 lg:grid-cols-[260px_1fr]">
-        <aside className="card h-fit p-3">
-          <nav className="space-y-1">
-            {routes.map((route) => (
-              <button
-                key={route.path}
-                className={`flex w-full items-center gap-2 rounded-xl px-3 py-3 text-left text-sm font-black transition ${
-                  path === route.path ? "bg-teal-100 text-teal-800" : "text-slate-600 hover:bg-slate-100 hover:text-slate-950"
-                }`}
-                onClick={() => navigate(route.path)}
-              >
-                <route.icon size={17} /> {route.label}
-              </button>
-            ))}
-          </nav>
-        </aside>
-
-        <section className="space-y-5">
-          <AdminContent path={path} navigate={navigate} text={text} />
-          {path === '/admin/settings' && <AdminDeviceSettings />}
-          {path === '/admin/settings' && <AdminFishpenAssignments />}
-        </section>
-      </main>
-    </div>
-  );
+  return <AdminWorkspace path={path} admin={admin} navigate={navigate} />;
 }
 
 function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
@@ -2583,6 +2511,7 @@ function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
   const [submitting, setSubmitting] = useState(false);
 
   const login = async () => {
+    if (submitting) return;
     setError("");
     setSubmitting(true);
     const result = await postJson<{ admin?: AdminUser; token?: string; webauthnRequired?: boolean; bootstrapRequired?: boolean }>("/api/admin/login", { identifier, password, pin });
@@ -2601,457 +2530,34 @@ function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
     setError('Device verification could not start. Please try again.');
   };
 
-  return (
-    <div className="admin-login-shell relative grid min-h-screen place-items-center overflow-hidden p-4">
-      <div className="admin-water-glow" />
-      <div className="admin-ripple admin-ripple-one" />
-      <div className="admin-ripple admin-ripple-two" />
-      <section className="auth-card relative z-10 w-full max-w-md overflow-hidden rounded-2xl border border-white/25 bg-white shadow-2xl">
-        <div className="bg-gradient-to-br from-teal-500 to-emerald-600 p-6 text-white">
-          <div className="flex items-center gap-3">
-            <span className="grid h-11 w-11 place-items-center overflow-hidden rounded-xl bg-white/95 shadow">
-              <img src="/logofishpond.png?v=logo-20260612" alt="PondSense of Us logo" className="h-full w-full object-cover" />
-            </span>
-            <div>
-              <p className="text-sm font-black uppercase tracking-[0.18em] text-teal-50">PondSense of Us</p>
-              <h1 className="flex items-center gap-2 text-2xl font-black"><Shield size={22} /> Admin Login</h1>
-            </div>
-          </div>
-          <p className="mt-2 text-sm font-medium text-teal-50">Secure access for system management</p>
+  return <div className="admin-access-screen">
+    <section className="admin-access-card">
+      <header><img src={farmerBrand.logo} alt="" width="40" height="40" /><div><p>{farmerBrand.name}</p><h1>Admin Login</h1></div></header>
+      <div className="admin-access-body">
+        {!deviceFlow && <form onSubmit={event => { event.preventDefault(); void login(); }}>
+          <label>Username or email<input required autoComplete="username" value={identifier} onChange={event => setIdentifier(event.target.value)} /></label>
+          <label>Admin password<input required type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></label>
+          <label>Admin PIN<input required type="password" autoComplete="off" value={pin} onChange={event => setPin(event.target.value)} /></label>
+          <button className="primary-button w-full" disabled={submitting}>{submitting ? 'Logging in...' : 'Login to Admin'}</button>
+        </form>}
+        {error && <p role="alert" className="admin-notice" data-tone="warning">{error}</p>}
+        {deviceFlow && <div className="space-y-3">
+          {!deviceFlow.bootstrap && !enrolling && <button className="primary-button w-full" disabled={submitting} onClick={async () => {
+            setSubmitting(true); setError('');
+            try { await verifyAdminDevice(deviceFlow.token); navigate('/admin/dashboard'); }
+            catch (e) { setError((e as Error).message); setDeviceFlow(null); }
+            finally { setSubmitting(false); }
+          }}>Verify this authorized device</button>}
+          {!deviceFlow.bootstrap && !enrolling && <button className="soft-button w-full" onClick={() => setEnrolling(true)}>Request enrollment of a new device</button>}
+          {enrolling && <AdminDeviceEnrollment token={deviceFlow.token} bootstrap={deviceFlow.bootstrap} onDone={() => navigate('/admin/dashboard')} />}
+          {deviceFlow.bootstrap && <button className="soft-button w-full" onClick={() => navigate('/admin/dashboard')}>Continue existing admin access until setup</button>}
+          <button className="soft-button w-full" disabled={submitting} onClick={() => { setDeviceFlow(null); setEnrolling(false); setError(''); }}>Back to admin login</button>
+        </div>}
+        <div className="admin-actions">
+          <button className="soft-button" onClick={() => navigate('/')}>Farmer Dashboard</button>
+          <button className="soft-button" onClick={() => navigate('/login')}>Farmer Login</button>
         </div>
-        <div className="space-y-3 p-6">
-          <input className="auth-input w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold outline-none" placeholder="Username or email" value={identifier} onChange={(event) => setIdentifier(event.target.value)} />
-          <input className="auth-input w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold outline-none" type="password" placeholder="Admin password" value={password} onChange={(event) => setPassword(event.target.value)} />
-          <input className="auth-input w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 font-semibold outline-none" type="password" placeholder="Admin PIN" value={pin} onChange={(event) => setPin(event.target.value)} onKeyDown={(event) => event.key === "Enter" && login()} />
-          {error && <p className="auth-message auth-error rounded-xl bg-red-50 px-3 py-2 text-sm font-bold text-red-700">{error}</p>}
-          {deviceFlow && <div className="space-y-3">
-            {!deviceFlow.bootstrap && !enrolling && <button className="primary-button w-full" disabled={submitting} onClick={async () => {
-              setSubmitting(true); setError('');
-              try { await verifyAdminDevice(deviceFlow.token); navigate('/admin/dashboard'); }
-              catch (e) { setError((e as Error).message); setDeviceFlow(null); }
-              finally { setSubmitting(false); }
-            }}>Verify this authorized device</button>}
-            {!deviceFlow.bootstrap && !enrolling && <button className="soft-button w-full" onClick={() => setEnrolling(true)}>Request enrollment of a new device</button>}
-            {enrolling && <AdminDeviceEnrollment token={deviceFlow.token} bootstrap={deviceFlow.bootstrap} onDone={() => navigate('/admin/dashboard')} />}
-            {deviceFlow.bootstrap && <button className="soft-button w-full" onClick={() => navigate('/admin/dashboard')}>Continue existing admin access until setup</button>}
-          </div>}
-          <button className="primary-button w-full disabled:cursor-not-allowed disabled:bg-slate-400" onClick={login} disabled={submitting}>
-            {submitting && <span className="loading-spinner" />}
-            {submitting ? "Logging in..." : "Login to Admin"}
-          </button>
-          <div className="grid gap-2 sm:grid-cols-2">
-            <button className="auth-subtle-button rounded-xl px-4 py-2 text-sm font-bold text-slate-500 transition hover:bg-slate-100" onClick={() => navigate("/")}>
-              Farmer Dashboard
-            </button>
-            <button className="auth-subtle-button rounded-xl px-4 py-2 text-sm font-black text-teal-700 transition hover:bg-teal-50" onClick={() => navigate("/login")}>
-              Farmer Login
-            </button>
-          </div>
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function AdminContent({ path, navigate, text }: { path: AdminPath; navigate: (path: string) => void; text: typeof ui.en }) {
-  if (path === "/admin/dashboard") return <AdminDashboardPage />;
-  if (path === "/admin/users") return <AdminUsersPage />;
-  if (path === "/admin/logs") return <AdminLogsPage />;
-  if (path === "/admin/thresholds") return <AdminThresholdsPage />;
-  if (path === "/admin/settings") return <AdminSettingsPage navigate={navigate} text={text} />;
-  return <AdminDashboardPage />;
-}
-
-function AdminDashboardPage() {
-  const [stats, setStats] = useState({ users: 0, readings: 0, alerts: 0, correctiveActions: 0, criticalToday: 0, smsToday: 0 });
-  useEffect(() => {
-    apiJson<typeof stats>("/api/admin/stats").then((result) => result.data && setStats(result.data));
-  }, []);
-  return (
-    <div className="space-y-5">
-      <div>
-        <h2 className="text-2xl font-black text-slate-950">Admin Dashboard</h2>
-        <p className="text-sm font-semibold text-slate-500">Quick overview of farmers, readings, alerts, and system activity.</p>
-      </div>
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <AdminStat label="Total Farmers" value={stats.users} />
-        <AdminStat label="Total Readings" value={stats.readings} />
-        <AdminStat label="Critical Today" value={stats.criticalToday} />
-        <AdminStat label="SMS Sent Today" value={stats.smsToday} />
-      </div>
-      <div className="grid gap-4 lg:grid-cols-2">
-        <section className="card p-5">
-          <h3 className="text-lg font-black text-slate-950">System Summary</h3>
-          <div className="mt-4 space-y-3 text-sm font-semibold text-slate-600">
-            <p className="flex justify-between rounded-xl bg-slate-50 px-3 py-2"><span>All SMS alert records</span><span>{stats.alerts}</span></p>
-            <p className="flex justify-between rounded-xl bg-slate-50 px-3 py-2"><span>Corrective action logs</span><span>{stats.correctiveActions}</span></p>
-            <p className="flex justify-between rounded-xl bg-slate-50 px-3 py-2"><span>Last updated</span><span>{new Date().toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })}</span></p>
-          </div>
-        </section>
-        <section className="card p-5">
-          <h3 className="text-lg font-black text-slate-950">Admin Focus</h3>
-          <ol className="mt-4 space-y-2 text-sm font-semibold text-slate-600">
-            <li className="rounded-xl border border-slate-200 px-3 py-2">1. Check critical readings first.</li>
-            <li className="rounded-xl border border-slate-200 px-3 py-2">2. Review SMS logs and failed sends.</li>
-            <li className="rounded-xl border border-slate-200 px-3 py-2">3. Adjust fish thresholds only with adviser/BFAR guidance.</li>
-          </ol>
-        </section>
-      </div>
-    </div>
-  );
-}
-
-function AdminUsersPage() {
-  const [users, setUsers] = useState<AdminUser[]>([]);
-  const [temporaryPassword, setTemporaryPassword] = useState('');
-  const [busy, setBusy] = useState<number | null>(null);
-  const [error, setError] = useState('');
-  const refresh = async () => {
-    const result = await apiJson<{ users: AdminUser[] }>('/api/admin/users');
-    if (result.data) setUsers(result.data.users);
-    else setError(result.error || 'Unable to load users.');
-  };
-  const updateStatus = async (user: AdminUser, status: string) => {
-    if (!window.confirm(`${status}: ${user.fullName}?`)) return;
-    setBusy(user.id); setError('');
-    const result = await apiJson(`/api/admin/users/${user.id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
-    if (result.error) setError(result.error);
-    else await refresh();
-    setBusy(null);
-  };
-  const [query, setQuery] = useState("");
-  useEffect(() => {
-    void refresh();
-  }, []);
-  const filteredUsers = users.filter((user) => {
-    const value = `${user.fullName} ${user.username || ""} ${user.email || ""} ${user.phone || ""} ${user.role}`.toLowerCase();
-    return value.includes(query.toLowerCase());
-  });
-  return (
-    <section className="card p-5">
-      <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h2 className="text-xl font-black text-slate-950">Owner Accounts</h2>
-          {error && <p role="alert" className="text-red-700">{error}</p>}
-          <p className="text-sm font-semibold text-slate-500">{filteredUsers.length} of {users.length} accounts shown</p>
-        </div>
-        <input
-          className="min-h-11 w-full rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100 sm:max-w-xs"
-          placeholder="Search name, phone, role..."
-          value={query}
-          onChange={(event) => setQuery(event.target.value)}
-        />
-      </div>
-      <ProvisionOwner onSaved={() => void refresh()} />
-      {temporaryPassword && <div className="mb-4 rounded-md bg-amber-50 p-4"><p>Temporary password — expires in 24 hours; provide privately.</p><code className="block break-all">{temporaryPassword}</code><button className="soft-button mt-2" onClick={() => setTemporaryPassword('')}>Hide password</button></div>}
-      <div className="overflow-x-auto">
-        <table className="w-full min-w-[760px] text-left text-sm">
-          <thead className="bg-slate-50 text-xs uppercase text-slate-500">
-            <tr><th className="px-4 py-3">Name</th><th className="px-4 py-3">Username/Email</th><th className="px-4 py-3">Phone</th><th className="px-4 py-3">Role</th><th className="px-4 py-3">Created</th></tr>
-          </thead>
-          <tbody className="divide-y divide-slate-100">
-            {filteredUsers.map((user) => (
-              <tr key={user.id}>
-                <td className="px-4 py-3 font-bold text-slate-900">{user.fullName}</td>
-                <td className="px-4 py-3 text-slate-600">{user.username || user.email || "-"}</td>
-                <td className="px-4 py-3 text-slate-600">{user.phone || "-"}</td>
-                <td className="px-4 py-3"><span className={badgeClasses(user.role === "admin" ? "High" : "Medium")}>{user.role}</span>
-                  {user.role === 'farmer' && <div className="mt-2 space-y-2"><strong>{user.accountStatus}</strong><div className="flex flex-wrap gap-2">
-                    {user.accountStatus !== 'ACTIVE' && <button disabled={busy !== null} className="soft-button" onClick={() => void updateStatus(user, 'ACTIVE')}>Reactivate</button>}
-                    {user.accountStatus === 'ACTIVE' && <button disabled={busy !== null} className="soft-button" onClick={() => void updateStatus(user, 'SUSPENDED')}>Suspend</button>}
-                    <button disabled={busy !== null} className="soft-button" onClick={async () => { if (!window.confirm(`Reset password for ${user.fullName}? Existing sessions will be invalidated.`)) return; setBusy(user.id); setError(''); setTemporaryPassword(''); const r = await apiJson<{ temporaryPassword: string }>(`/api/admin/owners/${user.id}/reset-password`, { method: 'POST', body: '{}' }); if (r.error) setError(r.error); else setTemporaryPassword(r.data!.temporaryPassword); setBusy(null); }}>Reset password</button>
-                  </div></div>}
-                </td>
-                <td className="px-4 py-3 text-slate-600">{user.createdAt ? new Date(user.createdAt).toLocaleString("en-PH") : "-"}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
       </div>
     </section>
-  );
-}
-
-function AdminLogsPage() {
-  const [logs, setLogs] = useState<Array<Record<string, unknown>>>([]);
-  const [planningSms, setPlanningSms] = useState<Array<Record<string, unknown>>>([]);
-  const [alerts, setAlerts] = useState<Array<Record<string, unknown>>>([]);
-  const [auditLogs, setAuditLogs] = useState<Array<Record<string, unknown>>>([]);
-  const [logSearch, setLogSearch] = useState("");
-  const [statusFilter, setStatusFilter] = useState("all");
-  const [smsFilter, setSmsFilter] = useState("all");
-  useEffect(() => {
-    apiJson<{ logs: Array<Record<string, unknown>> }>("/api/admin/logs").then((result) => result.data && setLogs(result.data.logs));
-    apiJson<{ alerts: Array<Record<string, unknown>> }>("/api/admin/alerts").then((result) => result.data && setAlerts(result.data.alerts));
-    apiJson<{ logs: Array<Record<string, unknown>> }>('/api/admin/planning-sms').then(result => result.data && setPlanningSms(result.data.logs));
-    apiJson<{ auditLogs: Array<Record<string, unknown>> }>("/api/admin/audit-logs").then((result) => result.data && setAuditLogs(result.data.auditLogs));
-  }, []);
-  const filteredLogs = logs.filter((row) => {
-    const haystack = `${row.full_name || ""} ${row.phone || ""} ${row.status || ""} ${row.best_fish || ""}`.toLowerCase();
-    const matchesSearch = haystack.includes(logSearch.toLowerCase());
-    const matchesStatus = statusFilter === "all" || String(row.status || "").toLowerCase() === statusFilter;
-    return matchesSearch && matchesStatus;
-  });
-  const filteredAlerts = alerts.filter((alert) => {
-    const haystack = `${alert.full_name || ""} ${alert.phone || ""} ${alert.alert_type || ""} ${alert.severity || ""} ${alert.message || ""} ${alert.sms_status || ""} ${alert.sms_error || ""}`.toLowerCase();
-    const matchesSearch = haystack.includes(logSearch.toLowerCase());
-    const smsStatus = String(alert.sms_status || (Number(alert.sms_sent) === 1 ? "sent" : "skipped")).toLowerCase();
-    const matchesSms = smsFilter === "all" || smsStatus === smsFilter;
-    return matchesSearch && matchesSms;
-  });
-  const filteredAuditLogs = auditLogs.filter((log) => {
-    const haystack = `${log.full_name || ""} ${log.username || ""} ${log.action || ""} ${log.details || ""}`.toLowerCase();
-    return haystack.includes(logSearch.toLowerCase());
-  });
-  const exportRows = () => {
-    const rows = [["Time", "Farmer", "pH", "Temp", "Turbidity", "Ammonia", "DO", "Best Fish", "Score", "Status"], ...filteredLogs.map((row) => [
-      row.recorded_at, row.full_name, row.ph, row.temperature, row.turbidity, row.ammonia, row.dissolved_oxygen, row.best_fish, row.best_score, row.status
-    ])];
-    const csv = rows.map((row) => row.join(",")).join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    const a = document.createElement("a");
-    a.href = url;
-    a.download = "pondsense-admin-logs.csv";
-    a.click();
-    URL.revokeObjectURL(url);
-  };
-  return (
-    <div className="space-y-5">
-      <WaterSmsLogs />
-      <section className="card p-5">
-        <div className="mb-4 flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-          <div>
-            <h2 className="text-xl font-black text-slate-950">Sensor Readings</h2>
-            <p className="text-sm font-semibold text-slate-500">{filteredLogs.length} readings shown · Updated {new Date().toLocaleTimeString("en-PH", { hour: "2-digit", minute: "2-digit" })}</p>
-          </div>
-          <div className="flex flex-col gap-2 sm:flex-row">
-            <input className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-4 py-2 text-sm font-semibold outline-none focus:border-teal-400 focus:ring-4 focus:ring-teal-100" placeholder="Search farmer, phone, fish..." value={logSearch} onChange={(event) => setLogSearch(event.target.value)} />
-            <select className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-black text-slate-600" value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)}>
-              <option value="all">All status</option>
-              <option value="safe">Safe</option>
-              <option value="warning">Warning</option>
-              <option value="critical">Critical</option>
-            </select>
-          </div>
-          <button className="soft-button" onClick={exportRows}><Download size={16} /> Export CSV</button>
-        </div>
-        <div className="max-h-[360px] overflow-auto">
-          {filteredLogs.map((row) => (
-            <div key={String(row.id)} className="mb-2 rounded-xl border border-slate-200 p-3 text-sm">
-              <p className="font-black text-slate-950">{String(row.full_name || "Guest")} - {String(row.status || "Safe")}</p>
-              <p className="text-slate-600">pH {String(row.ph)} | Temp {String(row.temperature)} | Turb {String(row.turbidity)} | NH3 {String(row.ammonia)} | DO {String(row.dissolved_oxygen)}</p>
-            </div>
-          ))}
-        </div>
-      </section>
-      <section className="card p-5">
-        <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div>
-            <h2 className="text-xl font-black text-slate-950">SMS Alert Logs</h2>
-            <p className="text-sm font-semibold text-slate-500">{filteredAlerts.length} alerts shown</p>
-          </div>
-          <select className="min-h-11 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-black text-slate-600" value={smsFilter} onChange={(event) => setSmsFilter(event.target.value)}>
-            <option value="all">All SMS results</option>
-            <option value="sent">SMS sent</option>
-            <option value="failed">Failed</option>
-            <option value="skipped">Skipped</option>
-          </select>
-        </div>
-        <div className="space-y-2">
-          {filteredAlerts.map((alert) => (
-            <div key={String(alert.id)} className="rounded-xl border border-slate-200 p-3 text-sm">
-              <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-                <p className="font-black text-slate-950">{String(alert.alert_type)} - {String(alert.severity)}</p>
-                <p className="rounded-lg bg-slate-100 px-2 py-1 text-xs font-black text-slate-600">
-                  {String(alert.full_name || "Guest Mode") === "Guest Mode"
-                    ? "Guest Mode"
-                    : `${String(alert.full_name)} · ${String(alert.phone || "No phone")}`}
-                </p>
-              </div>
-              <p className="text-slate-600">{String(alert.message || "")}</p>
-              <p className="mt-1 text-xs font-bold text-slate-400">SMS sent: {Number(alert.sms_sent) === 1 ? "Yes" : "No"}</p>
-              <div className="mt-2 flex flex-wrap gap-2">
-                <span
-                  className={`rounded-lg px-2 py-1 text-xs font-black uppercase ${
-                    String(alert.sms_status || (Number(alert.sms_sent) === 1 ? "sent" : "skipped")).toLowerCase() === "sent"
-                      ? "bg-emerald-100 text-emerald-800"
-                      : String(alert.sms_status || "").toLowerCase() === "failed"
-                        ? "bg-red-100 text-red-800"
-                        : "bg-slate-100 text-slate-700"
-                  }`}
-                >
-                  SMS {String(alert.sms_status || (Number(alert.sms_sent) === 1 ? "sent" : "skipped"))}
-                </span>
-                {Boolean(alert.sent_at) && <span className="rounded-lg bg-slate-100 px-2 py-1 text-xs font-bold text-slate-500">{new Date(String(alert.sent_at)).toLocaleString("en-PH")}</span>}
-              </div>
-              {Boolean(alert.sms_error) && <p className="mt-2 rounded-lg bg-amber-50 px-2 py-1 text-xs font-bold text-amber-800">Reason: {String(alert.sms_error)}</p>}
-            </div>
-          ))}
-          {!filteredAlerts.length && <p className="rounded-xl border border-dashed border-slate-200 p-4 text-sm font-semibold text-slate-500">No SMS alerts match the current filters.</p>}
-        </div>
-      </section>
-      <section className="card p-5">
-        <div className="mb-4">
-          <h2 className="text-xl font-black text-slate-950">Planning SMS Attempts</h2>
-          <p className="text-sm text-slate-600">Provider acceptance is not confirmation of delivery to the phone.</p>
-          <div className="mt-3 max-h-80 space-y-2 overflow-y-auto">{planningSms.map(row => <div key={String(row.id)} className="rounded-lg border p-3 text-sm">
-            <p className="font-bold">{String(row.full_name || 'Deleted account')} · {String(row.phone || '')}</p>
-            <p>{String(row.kind)} · {row.status === 'sent' ? 'Provider accepted' : String(row.status)} · {new Date(String(row.created_at)).toLocaleString()}</p>
-            {Boolean(row.error_message) && <p className="text-red-700">{String(row.error_message)}</p>}
-          </div>)}</div>
-          {!planningSms.length && <p className="mt-3 text-sm text-slate-600">No planning SMS attempts.</p>}
-          <h2 className="mt-6 text-xl font-black text-slate-950">Admin Audit Logs</h2>
-          <p className="text-sm font-semibold text-slate-500">{filteredAuditLogs.length} admin actions shown</p>
-        </div>
-        <div className="space-y-2">
-          {filteredAuditLogs.map((log) => (
-            <div key={String(log.id)} className="rounded-xl border border-slate-200 p-3 text-sm">
-              <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-                <p className="font-black capitalize text-slate-950">{String(log.action || "admin_action").replace(/_/g, " ")}</p>
-                <p className="rounded-lg bg-teal-50 px-2 py-1 text-xs font-black text-teal-800">
-                  {String(log.full_name || log.username || "Unknown admin")}
-                </p>
-              </div>
-              <p className="mt-1 text-slate-600">{String(log.details || "No details recorded.")}</p>
-              <p className="mt-1 text-xs font-bold text-slate-400">{log.created_at ? new Date(String(log.created_at)).toLocaleString("en-PH") : "No timestamp"}</p>
-            </div>
-          ))}
-          {!filteredAuditLogs.length && <p className="rounded-xl border border-dashed border-slate-200 p-4 text-sm font-semibold text-slate-500">No admin actions recorded yet.</p>}
-        </div>
-      </section>
-    </div>
-  );
-}
-
-function AdminThresholdsPage() {
-  const [fish, setFish] = useState<Array<Record<string, unknown>>>([]);
-  useEffect(() => {
-    apiJson<{ fish: Array<Record<string, unknown>> }>("/api/admin/thresholds").then((result) => result.data && setFish(result.data.fish));
-  }, []);
-  const save = async (row: Record<string, unknown>) => {
-    await apiJson(`/api/admin/thresholds/${row.id}`, { method: "PATCH", body: JSON.stringify(row) });
-  };
-  const fields = [
-    { key: "optimal_ph_min", label: "Minimum pH", help: "Lowest acceptable pH", step: "0.01" },
-    { key: "optimal_ph_max", label: "Maximum pH", help: "Highest acceptable pH", step: "0.01" },
-    { key: "optimal_temp_min", label: "Minimum Temp", help: "Lowest water temperature (C)", step: "0.01" },
-    { key: "optimal_temp_max", label: "Maximum Temp", help: "Highest water temperature (C)", step: "0.01" },
-    { key: "optimal_do_min", label: "Minimum DO", help: "Lowest dissolved oxygen (mg/L)", step: "0.01" },
-    { key: "optimal_do_max", label: "Maximum DO", help: "Highest dissolved oxygen (mg/L)", step: "0.01" },
-    { key: "optimal_turb_min", label: "Minimum Turbidity", help: "Lowest turbidity level (NTU)", step: "0.01" },
-    { key: "optimal_turb_max", label: "Maximum Turbidity", help: "Highest turbidity level (NTU)", step: "0.01" },
-    { key: "max_ammonia", label: "Max Ammonia", help: "Highest safe NH3 level (mg/L)", step: "0.0001" }
-  ];
-  return (
-    <section className="card p-5">
-      <div className="mb-4">
-        <h2 className="text-xl font-black text-slate-950">Fish Threshold Management</h2>
-        <p className="text-sm font-semibold text-slate-500">Edit only with validated aquaculture references or adviser guidance.</p>
-      </div>
-      <div className="space-y-3">
-        {fish.map((row, index) => (
-          <div key={String(row.id)} className="rounded-2xl border border-slate-200 p-4">
-            <h3 className="font-black text-slate-950">{String(row.name)}</h3>
-            <div className="mt-3 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-              {fields.map((field) => (
-                <label key={field.key} className="rounded-xl bg-slate-50 p-3 text-xs font-bold uppercase text-slate-500">
-                  {field.label}
-                  <input className="mt-1 min-h-11 w-full rounded-xl border border-slate-200 px-3 py-2 text-sm font-black text-slate-900" type="number" step={field.step} value={String(row[field.key] ?? "")} onChange={(event) => {
-                    const next = [...fish];
-                    next[index] = { ...row, [field.key]: Number(event.target.value) };
-                    setFish(next);
-                  }} />
-                  <span className="mt-1 block normal-case text-slate-400">{field.help}</span>
-                </label>
-              ))}
-            </div>
-            <button className="primary-button mt-3 py-2" onClick={() => save(row)}>Save Thresholds</button>
-          </div>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function AdminSettingsPage({ navigate, text }: { navigate: (path: string) => void; text: typeof ui.en }) {
-  const [pin, setPin] = useState("");
-  const [message, setMessage] = useState("");
-  const changePin = async () => {
-    const result = await apiJson("/api/admin/settings/pin", { method: "POST", body: JSON.stringify({ pin }) });
-    setMessage(result.error || "Admin PIN updated.");
-    if (!result.error) setPin("");
-  };
-  const clearLogs = async () => {
-    if (!confirm("Type CLEAR_LOGS in the next prompt to clear all logs.")) return;
-    if (prompt("Confirmation") !== "CLEAR_LOGS") return;
-    const result = await apiJson("/api/admin/logs?confirm=CLEAR_LOGS", { method: "DELETE" });
-    setMessage(result.error || "Logs cleared.");
-  };
-  const factoryReset = async () => {
-    if (prompt("Type RESET_PONDSENSE to factory reset user records and logs.") !== "RESET_PONDSENSE") return;
-    const result = await apiJson("/api/admin/factory-reset?confirm=RESET_PONDSENSE", { method: "DELETE" });
-    setMessage(result.error || "Factory reset complete.");
-  };
-  return (
-    <div className="space-y-5"><AdminDevicesPage /><section className="card p-5">
-      <h2 className="text-xl font-black text-slate-950">{text.settings}</h2>
-      <div className="mt-5 max-w-md space-y-3">
-        <input className="w-full rounded-xl border border-slate-200 px-4 py-3" type="password" placeholder="New admin PIN" value={pin} onChange={(event) => setPin(event.target.value)} />
-        <button className="primary-button w-full" onClick={changePin}>Change Admin PIN</button>
-        <button className="soft-button w-full" onClick={() => navigate("/admin/login")}>Go to Admin Login</button>
-        <button className="w-full rounded-xl bg-amber-500 px-4 py-3 text-sm font-black text-white transition hover:bg-amber-600" onClick={clearLogs}>Clear Logs</button>
-        <button className="w-full rounded-xl bg-red-600 px-4 py-3 text-sm font-black text-white transition hover:bg-red-700" onClick={factoryReset}>Factory Reset</button>
-        {message && <p className="rounded-xl bg-slate-100 px-3 py-2 text-sm font-bold text-slate-700">{message}</p>}
-      </div>
-    </section></div>
-  );
-}
-
-function AdminDevicesPage() {
-  type Device = { id: number; device_name: string; owner_user_id: number | null; owner_name: string | null; is_active: number; last_seen_at: string | null; last_reading_at: string | null; monitoring_fishpen_id: number | null };
-  const [devices, setDevices] = useState<Device[]>([]);
-  const [message, setMessage] = useState("");
-  const [busyDevice, setBusyDevice] = useState<number | null>(null);
-  const [replacementKey, setReplacementKey] = useState<{ deviceId: number; key: string } | null>(null);
-  const refresh = async () => {
-    const deviceResult = await apiJson<{ devices: Device[] }>("/api/admin/devices");
-    if (deviceResult.data) setDevices(deviceResult.data.devices);
-    if (deviceResult.error) setMessage(deviceResult.error);
-  };
-  useEffect(() => { void refresh(); }, []);
-  const useForFishpen = async (device: Device) => {
-    if (!device.owner_user_id) return;
-    setBusyDevice(device.id);
-    setMessage("");
-    const result = await apiJson(`/api/admin/owners/${device.owner_user_id}/monitoring-device`, { method: "PUT", body: JSON.stringify({ deviceId: device.id }) });
-    setMessage(result.error || `Device #${device.id} is now the fishpen monitor for ${device.owner_name}. Refresh the owner dashboard.`);
-    if (!result.error) await refresh();
-    setBusyDevice(null);
-  };
-  const replaceKey = async (device: Device) => {
-    if (!device.owner_user_id || !window.confirm(`Replace the key for device #${device.id}? The current ESP32 key will stop working until you upload the new key to its firmware.`)) return;
-    setBusyDevice(device.id);
-    setReplacementKey(null);
-    const result = await apiJson<{ deviceId: number; deviceKey: string }>(`/api/admin/owners/${device.owner_user_id}/device-key`, { method: "POST", body: "{}" });
-    setMessage(result.error || "New key issued. Update the ESP32 firmware before monitoring resumes.");
-    if (result.data) setReplacementKey({ deviceId: result.data.deviceId, key: result.data.deviceKey });
-    setBusyDevice(null);
-  };
-  const ordered = [...devices].sort((a, b) => (b.last_reading_at ? new Date(b.last_reading_at).getTime() : 0) - (a.last_reading_at ? new Date(a.last_reading_at).getTime() : 0) || b.id - a.id);
-  return <section className="card p-5"><h2 className="text-xl font-black text-slate-950">Sensor devices</h2><p className="mt-1 text-sm text-slate-600">A new owner gets one device key automatically. For older accounts, choose the device that is actually uploading. Selecting it disables that owner's other device keys but keeps all past readings.</p>
-    {message && <p className="mt-3 text-sm font-semibold text-slate-700" role="status">{message}</p>}
-    {replacementKey && <div className="mt-3 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm"><p className="font-bold">Replacement key for device #{replacementKey.deviceId}, shown once</p><code className="mt-2 block break-all">{replacementKey.key}</code><button className="soft-button mt-2" onClick={() => setReplacementKey(null)}>Hide key</button></div>}
-    <div className="mt-4 space-y-2">{ordered.map((device) => <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-slate-200 p-3" key={device.id}><div><p className="font-bold text-slate-900">{device.device_name} · #{device.id}</p><p className="text-xs text-slate-600">{device.owner_name || "Unassigned"} · Last upload: {device.last_reading_at ? new Date(device.last_reading_at).toLocaleString("en-PH") : "None"}{Number(device.is_active) !== 1 ? " · Inactive" : ""}</p></div><div className="flex flex-wrap items-center gap-2">{device.monitoring_fishpen_id ? <><span className="text-sm font-bold text-teal-700">Fishpen monitor</span><button className="soft-button" disabled={busyDevice !== null} onClick={() => void replaceKey(device)}>Replace key</button></> : device.owner_user_id && Number(device.is_active) === 1 ? <button className="soft-button" disabled={busyDevice !== null} onClick={() => void useForFishpen(device)}>{busyDevice === device.id ? "Saving..." : "Use for fishpen"}</button> : null}</div></div>)}</div>
-  </section>;
-}
-
-
-
-function AdminStat({ label, value }: { label: string; value: string | number }) {
-  return (
-    <article className="rounded-2xl border border-slate-200 bg-slate-50 p-4">
-      <p className="text-sm font-bold text-slate-500">{label}</p>
-      <p className="mt-2 text-3xl font-black text-teal-700">{value}</p>
-    </article>
-  );
+  </div>;
 }

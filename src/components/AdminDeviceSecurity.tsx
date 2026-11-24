@@ -66,7 +66,7 @@ export function AdminDeviceSettings() {
     if (!result.error) { setRequest(''); await load(); }
     setBusy(false);
   };
-  return <section className="card space-y-4 p-5">
+  return <section className="admin-panel space-y-4">
     <h2 className="text-lg font-bold">Authorized administrator devices</h2>
     <p className="text-sm text-slate-600">{devices.filter(d => !d.revoked_at).length} of 3 credentials enrolled. Log in again before approving or revoking devices if verification is older than 5 minutes.</p>
     {!current && <p className="text-sm text-amber-800">Device protection is not activated. Log out and log in to enroll the first device using the operator bootstrap secret.</p>}

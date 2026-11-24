@@ -1,10 +1,40 @@
 import { useState } from 'react';
+import { UserPlus } from 'lucide-react';
 import { apiJson } from '../lib/api';
+import { DeviceKeyOnce } from './AdminControls';
 
 export function ProvisionOwner({ onSaved }: { onSaved: () => void }) {
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [fishpen, setFishpen] = useState('');
   const [secret, setSecret] = useState<{ password: string; deviceKey: string; deviceId: number } | null>(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
-  return <details className="mb-5 rounded-md border border-slate-200 p-4"><summary className="cursor-pointer font-bold">Create owner account</summary><form className="mt-4 grid gap-4 sm:grid-cols-2" onSubmit={async e => { e.preventDefault(); setBusy(true); setSecret(null); setError(''); const number = phone.trim().replace(/^09/, '+639').replace(/^639/, '+639'); const r = await apiJson<{temporaryPassword: string; deviceKey: string; deviceId: number}>('/api/admin/owners', { method: 'POST', body: JSON.stringify({ fullName: name, phone: number, fishpenName: fishpen }) }); setBusy(false); if (r.error) setError(r.error); else { setSecret({ password: r.data!.temporaryPassword, deviceKey: r.data!.deviceKey, deviceId: r.data!.deviceId }); setName(''); setPhone(''); setFishpen(''); onSaved(); } }}>
-    <label>Owner name<input required maxLength={100} className="mt-2 w-full rounded-md border p-3" value={name} onChange={e => setName(e.target.value)}/></label><label>Mobile number<input required type="tel" className="mt-2 w-full rounded-md border p-3" value={phone} onChange={e => setPhone(e.target.value)} placeholder="09XXXXXXXXX"/></label><label>Assigned fishpen name<input required maxLength={100} className="mt-2 w-full rounded-md border p-3" value={fishpen} onChange={e => setFishpen(e.target.value)}/></label><div className="self-end"><button className="primary-button" disabled={busy}>{busy ? 'Creating…' : 'Create owner and fishpen'}</button></div>
-  </form>{error && <p role="alert" className="mt-3 text-red-700">{error}</p>}{secret && <div role="status" className="mt-4 rounded-md bg-amber-50 p-4"><p className="font-bold">Temporary password (24 hours)</p><code className="mt-2 block break-all">{secret.password}</code><p className="mt-3 font-bold">ESP32 key for device #{secret.deviceId}</p><code className="mt-2 block break-all">{secret.deviceKey}</code><p className="mt-2 text-sm">The device is already linked to this fishpen. Put this key in the ESP32 firmware once; Wi-Fi and the server URL must also be configured. The owner must change the temporary password after login. These credentials are shown only once; do not share screenshots.</p><button type="button" className="soft-button mt-3" onClick={() => setSecret(null)}>Hide credentials</button></div>}</details>;
+  return <details className="admin-panel admin-create">
+    <summary>Create farmer account</summary>
+    <form onSubmit={async e => {
+      e.preventDefault();
+      if (busy || secret) return;
+      setBusy(true); setError('');
+      const number = phone.trim().replace(/^09/, '+639').replace(/^639/, '+639');
+      const r = await apiJson<{ temporaryPassword: string; deviceKey: string; deviceId: number }>('/api/admin/owners', {
+        method: 'POST', body: JSON.stringify({ fullName: name, phone: number, fishpenName: fishpen })
+      });
+      setBusy(false);
+      if (r.error || !r.data) { setError(r.error || 'Could not confirm account creation. Check the account list before retrying.'); return; }
+      setSecret({ password: r.data.temporaryPassword, deviceKey: r.data.deviceKey, deviceId: r.data.deviceId });
+      setName(''); setPhone(''); setFishpen(''); onSaved();
+    }}>
+      <fieldset className="admin-form-grid" disabled={busy || !!secret}>
+        <label>Farmer name<input required maxLength={100} value={name} onChange={e => setName(e.target.value)} /></label>
+        <label>Mobile number<input required type="tel" value={phone} onChange={e => setPhone(e.target.value)} placeholder="09XXXXXXXXX" /></label>
+        <label>Assigned fishpen name<input required maxLength={100} value={fishpen} onChange={e => setFishpen(e.target.value)} /></label>
+        <button className="primary-button" disabled={busy || !!secret}><UserPlus size={17} aria-hidden="true" />{busy ? 'Creating...' : 'Create owner and fishpen'}</button>
+      </fieldset>
+    </form>
+    {error && <p role="alert" className="admin-action-error">{error}</p>}
+    {secret && <section className="admin-credential" aria-label="One-time farmer credentials">
+      <p role="status"><strong>Account, fishpen, and ESP32 credential created.</strong></p>
+      <p>Temporary password (expires in 24 hours)</p><code className="admin-secret">{secret.password}</code>
+      <DeviceKeyOnce deviceId={secret.deviceId} value={secret.deviceKey} />
+      <p className="admin-muted">Configure the physical ESP32 with this key before it can upload. Share the password privately.</p>
+      <button type="button" className="soft-button" onClick={() => setSecret(null)}>Hide credentials</button>
+    </section>}
+  </details>;
 }

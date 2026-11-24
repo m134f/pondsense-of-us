@@ -1,21 +1,17 @@
 import { loadFishCatalog } from "./services/FishCatalog";
+import { verifyStartupSchema } from './startupSchema';
 import { sensorAuthenticator } from './services/SensorAuthentication';
-import { migrateAccountStatus } from './migrations/accountStatus';
-import { migrateOwnerFishpen } from './migrations/ownerFishpen';
-import { migrateProvisionedOwners } from './migrations/provisionedOwners';
 import { ownerAccess } from './ownerAccess';
 import { isTrustedJsonRequest, trustedOrigins } from './trustedOrigin';
 import { ownerAccountsRouter } from './routes/ownerAccounts';
+import { adminReportingRouter } from './routes/adminReporting';
 import { assignedFishpen } from './services/OwnerFishpen';
 import { harvestAssignmentGuard } from './harvestAssignmentGuard';
 import { ownerFishpenRouter } from './routes/ownerFishpen';
-import { migrateAdminWebauthn } from './migrations/adminWebauthn';
 import { adminWebauthnRouter, passwordVerifiedFlow, allowAdminAttempt } from './routes/adminWebauthn';
-import { migratePublicMonitoring } from './migrations/publicMonitoring';
 import { publicMonitoringRouter } from './routes/publicMonitoring';
 import { validateManual } from '../src/lib/manualValidation';
 import { parseManualSaveTime, saveManualReading } from './services/ManualReadings';
-import { migratePartialManual } from './migrations/partialManual';
 import "dotenv/config";
 import crypto from "node:crypto";
 import express from "express";
@@ -26,12 +22,9 @@ import { hasDbConfig, pool } from "./db";
 import { isSmsConfigured, sendSms } from "./sms";
 import { authorizedAdminDevice, clearAuthSession, createAuthSession, requireAdmin, verifyAuthToken, type AuthRequest } from "./auth";
 import { DecisionSupportService, type AlertResult } from "./services/DecisionSupportService";
-import { migratePlanning } from './migrations/planning';
 import { planningRouter } from './routes/planning';
 import { archiveRecommendations, planningContext } from './services/PlanningService';
 import { sendDailySms } from './services/PlanningSms';
-import { migrateFishpenSms } from './migrations/fishpenSms';
-import { migrateActiveFishSpecies } from './migrations/activeFishSpecies';
 import { fishpenSmsRouter } from './routes/fishpenSms';
 import { sensorSmsMeasurements } from './services/FishpenSms';
 import { drainIncidentSms, queueIncidentSms } from './services/IncidentSms';
@@ -51,6 +44,8 @@ type SmsRecipient = {
   phone?: string;
   fullName?: string;
 };
+
+type SqlValue = string | number | boolean | null;
 
 type FishThresholdUpdate = {
   optimal_ph_min?: number;
@@ -96,6 +91,7 @@ app.use('/api', ownerAccess(pool));
 app.all('/api/public/monitoring', (_req, res) => res.status(410).json({ message: 'Public monitoring is disabled. Sign in to your owner dashboard.' }));
 app.all('/api/admin/public-monitoring', requireAdmin, (_req, res) => res.status(410).json({ message: 'Public publication is disabled for private owner accounts.' }));
 app.use('/api', ownerAccountsRouter(pool));
+app.use('/api', adminReportingRouter(pool));
 app.use('/api/harvests', harvestAssignmentGuard(pool));
 app.use('/api', ownerFishpenRouter(pool));
 app.use('/api', publicMonitoringRouter(pool));
@@ -240,181 +236,6 @@ function adminPublicUser(row: RowDataPacket) {
     mustChangePassword: Boolean(row.must_change_password),
     createdAt: row.created_at
   };
-}
-
-type SqlValue = string | number | boolean | null;
-
-async function safeExecute(sql: string, params: SqlValue[] = []) {
-  if (!pool) return;
-  try {
-    await pool.execute(sql, params);
-  } catch (error) {
-    const code = (error as { code?: string }).code;
-    if (code !== "ER_DUP_FIELDNAME" && code !== "ER_DUP_KEYNAME" && code !== "ER_DUP_ENTRY" && code !== "ER_NO_SUCH_TABLE") {
-      throw error;
-    }
-  }
-}
-
-async function ensureAdminStorage() {
-  if (!pool) return;
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS users (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      full_name VARCHAR(100) NOT NULL,
-      username VARCHAR(100) UNIQUE,
-      phone VARCHAR(20) NOT NULL UNIQUE,
-      email VARCHAR(150),
-      password_hash VARCHAR(255) NOT NULL,
-      role ENUM('farmer','admin') DEFAULT 'farmer',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
-    )
-  `);
-  await safeExecute("ALTER TABLE users ADD COLUMN username VARCHAR(100) NULL");
-  await safeExecute("ALTER TABLE users ADD UNIQUE INDEX users_username_unique (username)");
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS admin_settings (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      setting_key VARCHAR(100) NOT NULL UNIQUE,
-      setting_val VARCHAR(255),
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-    )
-  `);
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS sensor_devices (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      device_name VARCHAR(100) NOT NULL,
-      api_key_hash VARCHAR(255) NOT NULL,
-      owner_user_id INT,
-      is_active TINYINT(1) DEFAULT 1,
-      last_seen_at DATETIME,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE SET NULL
-    )
-  `);
-  await safeExecute("ALTER TABLE sensor_devices ADD COLUMN pairing_code_hash VARCHAR(255) NULL");
-  await safeExecute("ALTER TABLE sensor_devices ADD COLUMN pairing_expires_at DATETIME NULL");
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS sensor_telemetry (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      device_id INT NOT NULL,
-      owner_user_id INT NULL,
-      turbidity_raw INT NOT NULL,
-      turbidity_voltage DECIMAL(5,3) NOT NULL,
-      turbidity_ntu DECIMAL(8,2) NULL,
-      temperature_c DECIMAL(5,2) NULL,
-      client_reading_id VARCHAR(80) NULL,
-      sampled_at DATETIME NULL,
-      recorded_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      INDEX sensor_telemetry_device_recorded_index (device_id, recorded_at),
-      UNIQUE KEY sensor_device_reading_unique (device_id, client_reading_id),
-      FOREIGN KEY (device_id) REFERENCES sensor_devices(id) ON DELETE CASCADE
-    )
-  `);
-  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN temperature_c DECIMAL(5,2) NULL");
-  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN client_reading_id VARCHAR(80) NULL");
-  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN sampled_at DATETIME NULL");
-  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN water_contact_confirmed BOOLEAN NOT NULL DEFAULT FALSE");
-  await safeExecute("ALTER TABLE sensor_telemetry ADD UNIQUE KEY sensor_device_reading_unique (device_id, client_reading_id)");
-  const [ownerColumns] = await pool.execute<RowDataPacket[]>(
-    "SELECT 1 FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sensor_telemetry' AND COLUMN_NAME = 'owner_user_id' LIMIT 1"
-  );
-  if (!ownerColumns.length) {
-    await pool.execute("ALTER TABLE sensor_telemetry ADD COLUMN owner_user_id INT NULL");
-    await pool.execute(`UPDATE sensor_telemetry t INNER JOIN sensor_devices d ON d.id = t.device_id
-      SET t.owner_user_id = d.owner_user_id WHERE t.owner_user_id IS NULL`);
-  }
-  await safeExecute("ALTER TABLE sensor_telemetry ADD INDEX sensor_owner_recorded_index (owner_user_id, recorded_at)");
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS harvest_batches (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      owner_user_id INT NOT NULL,
-      species VARCHAR(100) NOT NULL,
-      stocking_date DATE NOT NULL,
-      stocked_count INT NOT NULL,
-      target_harvest_date DATE NOT NULL,
-      actual_harvest_date DATE NULL,
-      harvested_kg DECIMAL(10,2) NULL,
-      selling_price DECIMAL(10,2) NULL,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (owner_user_id) REFERENCES users(id) ON DELETE CASCADE,
-      INDEX harvest_owner_date_index (owner_user_id, target_harvest_date)
-    )
-  `);
-  await safeExecute("ALTER TABLE harvest_batches ADD COLUMN fishpen_name VARCHAR(100) NULL");
-  await safeExecute("ALTER TABLE harvest_batches ADD COLUMN target_weight_g DECIMAL(10,2) NULL");
-  await safeExecute("ALTER TABLE harvest_batches ADD COLUMN reminder_sms TINYINT(1) NOT NULL DEFAULT 0");
-  await pool.execute(`CREATE TABLE IF NOT EXISTS harvest_samples (
-    id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL, sampled_at DATE NOT NULL,
-    sample_size INT NOT NULL, average_weight_g DECIMAL(10,2) NOT NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE,
-    INDEX (batch_id, sampled_at)
-  )`);
-  await pool.execute(`CREATE TABLE IF NOT EXISTS harvest_mortalities (
-    id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL, mortality_date DATE NOT NULL,
-    dead_count INT NOT NULL, notes VARCHAR(500) NULL,
-    created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE,
-    INDEX (batch_id, mortality_date)
-  )`);
-  await pool.execute(`CREATE TABLE IF NOT EXISTS harvest_events (
-    id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL,
-    harvest_type ENUM('partial','complete') NOT NULL, harvest_date DATE NOT NULL,
-    fish_count INT NULL, weight_kg DECIMAL(10,2) NOT NULL,
-    price_per_kg DECIMAL(10,2) NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE,
-    INDEX (batch_id, harvest_date)
-  )`);
-  await pool.execute(`CREATE TABLE IF NOT EXISTS harvest_reminder_log (
-    id INT AUTO_INCREMENT PRIMARY KEY, batch_id INT NOT NULL,
-    reminder_day INT NOT NULL, target_date DATE NOT NULL,
-    sms_status ENUM('sent','failed') NOT NULL, created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UNIQUE KEY harvest_reminder_unique (batch_id, reminder_day, target_date),
-    FOREIGN KEY (batch_id) REFERENCES harvest_batches(id) ON DELETE CASCADE
-  )`);
-  await safeExecute("ALTER TABLE sensor_telemetry ADD COLUMN ph DECIMAL(4,2) NULL");
-  await safeExecute("ALTER TABLE alerts ADD COLUMN sms_status ENUM('sent','failed','skipped') DEFAULT 'skipped'");
-  await safeExecute("ALTER TABLE alerts ADD COLUMN sms_error TEXT");
-  await pool.execute(`
-    CREATE TABLE IF NOT EXISTS admin_audit_logs (
-      id INT AUTO_INCREMENT PRIMARY KEY,
-      admin_id INT,
-      action VARCHAR(100) NOT NULL,
-      details TEXT,
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      FOREIGN KEY (admin_id) REFERENCES users(id) ON DELETE SET NULL
-    )
-  `);
-  await safeExecute("ALTER TABLE users MODIFY role ENUM('user','farmer','admin') DEFAULT 'farmer'");
-  await pool.execute("UPDATE users SET role = 'farmer' WHERE role = 'user'");
-  await safeExecute("ALTER TABLE users MODIFY role ENUM('farmer','admin') DEFAULT 'farmer'");
-  await pool.execute(
-    `INSERT INTO admin_settings (setting_key, setting_val)
-     VALUES ('admin_pin', ?)
-     ON DUPLICATE KEY UPDATE setting_val = setting_val`,
-    [process.env.ADMIN_PIN || ""]
-  );
-
-  const [admins] = await pool.execute<RowDataPacket[]>("SELECT id FROM users WHERE role = 'admin' LIMIT 1");
-  if (!admins.length) {
-    if (!process.env.ADMIN_PASSWORD || !process.env.ADMIN_PIN || !process.env.ADMIN_PHONE || !process.env.ADMIN_USERNAME || process.env.ADMIN_PASSWORD === 'admin2024' || process.env.ADMIN_PIN === 'admin2024') {
-      throw new Error('No administrator exists. Explicit ADMIN_USERNAME, ADMIN_PHONE, ADMIN_PASSWORD and ADMIN_PIN are required for provisioning.');
-    }
-    const passwordHash = await bcrypt.hash(process.env.ADMIN_PASSWORD, 10);
-    await pool.execute(
-      `INSERT INTO users (full_name, username, phone, email, password_hash, role)
-       VALUES (?, ?, ?, ?, ?, 'admin')`,
-      [
-        process.env.ADMIN_FULL_NAME || "System Administrator",
-        process.env.ADMIN_USERNAME || "admin",
-        process.env.ADMIN_PHONE || "+639999999999",
-        process.env.ADMIN_EMAIL || "admin@pondsense.local",
-        passwordHash
-      ]
-    );
-  }
-
 }
 
 function formatAlertSms(reading: Record<string, unknown>, alerts: AlertPayload[]) {
@@ -652,19 +473,6 @@ app.post("/api/readings", async (req, res) => {
     console.error("Reading database error:", error);
     res.status(503).json({ message: "Database is not ready. Check XAMPP MySQL and schema import." });
   }
-});
-
-app.get("/api/admin/devices", requireAdmin, async (_req, res) => {
-  if (!pool) return res.status(503).json({ message: "Database is required." });
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT d.id, d.device_name, d.owner_user_id, d.is_active, d.last_seen_at,
-            u.full_name AS owner_name,
-            (SELECT p.id FROM sms_fishpens p JOIN owner_fishpen_assignments a ON a.fishpen_id = p.id
-             WHERE p.device_id = d.id AND a.owner_user_id = d.owner_user_id LIMIT 1) AS monitoring_fishpen_id,
-            (SELECT MAX(t.recorded_at) FROM sensor_telemetry t WHERE t.device_id = d.id) AS last_reading_at
-     FROM sensor_devices d LEFT JOIN users u ON u.id = d.owner_user_id ORDER BY d.id DESC`
-  );
-  res.json({ devices: rows });
 });
 
 app.post("/api/admin/devices", requireAdmin, (_req, res) => res.status(410).json({ message: "Devices are provisioned with owner accounts. Use the existing owner fishpen monitor instead." }));
@@ -1317,20 +1125,27 @@ app.patch('/api/admin/users/:id/status', requireAdmin, async (req: AuthRequest, 
 
 app.get("/api/admin/users", requireAdmin, async (_req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    "SELECT id, full_name, username, email, phone, role, account_status, created_at FROM users ORDER BY created_at DESC"
-  );
-  res.json({ users: rows.map(adminPublicUser) });
+  try {
+    const [rows] = await pool.query<RowDataPacket[]>(`SELECT u.id, u.full_name, u.username, u.email, u.phone, u.role, u.account_status, u.created_at,
+      p.name AS fishpen_name, d.id AS device_id FROM users u
+      LEFT JOIN owner_fishpen_assignments a ON a.owner_user_id = u.id
+      LEFT JOIN sms_fishpens p ON p.id = a.fishpen_id AND p.owner_user_id = u.id
+      LEFT JOIN sensor_devices d ON d.id = p.device_id AND d.owner_user_id = u.id AND d.is_active = 1
+      ORDER BY u.created_at DESC, u.id DESC`);
+    res.set('Cache-Control', 'no-store').json({ users: rows.map(row => ({ ...adminPublicUser(row), fishpenName: row.fishpen_name, deviceId: row.device_id })) });
+  } catch { res.status(503).json({ message: 'Could not load accounts.' }); }
 });
 
-app.get("/api/admin/logs", requireAdmin, async (_req, res) => {
+app.get("/api/admin/logs", requireAdmin, async (req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
+  const mode = req.query.mode === 'manual' || req.query.mode === 'sensor' ? req.query.mode : null;
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT wr.*, u.full_name, u.phone
      FROM water_readings wr
      LEFT JOIN users u ON u.id = wr.user_id
-     ORDER BY wr.recorded_at DESC
-     LIMIT 250`
+     ${mode ? 'WHERE wr.input_mode = ?' : ''}
+     ORDER BY wr.recorded_at DESC, wr.id DESC
+     LIMIT 250`, mode ? [mode] : []
   );
   res.json({ logs: rows });
 });
@@ -1491,22 +1306,13 @@ async function sendDueHarvestReminders() {
   }
 }
 
-try {
-  await ensureAdminStorage();
-  if (pool) await migrateAccountStatus(pool);
-  if (pool) await migrateAdminWebauthn(pool);
-  if (pool) await migratePublicMonitoring(pool);
-  if (pool) await migratePartialManual(pool);
-  if (pool) await migratePlanning(pool);
-  if (pool) await migrateFishpenSms(pool);
-  if (pool) await migrateOwnerFishpen(pool);
-  if (pool) await migrateProvisionedOwners(pool);
-  if (pool) await migrateActiveFishSpecies(pool);
-  void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
-} catch (error) {
-  if (process.env.NODE_ENV === 'production') throw error;
-  console.warn("PondSense API started without MySQL migrations. Start XAMPP MySQL, then restart npm run dev.", error);
+if (pool) {
+  await verifyStartupSchema(pool);
+} else if (process.env.NODE_ENV === 'production') {
+  throw new Error('PondSense startup blocked: configure the MySQL connection before starting production.');
 }
+
+void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
 
 app.listen(port, () => {
   console.log(`PondSense API running on http://localhost:${port}`);
