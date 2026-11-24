@@ -123,7 +123,10 @@ test('fishpen SMS database and HTTP integration', { skip: process.env.RUN_SMS_DB
       assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', body)).status, 200);
       assert.equal((await request('/fishpen-sms', 1)).data.fishpens[0].caretaker_phone, '+639987654321');
       assert.equal((await request('/admin/water-sms', 1)).status, 403);
-      assert.equal((await request('/admin/water-sms', 3)).status, 200);
+      const waterHistory = await request('/admin/water-sms', 3);
+      assert.equal(waterHistory.status, 200);
+      assert.ok(waterHistory.data.logs.length > 0);
+      assert.ok(waterHistory.data.logs.every((row: { owner_user_id: number }) => row.owner_user_id === 1));
     });
     await t.test('multiple fishpens and device reassignment do not leak recipients', async () => {
       const a = await newPen('+639444444444'), b = await newPen('+639555555555', 2); const start = calls.length;

@@ -1164,7 +1164,7 @@ app.get("/api/admin/alerts", requireAdmin, async (_req, res) => {
 
 app.get('/api/admin/planning-sms', requireAdmin, async (_req, res) => {
   if (!pool) return res.status(503).json({ message: 'Database is required.' });
-  const [rows] = await pool.query<RowDataPacket[]>(`SELECT s.id, s.kind, s.status, s.error_message,
+  const [rows] = await pool.query<RowDataPacket[]>(`SELECT s.id, s.owner_user_id, s.kind, s.status, s.error_message,
     s.created_at, u.full_name, u.phone FROM planning_sms_log s
     LEFT JOIN users u ON u.id = s.owner_user_id ORDER BY s.id DESC LIMIT 250`);
   res.json({ logs: rows });

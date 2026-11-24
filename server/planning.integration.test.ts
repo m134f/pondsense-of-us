@@ -252,6 +252,14 @@ test('planning HTTP, database isolation, history, stock locks and SMS deduplicat
       await Promise.all([1,2].map(() => sendDailySms(scoped, a, '+639111111111', 'test', 'harvest', sender)));
       assert.equal(sends, 1);
       const [rows] = await scoped.query<RowDataPacket[]>('SELECT status FROM planning_sms_log WHERE owner_user_id = ?', [a]); assert.equal(rows[0].status, 'failed');
+      assert.equal((await request('/admin/planning-sms', a)).status, 403);
+      const admin = await request('/admin/login', 0, 'POST', { identifier: env.ADMIN_USERNAME, password: env.ADMIN_PASSWORD, pin: env.ADMIN_PIN });
+      assert.equal(admin.status, 200, JSON.stringify(admin.data));
+      assert.ok(admin.cookie);
+      sessions.set(-1, admin.cookie);
+      const smsHistory = await request('/admin/planning-sms', -1);
+      assert.equal(smsHistory.status, 200);
+      assert.deepEqual(smsHistory.data.logs.map((row: { owner_user_id: number }) => row.owner_user_id), [a]);
       for (const day of [7, 1, 0, -1]) for (let repeat = 0; repeat < 2; repeat++) await scoped.execute("INSERT IGNORE INTO harvest_reminder_log(batch_id,reminder_day,target_date,sms_status) VALUES (?,?,?,'failed')", [id, day, today]);
       const [reminders] = await scoped.query<RowDataPacket[]>('SELECT COUNT(*) AS n FROM harvest_reminder_log WHERE batch_id = ?', [id]); assert.equal(reminders[0].n, 4);
       delete process.env.IPROG_SMS_API_TOKEN;

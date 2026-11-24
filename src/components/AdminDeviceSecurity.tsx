@@ -32,7 +32,7 @@ export function AdminDeviceEnrollment({ token, bootstrap, onDone }: { token: str
   return <div className="space-y-3 border-t border-slate-200 pt-4">
     <h2 className="font-bold">{bootstrap ? 'Register the first administrator device' : 'Register this administrator device'}</h2>
     {bootstrap ? <label className="block text-sm">Operator bootstrap secret<input type="password" autoComplete="off" className="auth-input mt-1 w-full border p-3" value={secret} onChange={e => setSecret(e.target.value)} /></label> : <>
-      <p className="text-sm text-slate-600">Request approval, then enter this request on an already enrolled device under Admin Settings.</p>
+      <p className="text-sm text-slate-600">Request approval, then approve the request from Login security on an already enrolled device.</p>
       {!requested ? <button disabled={busy} className="soft-button" onClick={async () => {
         setBusy(true); setError('');
         const result = await apiJson('/api/admin/security/enroll/request', { method: 'POST', body: JSON.stringify({ token }) });
@@ -66,13 +66,20 @@ export function AdminDeviceSettings() {
     if (!result.error) { setRequest(''); await load(); }
     setBusy(false);
   };
-  return <section className="admin-panel space-y-4">
-    <h2 className="text-lg font-bold">Authorized administrator devices</h2>
+  return <section className="space-y-4">
+    <h3 className="font-semibold">Authorized login devices</h3>
     <p className="text-sm text-slate-600">{devices.filter(d => !d.revoked_at).length} of 3 credentials enrolled. Log in again before approving or revoking devices if verification is older than 5 minutes.</p>
     {!current && <p className="text-sm text-amber-800">Device protection is not activated. Log out and log in to enroll the first device using the operator bootstrap secret.</p>}
     <ul className="divide-y divide-slate-200">{devices.map(device => <li key={device.id} className="flex flex-wrap items-center justify-between gap-3 py-3"><div><strong>{device.label}{device.id === current ? ' (this session)' : ''}</strong><p className="text-sm text-slate-600">{device.revoked_at ? 'Revoked' : 'Authorized'} · Last verification: {device.last_used_at ? new Date(device.last_used_at).toLocaleString() : 'Enrollment'}</p></div>{!device.revoked_at && <button className="soft-button" disabled={busy || !current} onClick={() => { if (window.confirm(`Revoke ${device.label}? Its sessions will be blocked.`)) void action(`/api/admin/security/devices/${device.id}/revoke`, {}); }}>Revoke</button>}</li>)}</ul>
-    <label className="block text-sm font-semibold">Request from another laptop<input className="mt-2 w-full border border-slate-300 p-3" value={request} onChange={e => setRequest(e.target.value)} autoComplete="off" /></label>
-    <button className="soft-button" disabled={busy || !current || !request.trim()} onClick={() => { if (window.confirm('Authorize enrollment of the requesting laptop? Verify the request with its operator first.')) void action('/api/admin/security/enroll/approve', { token: request.trim() }); }}>Approve device enrollment</button>
+    {current != null && <details className="admin-detail-section">
+      <summary>Approve a new login device</summary>
+      <label className="block text-sm font-semibold">Enrollment request<input value={request} onChange={e => setRequest(e.target.value)} autoComplete="off" /></label>
+      <button className="soft-button" disabled={busy || !request.trim()} onClick={() => { if (window.confirm('Authorize enrollment of the requesting laptop? Verify the request with its operator first.')) void action('/api/admin/security/enroll/approve', { token: request.trim() }); }}>Approve device enrollment</button>
+    </details>}
+    <details className="admin-detail-section">
+      <summary>Recover access</summary>
+      <p className="text-sm text-slate-600">Use another authorized device to approve a replacement. If none are available, contact the system operator for verified recovery.</p>
+    </details>
     {message && <p role="status" className="text-sm">{message}</p>}
   </section>;
 }

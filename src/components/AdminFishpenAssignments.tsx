@@ -14,7 +14,7 @@ export function AdminFishpenAssignments({ onSaved }: { onSaved: () => void }) {
   const [message, setMessage] = useState<{ text: string; error: boolean } | null>(null);
   const [busy, setBusy] = useState(false);
   const choosePen = (id: string) => { const row = data?.fishpens.find(item => String(item.id) === id); setPen(id); setName(row?.name || ''); setDevice(row?.deviceId ? String(row.deviceId) : ''); };
-  return <section className="admin-panel"><h2>Owner fishpen assignments</h2><p className="admin-muted">One assigned fishpen per owner. Assignments do not replace keys or delete past records.</p>
+  return <div>
     <AdminLoad resource={resource} />
     <form onSubmit={async e => {
       e.preventDefault();
@@ -28,12 +28,12 @@ export function AdminFishpenAssignments({ onSaved }: { onSaved: () => void }) {
       setMessage({ text: r.error || 'Fishpen assignment saved.', error: !!r.error }); setBusy(false);
     }}>
       <fieldset className="admin-form-grid" disabled={!data || busy || !!resource.error}>
-        <label>Owner<select required value={owner} onChange={e => { setOwner(e.target.value); const row = data?.owners.find(item => String(item.id) === e.target.value); choosePen(row?.fishpenId ? String(row.fishpenId) : ''); }}><option value="">Choose owner</option>{data?.owners.map(row => <option key={row.id} value={row.id}>{row.name}{!row.fishpenId ? ' (no assignment)' : ''}</option>)}</select></label>
+        <label>Farmer<select aria-label="Farmer" required value={owner} onChange={e => { setOwner(e.target.value); const row = data?.owners.find(item => String(item.id) === e.target.value); choosePen(row?.fishpenId ? String(row.fishpenId) : ''); }}><option value="">Choose farmer</option>{data?.owners.map(row => <option key={row.id} value={row.id}>{row.name}{!row.fishpenId ? ' (no assignment)' : ''}</option>)}</select></label>
         <label>Existing fishpen<select disabled={!owner} value={pen} onChange={e => choosePen(e.target.value)}><option value="">Create fishpen for this owner</option>{data?.fishpens.filter(row => row.ownerId === Number(owner)).map(row => <option key={row.id} value={row.id}>{row.name} #{row.id}</option>)}</select></label>
         <label>Fishpen name<input required disabled={!owner} maxLength={100} value={name} onChange={e => setName(e.target.value)} /></label>
-        <label>Monitoring device<select disabled={!owner} value={device} onChange={e => setDevice(e.target.value)}><option value="">No assigned monitor</option>{device && !data?.devices.some(row => row.id === Number(device) && row.ownerId === Number(owner)) && <option value={device} disabled>#{device} is not active</option>}{data?.devices.filter(row => row.ownerId === Number(owner)).map(row => <option key={row.id} value={row.id}>{row.name} #{row.id}</option>)}</select></label>
+        <label>Monitoring device<select aria-label="Monitoring device" disabled={!owner} value={device} onChange={e => setDevice(e.target.value)}><option value="">No assigned monitor</option>{device && !data?.devices.some(row => row.id === Number(device) && row.ownerId === Number(owner)) && <option value={device} disabled>#{device} is not active</option>}{data?.devices.filter(row => row.ownerId === Number(owner)).map(row => <option key={row.id} value={row.id}>{row.name} #{row.id}</option>)}</select></label>
         <button className="primary-button" disabled={!owner}><Save size={17} aria-hidden="true" />{busy ? 'Saving...' : 'Save assignment'}</button>
       </fieldset>
     </form>{message && <p role={message.error ? 'alert' : 'status'} className="admin-notice" data-tone={message.error ? 'warning' : 'good'}>{message.text}</p>}
-  </section>;
+  </div>;
 }

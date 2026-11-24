@@ -30,7 +30,7 @@ Additive startup migrations create admin_security, admin_credentials, admin_auth
 
 ## Second and third devices
 
-On the candidate laptop, enter the correct password/PIN and choose Request enrollment. Share its short-lived request only with the authorized operator. On an enrolled laptop, freshly log in with WebAuthn and approve that exact request under Admin Settings. Approval is bound to the candidate password-verification flow and an active approving credential. Return to the candidate, continue enrollment, and complete its platform authenticator prompt. Approval and registration expire after five minutes. A pending request expires after ten minutes. This is a security-sensitive approval: confirm the candidate laptop/operator out of band.
+On the candidate laptop, enter the correct password/PIN and choose Request enrollment. Share its short-lived request only with the authorized operator. On an enrolled laptop, freshly log in with WebAuthn and open Login security in the Admin Console, then use Approve a new login device to approve that exact request. Approval is bound to the candidate password-verification flow and an active approving credential. Return to the candidate, continue enrollment, and complete its platform authenticator prompt. Approval and registration expire after five minutes. A pending request expires after ten minutes. This is a security-sensitive approval: confirm the candidate laptop/operator out of band.
 
 ## Revocation and recovery
 

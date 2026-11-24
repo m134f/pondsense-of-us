@@ -1,23 +1,24 @@
 import { useState } from 'react';
-import { Activity, ArrowUpRight, ClipboardList, Gauge, LayoutDashboard, LogOut, Radio, Settings, ShieldCheck, Users } from 'lucide-react';
+import { Gauge, LayoutDashboard, LogOut, Radio, RadioTower, ShieldCheck, UserPlus, Users, Wifi, WifiOff } from 'lucide-react';
 import { apiJson } from '../lib/api';
 import { farmerBrand } from '../lib/farmerBrand';
-import { AdminBadge, AdminHeading, AdminLoad, AdminRefresh, adminTime, useAdminResource } from './AdminControls';
+import { AdminDetails, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
+import { AdminDeviceSettings } from './AdminDeviceSecurity';
 import { AdminDevices, AdminUsers } from './AdminPeople';
-import { AdminLogs } from './AdminLogs';
-import { AdminSettings, AdminThresholds } from './AdminPreferences';
+import { AdminThresholds } from './AdminPreferences';
 import './admin.css';
 
 const menu = [
   { path: '/admin/dashboard', label: 'Dashboard', Icon: LayoutDashboard },
   { path: '/admin/users', label: 'Users', Icon: Users },
   { path: '/admin/devices', label: 'Devices', Icon: Radio },
-  { path: '/admin/logs', label: 'Logs', Icon: ClipboardList },
-  { path: '/admin/thresholds', label: 'Thresholds', Icon: Gauge },
-  { path: '/admin/settings', label: 'Settings', Icon: Settings }
+  { path: '/admin/thresholds', label: 'Thresholds', Icon: Gauge }
 ] as const;
 
 export type AdminSection = typeof menu[number]['path'];
+export function isAdminSection(path: string): path is AdminSection {
+  return menu.some(item => item.path === path);
+}
 export type AdminAccount = {
   id: number;
   fullName: string;
@@ -31,8 +32,10 @@ export type AdminAccount = {
   deviceId?: number | null;
 };
 
-export function AdminWorkspace({ path, admin, navigate }: { path: AdminSection; admin: AdminAccount; navigate: (path: string) => void }) {
+export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigate: (path: string) => void }) {
   const [signingOut, setSigningOut] = useState(false);
+  const [security, setSecurity] = useState(false);
+  const [createFarmer, setCreateFarmer] = useState(false);
   const [error, setError] = useState('');
   const active = menu.find(item => item.path === path) ?? menu[0];
   const logout = async () => {
@@ -48,68 +51,59 @@ export function AdminWorkspace({ path, admin, navigate }: { path: AdminSection; 
       <nav aria-label="Admin navigation">
         {menu.map(({ path: href, label, Icon }) => <a key={href} href={href} aria-current={active.path === href ? 'page' : undefined} onClick={e => {
           if (e.button || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
-          e.preventDefault(); if (href !== path) navigate(href);
+          e.preventDefault();
+          if (href !== path) { setCreateFarmer(false); navigate(href); }
         }}><Icon size={18} aria-hidden="true" /> <span>{label}</span></a>)}
       </nav>
+      <footer className="admin-sidebar-footer">
+        <button type="button" className="admin-logout" disabled={signingOut} onClick={() => void logout()}><LogOut size={17} aria-hidden="true" /> {signingOut ? 'Logging out...' : 'Logout'}</button>
+      </footer>
     </aside>
     <header className="admin-topbar">
-      <span className="admin-top-title"><ShieldCheck size={18} aria-hidden="true" /> Admin Console</span>
-      <div className="admin-actions">
-        <span className="admin-signed-in">{admin.fullName}</span>
-        <a className="soft-button" href="/">Farmer Dashboard <ArrowUpRight size={15} aria-hidden="true" /></a>
-        <button type="button" className="soft-button admin-icon-button" disabled={signingOut} aria-label="Logout" title="Logout" onClick={() => void logout()}><LogOut size={17} aria-hidden="true" /></button>
-      </div>
+      <span className="admin-top-title">Admin Console</span>
+      <button type="button" className="soft-button" onClick={() => setSecurity(true)}><ShieldCheck size={17} aria-hidden="true" /> Login security</button>
     </header>
     <main className="admin-main">
       {error && <p className="admin-notice" data-tone="warning" role="alert">{error}</p>}
-      {active.path === '/admin/dashboard' && <AdminOverview navigate={navigate} />}
-      {active.path === '/admin/users' && <AdminUsers />}
+      {active.path === '/admin/dashboard' && <AdminOverview navigate={navigate} onCreate={() => { setCreateFarmer(true); navigate('/admin/users'); }} />}
+      {active.path === '/admin/users' && <AdminUsers openCreate={createFarmer} />}
       {active.path === '/admin/devices' && <AdminDevices />}
-      {active.path === '/admin/logs' && <AdminLogs />}
       {active.path === '/admin/thresholds' && <AdminThresholds />}
-      {active.path === '/admin/settings' && <AdminSettings admin={admin} navigate={navigate} />}
     </main>
+    {security && <AdminDetails title="Login security" close={() => setSecurity(false)}><AdminDeviceSettings /></AdminDetails>}
   </div>;
 }
 
 type Overview = {
-  counts: { farmers: number; sensorReadings: number; criticalToday: number; smsToday: number };
-  devices: { online: number; offline: number; never: number; inactive: number; assigned: number };
-  activity: { id: number; kind: 'upload' | 'admin'; label: string; device_id: number | null; happened_at: string }[];
-  freshnessSeconds: number;
+  counts: { farmers: number };
+  devices: { online: number; offline: number; never: number; inactive: number };
 };
 
-function AdminOverview({ navigate }: { navigate: (path: string) => void }) {
+function AdminOverview({ navigate, onCreate }: { navigate: (path: string) => void; onCreate: () => void }) {
   const overview = useAdminResource<Overview>('/api/admin/overview', 30_000);
-  const data = overview.data;
+  const data = overview.error ? null : overview.data;
+  const devices = data?.devices;
+  const total = devices ? devices.online + devices.offline + devices.never + devices.inactive : undefined;
   const counts = [
-    ['Total Farmers', data?.counts.farmers, Users, 'Registered farmer accounts'],
-    ['Total Sensor Readings', data?.counts.sensorReadings, Activity, 'Saved ESP32 uploads'],
-    ['Critical Alerts Today', data?.counts.criticalToday, Gauge, 'Confirmed incidents opened today (PHT)'],
-    ['SMS Accepted Today', data?.counts.smsToday, Radio, 'Provider accepted, delivery unconfirmed (PHT)']
+    ['Total Farmers', data?.counts.farmers, Users],
+    ['Total ESP32 Devices', total, RadioTower],
+    ['Online Devices', devices?.online, Wifi],
+    ['Offline Devices', devices?.offline, WifiOff]
   ] as const;
   const count = (value?: number) => typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString('en-PH') : '\u2014';
   return <>
-    <AdminHeading title="Admin Overview" caption="Fishpen operations"><AdminRefresh busy={overview.busy} refresh={overview.refresh} /></AdminHeading>
-    <AdminLoad resource={overview} />
-    <dl className="admin-metrics">{counts.map(([label, value, Icon, description]) => <div className="admin-panel admin-metric" key={label}>
-      <dt><Icon size={17} aria-hidden="true" /> {label}</dt><dd><strong>{count(value)}</strong><small>{description}</small></dd>
+    <AdminHeading title="Dashboard"><AdminRefresh busy={overview.busy} refresh={overview.refresh} /></AdminHeading>
+    <AdminLoad resource={{ ...overview, data }} />
+    <dl className="admin-metrics">{counts.map(([label, value, Icon]) => <div className="admin-panel admin-metric" key={label}>
+      <dt><Icon size={17} aria-hidden="true" /> {label}</dt><dd>{count(value)}</dd>
     </div>)}</dl>
-    <section className="admin-panel">
-      <header className="admin-section-heading"><h2>Device Overview</h2><button type="button" className="soft-button" onClick={() => navigate('/admin/devices')}>View devices <ArrowUpRight size={15} aria-hidden="true" /></button></header>
-      <dl className="admin-device-summary">
-        {([['Assigned monitors', 'assigned'], ['Online', 'online'], ['Offline', 'offline'], ['Never uploaded', 'never'], ['Inactive', 'inactive']] as const).map(([label, key]) =>
-          <div key={key}><dt>{label}</dt><dd>{count(data?.devices[key])}</dd></div>)}
-      </dl>
-      {data && <p className="admin-muted">Online requires a valid sample uploaded within {data.freshnessSeconds} seconds.</p>}
-    </section>
-    <section className="admin-panel">
-      <header className="admin-section-heading"><h2>Recent Activity</h2><button type="button" className="soft-button" onClick={() => navigate('/admin/logs')}>View logs <ArrowUpRight size={15} aria-hidden="true" /></button></header>
-      {data?.activity.length ? <ul className="admin-activity">{data.activity.map(row => <li key={`${row.kind}-${row.id}`}>
-        <AdminBadge tone={row.kind === 'upload' ? 'good' : 'neutral'}>{row.kind === 'upload' ? 'ESP32 upload' : 'Admin action'}</AdminBadge>
-        <span>{row.kind === 'upload' ? `${row.label} #${row.device_id}` : row.label.replaceAll('_', ' ')}</span>
-        <time dateTime={row.happened_at}>{adminTime(row.happened_at) ?? 'Time unavailable'}</time>
-      </li>)}</ul> : <p className="admin-empty">{data ? 'No activity recorded yet.' : 'Activity unavailable.'}</p>}
+    <section className="admin-quick" aria-labelledby="admin-quick-title">
+      <h2 id="admin-quick-title">Quick actions</h2>
+      <div className="admin-actions">
+        <button type="button" className="primary-button" onClick={onCreate}><UserPlus size={17} aria-hidden="true" /> Create farmer account</button>
+        <button type="button" className="soft-button" onClick={() => navigate('/admin/devices')}><Radio size={17} aria-hidden="true" /> Manage devices</button>
+        <button type="button" className="soft-button" onClick={() => navigate('/admin/thresholds')}><Gauge size={17} aria-hidden="true" /> Configure thresholds</button>
+      </div>
     </section>
   </>;
 }

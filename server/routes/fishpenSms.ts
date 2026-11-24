@@ -68,12 +68,12 @@ export function fishpenSmsRouter(db: Pool | null) {
   });
   router.get('/admin/water-sms', async (_req, res) => {
     try {
-      const [logs] = await db!.query<RowDataPacket[]>(`SELECT id, fishpen_name, recipient_type, recipient_phone, parameter_name, severity,
+      const [logs] = await db!.query<RowDataPacket[]>(`SELECT id, owner_user_id, fishpen_name, recipient_type, recipient_phone, parameter_name, severity,
         reading_value, DATE_FORMAT(measured_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS measured_at, status,
         DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%sZ') AS created_at,
         DATE_FORMAT(attempted_at, '%Y-%m-%dT%H:%i:%sZ') AS attempted_at, provider_response, provider_message_id, provider
         FROM sms_water_attempts ORDER BY id DESC LIMIT 200`);
-      const [incidentLogs] = await db!.query<RowDataPacket[]>(`SELECT id, fishpen_name, recipient_type, recipient_phone,
+      const [incidentLogs] = await db!.query<RowDataPacket[]>(`SELECT id, owner_user_id, fishpen_name, recipient_type, recipient_phone,
         critical_keys AS parameter_name, kind, status, message,
         DATE_FORMAT(measured_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS measured_at,
         DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS created_at,

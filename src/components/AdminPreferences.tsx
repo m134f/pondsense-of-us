@@ -1,9 +1,8 @@
 import { useState } from 'react';
-import { Save, TriangleAlert } from 'lucide-react';
+import { Save } from 'lucide-react';
 import { apiJson } from '../lib/api';
-import { AdminDeviceSettings } from './AdminDeviceSecurity';
-import type { AdminAccount } from './AdminWorkspace';
-import { AdminBadge, AdminDetails, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
+import { activeSpecies, speciesId } from '../data/fish';
+import { AdminBadge, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
 
 type Fish = { id: string | number; name: string; validationPending?: boolean } & Record<string, unknown>;
 const ranges = [
@@ -55,71 +54,19 @@ function ThresholdEditor({ fish, onSaved }: { fish: Fish; onSaved: () => Promise
 
 export function AdminThresholds() {
   const resource = useAdminResource<{ fish: Fish[] }>('/api/admin/thresholds');
+  const [selected, setSelected] = useState<string>(activeSpecies[0].id);
+  const species = activeSpecies.find(fish => fish.id === selected);
+  const fish = resource.data?.fish.find(row => speciesId(row.name) === selected);
+  const label = (name: string) => name === 'Bangus (Milkfish)' ? 'Bangus' : name;
   return <>
-    <AdminHeading title="Fish Threshold Management" caption="Species suitability ranges, separate from environmental references and SMS rules"><AdminRefresh busy={resource.busy} refresh={resource.refresh} /></AdminHeading>
+    <AdminHeading title="Thresholds" caption="Fish suitability ranges"><AdminRefresh busy={resource.busy} refresh={resource.refresh} /></AdminHeading>
+    <label className="admin-species-select">Fish species
+      <select aria-label="Fish species" value={selected} onChange={event => setSelected(event.target.value)}>
+        {activeSpecies.map(item => <option value={item.id} key={item.id}>{label(item.name)}</option>)}
+      </select>
+    </label>
     <AdminLoad resource={resource} />
-    {resource.data && (resource.data.fish.length ? resource.data.fish.map(fish => <ThresholdEditor key={fish.id} fish={fish} onSaved={resource.refresh} />) : <p className="admin-empty">No species found.</p>)}
-  </>;
-}
-
-const dangerActions = {
-  clear: { label: 'Clear Logs', code: 'CLEAR_LOGS', endpoint: '/api/admin/logs', detail: 'Permanently deletes saved water analyses, legacy alert records, and corrective-action logs. This does not clear the raw ESP32 upload log or all SMS history.', success: 'Saved analyses, legacy alerts, and corrective-action logs cleared.' },
-  reset: { label: 'Factory Reset', code: 'RESET_PONDSENSE', endpoint: '/api/admin/factory-reset', detail: 'Permanently deletes farmer accounts, the same records as Clear Logs, and dependent records tied to deleted accounts. This does not reset the entire database to a clean installation.', success: 'Factory reset completed.' }
-} as const;
-
-export function AdminSettings({ admin, navigate }: { admin: AdminAccount; navigate: (path: string) => void }) {
-  const [pin, setPin] = useState('');
-  const [action, setAction] = useState<keyof typeof dangerActions | null>(null);
-  const [confirmation, setConfirmation] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [resetting, setResetting] = useState(false);
-  const [pinMessage, setPinMessage] = useState<{ error: boolean; text: string } | null>(null);
-  const [dangerMessage, setDangerMessage] = useState<{ error: boolean; text: string } | null>(null);
-  const danger = action && dangerActions[action];
-  const closeDanger = () => { if (!resetting) { setAction(null); setConfirmation(''); } };
-  return <>
-    <AdminHeading title="Settings" caption="Administrator profile and security" />
-    <section className="admin-panel"><h2>Administrator profile</h2><dl className="admin-definition">
-      <div><dt>Name</dt><dd>{admin.fullName}</dd></div><div><dt>Username</dt><dd>{admin.username || '\u2014'}</dd></div>
-      <div><dt>Email</dt><dd>{admin.email || '\u2014'}</dd></div><div><dt>Role</dt><dd>Administrator</dd></div>
-    </dl></section>
-    <section className="admin-panel"><h2>Admin PIN</h2><form className="admin-form-grid" onSubmit={async e => {
-      e.preventDefault();
-      if (busy) return;
-      setBusy(true); setPinMessage(null);
-      const r = await apiJson('/api/admin/settings/pin', { method: 'POST', body: JSON.stringify({ pin }) });
-      if (!r.error) setPin('');
-      setPinMessage({ error: !!r.error, text: r.error || 'Admin PIN updated.' }); setBusy(false);
-    }}>
-      <label>New admin PIN<input required minLength={4} type="password" autoComplete="new-password" value={pin} onChange={e => setPin(e.target.value)} /></label>
-      <button type="submit" className="primary-button" disabled={busy}>Change Admin PIN</button>
-    </form>{pinMessage && <p role={pinMessage.error ? 'alert' : 'status'} className="admin-notice" data-tone={pinMessage.error ? 'warning' : 'good'}>{pinMessage.text}</p>}
-      <button type="button" className="soft-button" onClick={() => navigate('/admin/login')}>Go to Admin Login</button>
-    </section>
-    <AdminDeviceSettings />
-    <section className="admin-panel admin-danger"><h2><TriangleAlert size={18} aria-hidden="true" /> Danger Zone</h2>
-      {Object.entries(dangerActions).map(([key, item]) => <div className="admin-danger-row" key={key}>
-        <div><strong>{item.label}</strong><p className="admin-muted">{item.detail}</p></div>
-        <button type="button" className="admin-danger-button" onClick={() => { setDangerMessage(null); setConfirmation(''); setAction(key as keyof typeof dangerActions); }}>{item.label}</button>
-      </div>)}
-      {!danger && dangerMessage && <p role={dangerMessage.error ? 'alert' : 'status'} className="admin-notice" data-tone={dangerMessage.error ? 'warning' : 'good'}>{dangerMessage.text}</p>}
-    </section>
-    {danger && <AdminDetails title={danger.label} close={closeDanger} locked={resetting}>
-      <p>{danger.detail}</p>
-      <form className="admin-confirm-form" onSubmit={async e => {
-        e.preventDefault();
-        if (confirmation !== danger.code || resetting) return;
-        setResetting(true); setDangerMessage(null);
-        const r = await apiJson(`${danger.endpoint}?confirm=${danger.code}`, { method: 'DELETE' });
-        setResetting(false);
-        setDangerMessage({ error: !!r.error, text: r.error || danger.success });
-        if (!r.error) { setAction(null); setConfirmation(''); }
-      }}>
-        <label>Type {danger.code} to confirm<input value={confirmation} autoComplete="off" spellCheck={false} disabled={resetting} onChange={e => setConfirmation(e.target.value)} /></label>
-        {dangerMessage && <p role="alert" className="admin-action-error">{dangerMessage.text}</p>}
-        <div className="admin-actions"><button type="button" className="soft-button" disabled={resetting} onClick={closeDanger}>Cancel</button>
-          <button type="submit" className="admin-danger-button" disabled={resetting || confirmation !== danger.code}>{resetting ? 'Working...' : `Confirm ${danger.label}`}</button></div>
-      </form>
-    </AdminDetails>}
+    {resource.data && (fish ? <ThresholdEditor key={fish.id} fish={fish} onSaved={resource.refresh} /> :
+      <p className="admin-empty">No editable ranges are configured for {species ? label(species.name) : 'this species'}.</p>)}
   </>;
 }

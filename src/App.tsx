@@ -4,7 +4,7 @@ import { SessionLoading } from './components/SessionLoading';
 import { apiErrorMessage } from './lib/apiError';
 import { OwnerLogin, OwnerPasswordChange, OwnerPasswordForm, sessionOwner, type OwnerSession } from './components/OwnerAuthentication';
 import { AdminDeviceEnrollment, verifyAdminDevice } from './components/AdminDeviceSecurity';
-import { AdminWorkspace, type AdminAccount as AdminUser, type AdminSection } from './components/AdminWorkspace';
+import { AdminWorkspace, isAdminSection, type AdminAccount as AdminUser } from './components/AdminWorkspace';
 import { farmerBrand } from './lib/farmerBrand';
 import { HarvestWorkspace, type SavedHarvest } from './components/HarvestWorkspace';
 import { FarmerLanguage, FarmerNavigation } from './components/FarmerNavigation';
@@ -57,7 +57,6 @@ import { clearLegacyBrowserCredentials, storage, type AppUser } from "./lib/stor
 import type { AlertItem, AlertLevel, FishScore, FishSpecies, SessionRecord, WaterParams } from "./types";
 
 type Lang = "en" | "tl";
-type AdminPath = '/admin/login' | AdminSection;
 type UserPath = "/login" | "/register" | "/dashboard" | "/history" | "/profile" | "/harvest";
 type SmsResult = {
   configured: boolean;
@@ -1013,7 +1012,7 @@ export default function App() {
 
 
   if (path.startsWith("/admin")) {
-    return <AdminRouter path={path as AdminPath} navigate={navigate} />;
+    return <AdminRouter path={path} navigate={navigate} />;
   }
   if (sessionLoading) return <SessionLoading error={sessionError} onRetry={() => setSessionAttempt(value => value + 1)} lang={lang} />;
 
@@ -2459,7 +2458,7 @@ function AuthModal({ onClose, onLogin }: { text: typeof ui.en; onClose: () => vo
   return <OwnerLogin navigate={() => onClose()} onLogin={onLogin} />;
 }
 
-function AdminRouter({ path, navigate }: { path: AdminPath; navigate: (path: string) => void }) {
+function AdminRouter({ path, navigate }: { path: string; navigate: (path: string) => void }) {
   const [admin, setAdmin] = useState<AdminUser | null>(null);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
@@ -2476,7 +2475,10 @@ function AdminRouter({ path, navigate }: { path: AdminPath; navigate: (path: str
         navigate("/admin/login");
         return;
       }
-      if (result.data?.admin) setAdmin(result.data.admin);
+      if (result.data?.admin) {
+        setAdmin(result.data.admin);
+        if (!isAdminSection(path)) navigate('/admin/dashboard');
+      }
       else setError(result.error || 'Could not verify the administrator session.');
     });
     return () => {
@@ -2498,7 +2500,7 @@ function AdminRouter({ path, navigate }: { path: AdminPath; navigate: (path: str
       </div>
     );
   }
-  return <AdminWorkspace path={path} admin={admin} navigate={navigate} />;
+  return <AdminWorkspace path={isAdminSection(path) ? path : '/admin/dashboard'} navigate={navigate} />;
 }
 
 function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
@@ -2554,9 +2556,12 @@ function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
           <button className="soft-button w-full" disabled={submitting} onClick={() => { setDeviceFlow(null); setEnrolling(false); setError(''); }}>Back to admin login</button>
         </div>}
         <div className="admin-actions">
-          <button className="soft-button" onClick={() => navigate('/')}>Farmer Dashboard</button>
           <button className="soft-button" onClick={() => navigate('/login')}>Farmer Login</button>
         </div>
+        {!deviceFlow && <details className="admin-detail-section">
+          <summary>Recover admin access</summary>
+          <p className="admin-muted">Use another authorized device to approve a replacement. If none are available, contact the system operator for verified recovery.</p>
+        </details>}
       </div>
     </section>
   </div>;

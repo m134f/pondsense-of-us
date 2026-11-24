@@ -3,10 +3,10 @@ import { UserPlus } from 'lucide-react';
 import { apiJson } from '../lib/api';
 import { DeviceKeyOnce } from './AdminControls';
 
-export function ProvisionOwner({ onSaved }: { onSaved: () => void }) {
+export function ProvisionOwner({ onSaved, initiallyOpen = false }: { onSaved: () => void; initiallyOpen?: boolean }) {
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [fishpen, setFishpen] = useState('');
   const [secret, setSecret] = useState<{ password: string; deviceKey: string; deviceId: number } | null>(null); const [error, setError] = useState(''); const [busy, setBusy] = useState(false);
-  return <details className="admin-panel admin-create">
+  return <details className="admin-panel admin-create" open={initiallyOpen || undefined}>
     <summary>Create farmer account</summary>
     <form onSubmit={async e => {
       e.preventDefault();
