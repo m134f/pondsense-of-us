@@ -3,8 +3,6 @@ import { Save } from 'lucide-react';
 import { apiJson } from '../lib/api';
 import { activeSpecies, speciesId } from '../data/fish';
 import { AdminBadge, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
-import { parseTurbidityThresholds, type TurbidityAlertRule } from '../lib/turbidityAlert';
-import { TurbidityCalculator } from './TurbidityCalculator';
 
 type Fish = { id: string | number; name: string; validationPending?: boolean } & Record<string, unknown>;
 const ranges = [
@@ -54,45 +52,6 @@ function ThresholdEditor({ fish, onSaved }: { fish: Fish; onSaved: () => Promise
   </section>;
 }
 
-function TurbidityProposalEditor() {
-  const endpoint = '/api/admin/turbidity-alert-rule';
-  const resource = useAdminResource<{ rule: TurbidityAlertRule }>(endpoint);
-  const rule = resource.data?.rule;
-  const [draft, setDraft] = useState<Partial<Record<'warningFrom' | 'criticalAbove', string>>>({});
-  const [busy, setBusy] = useState(false);
-  const [message, setMessage] = useState<{ error: boolean; text: string } | null>(null);
-  const fieldValue = (key: 'warningFrom' | 'criticalAbove') => draft[key] ?? String(rule?.[key] ?? '');
-  return <section className="admin-panel admin-threshold-card" aria-labelledby="turbidity-proposal-heading">
-    <header className="admin-section-heading"><h2 id="turbidity-proposal-heading">Turbidity alert proposal</h2><AdminBadge tone="warning">Pending approval</AdminBadge></header>
-    <p className="admin-muted">Preview only until approved by the administrator and an expert. Not a DENR or LLDA standard.</p>
-    <AdminLoad resource={resource} />
-    {rule && <form onSubmit={async e => {
-      e.preventDefault();
-      const thresholds = parseTurbidityThresholds({ warningFrom: Number(fieldValue('warningFrom')), criticalAbove: Number(fieldValue('criticalAbove')) });
-      if (!thresholds) { setMessage({ error: true, text: 'Enter two increasing thresholds above zero, up to 1000 NTU.' }); return; }
-      setBusy(true); setMessage(null);
-      const result = await apiJson<{ rule: TurbidityAlertRule }>(endpoint, { method: 'PATCH', body: JSON.stringify(thresholds) });
-      if (!result.error) { await resource.refresh(); setDraft({}); }
-      setMessage({ error: !!result.error, text: result.error || 'Proposal saved. Approval is still pending.' }); setBusy(false);
-    }}>
-      <fieldset disabled={busy} className="admin-threshold-fields">
-        <fieldset className="admin-range-pair">
-          <legend>Proposed boundaries (NTU)</legend>
-          {([['warningFrom', 'Warning from (inclusive)'], ['criticalAbove', 'Critical above']] as const).map(([key, label]) => <label key={key}>{label}
-            <input type="number" min="0.01" max="1000" step="0.01" required value={fieldValue(key)} onChange={e => {
-              setDraft(previous => ({ ...previous, [key]: e.target.value })); setMessage(null);
-            }} />
-          </label>)}
-        </fieldset>
-        <p className="admin-muted">Safe: 0 to below {rule.warningFrom} NTU. Warning: {rule.warningFrom} to {rule.criticalAbove} NTU. Critical: above {rule.criticalAbove} NTU.</p>
-        <button type="submit" className="primary-button" disabled={!Object.keys(draft).length || busy}><Save size={16} aria-hidden="true" /> {busy ? 'Saving...' : 'Save proposal'}</button>
-      </fieldset>
-    </form>}
-    {message && <p role={message.error ? 'alert' : 'status'} className="admin-notice" data-tone={message.error ? 'warning' : 'good'}>{message.text}</p>}
-    {rule && <TurbidityCalculator lang="en" rule={rule} />}
-  </section>;
-}
-
 export function AdminThresholds() {
   const resource = useAdminResource<{ fish: Fish[] }>('/api/admin/thresholds');
   const [selected, setSelected] = useState<string>(activeSpecies[0].id);
@@ -109,6 +68,5 @@ export function AdminThresholds() {
     <AdminLoad resource={resource} />
     {resource.data && (fish ? <ThresholdEditor key={fish.id} fish={fish} onSaved={resource.refresh} /> :
       <p className="admin-empty">No editable ranges are configured for {species ? label(species.name) : 'this species'}.</p>)}
-    <TurbidityProposalEditor />
   </>;
 }

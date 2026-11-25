@@ -26,7 +26,6 @@ async function main() {
     page.setDefaultTimeout(10_000);
     const errors = [], reads = [], writes = [];
     let overviewUnavailable = true;
-    const proposal = { warningFrom: 25, criticalAbove: 100, approval: 'pending' };
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/**', async route => {
       const request = route.request();
@@ -37,7 +36,6 @@ async function main() {
       if (url.pathname === '/api/admin/overview' && overviewUnavailable) return route.fulfill({ status: 503, json: { message: 'Overview temporarily unavailable.' } });
       if (url.pathname === '/api/admin/users/2/status' && method === 'PATCH') farmer.accountStatus = request.postDataJSON().status;
       if (url.pathname === '/api/admin/thresholds/5' && method === 'PATCH') Object.assign(tilapia, request.postDataJSON());
-      if (url.pathname === '/api/admin/turbidity-alert-rule' && method === 'PATCH') Object.assign(proposal, request.postDataJSON());
       if (url.pathname === '/api/admin/hardware' && method === 'POST') {
         hardware.push({ ...monitor, id: 2, chipId: '001122AABBEE', name: 'Fixture spare', assignmentId: null, farmer: null, fishpen: null, lastUpload: null, status: 'Unassigned' });
         return route.fulfill({ status: 201, json: { hardwareId: 2, deviceKey: 'fixture-device-key' } });
@@ -68,7 +66,6 @@ async function main() {
         '/api/admin/alerts': { alerts: [{ id: 6, user_id: 2, full_name: farmer.fullName, sms_status: 'skipped' }] },
         '/api/admin/planning-sms': { logs: [{ id: 7, owner_user_id: 2, full_name: farmer.fullName, status: 'sent' }] },
         '/api/admin/thresholds': { fish },
-        '/api/admin/turbidity-alert-rule': { rule: proposal },
         '/api/admin/security/devices': { devices: [{ id: 21, label: 'Admin laptop', last_used_at: now, revoked_at: null }], currentCredentialId: 21 },
         '/api/admin/logout': { ok: true }
       };
@@ -205,28 +202,8 @@ async function main() {
     await page.getByRole('button', { name: 'Save Thresholds' }).click();
     await page.getByText('Thresholds saved for Tilapia.').waitFor();
     assert.deepEqual(writes.find(([, path]) => path.endsWith('/thresholds/5'))?.[2], { optimal_ph_max: 8.6 });
-    const proposalEditor = page.getByRole('region', { name: 'Turbidity alert proposal' });
-    await proposalEditor.getByText('Pending approval', { exact: true }).waitFor();
-    await proposalEditor.getByText('Voltage-to-NTU calculator', { exact: true }).click();
-    const voltage = proposalEditor.getByRole('spinbutton', { name: 'GPIO34 voltage (V)' });
-    const slider = proposalEditor.getByRole('slider', { name: 'GPIO34 voltage slider' });
-    await voltage.fill('2.09');
-    await proposalEditor.getByText('40.44 NTU', { exact: true }).waitFor();
-    await proposalEditor.getByText('Provisional preview: Warning', { exact: true }).waitFor();
-    await slider.press('ArrowRight');
-    assert.equal(await voltage.inputValue(), '2.10');
-    await proposalEditor.getByText('40.00 NTU', { exact: true }).waitFor();
-    await slider.press('End');
-    await proposalEditor.getByText('Invalid result', { exact: true }).waitFor();
-    assert.equal(await proposalEditor.getByText(/Provisional preview:/).count(), 0);
-    await proposalEditor.getByLabel('Warning from (inclusive)').fill('30');
-    await proposalEditor.getByLabel('Critical above').fill('90');
-    await proposalEditor.getByRole('button', { name: 'Save proposal' }).click();
-    await proposalEditor.getByText('Proposal saved. Approval is still pending.').waitFor();
-    await voltage.fill('0.80');
-    await proposalEditor.getByText('96.88 NTU', { exact: true }).waitFor();
-    await proposalEditor.getByText('Provisional preview: Critical', { exact: true }).waitFor();
-    assert.deepEqual(writes.find(([, path]) => path.endsWith('/turbidity-alert-rule'))?.[2], { warningFrom: 30, criticalAbove: 90 });
+    assert.equal(await page.getByText(/Turbidity alert proposal|Voltage-to-NTU calculator|Not a DENR or LLDA standard/).count(), 0);
+    assert.ok(!reads.includes('/api/admin/turbidity-alert-rule'));
     assert.equal(tilapia.optimal_turb_max, 100);
     tilapia.optimal_ph_max = '8.5';
 
