@@ -1,4 +1,5 @@
 import type { WaterParams } from '../types';
+import { classifyTurbidity, proposedTurbidityRule, turbidityAlertCopy } from './turbidityAlert';
 
 export const parameters = ['ph', 'temperature', 'dissolvedOxygen', 'turbidity', 'ammonia'] as const;
 export type Parameter = typeof parameters[number];
@@ -7,7 +8,7 @@ export type Measurements = Partial<Record<Parameter, Measurement>>;
 export type Thresholds = Record<Parameter, [number, number]>;
 export type Recommendation = {
   parameter: Parameter; value: number | null; source: 'sensor' | 'manual' | null; recordedAt: string | null;
-  state: 'safe' | 'warning' | 'critical' | 'missing' | 'unavailable' | 'stale' | 'unverified';
+  state: 'safe' | 'warning' | 'critical' | 'missing' | 'unavailable' | 'stale' | 'unverified' | 'not-assessed';
   priority: 'NORMAL' | 'WATCH' | 'ACTION NEEDED' | 'URGENT'; range: [number, number];
   rule: string;
 };
@@ -30,6 +31,11 @@ export function recommend(measurements: Measurements, ranges: Thresholds, now = 
     const age = now - Date.parse(m?.recordedAt || '');
     if (!Number.isFinite(age) || age < -5000 || age > measurementMaxAge[m!.source]) return { ...result, state: 'stale', rule: 'freshness-v1' };
     if (m?.estimated) return { ...result, state: 'unverified', rule: 'calibration-required-v1' };
+    if (parameter === 'turbidity') {
+      const state = classifyTurbidity(value, 'verified', proposedTurbidityRule);
+      return state === null ? { ...result, range: [0, 1000], state: 'not-assessed', rule: 'turbidity-approval-pending-v1' } :
+        { ...result, range: [0, proposedTurbidityRule.criticalAbove], state, priority: state === 'safe' ? 'NORMAL' : state === 'warning' ? 'ACTION NEEDED' : 'URGENT', rule: 'turbidity-operating-rule-v1' };
+    }
     const [min, max] = ranges[parameter];
     const critical = (parameter === 'ph' && (value < 6 || value > 9)) ||
       (parameter === 'dissolvedOxygen' && value < 3) || (parameter === 'ammonia' && value > 0.1);
@@ -50,7 +56,7 @@ export function waterSummary(items: Recommendation[]) {
   return items.length === 5 && items.every(i => i.state === 'safe') ? 'safe' : 'incomplete';
 }
 export function completeMeasuredValues(items: Recommendation[]): WaterParams | null {
-  if (items.length !== 5 || parameters.some(p => !items.some(i => i.parameter === p)) || items.some(i => i.value === null || !Number.isFinite(i.value) || !['safe', 'warning', 'critical'].includes(i.state))) return null;
+  if (items.length !== 5 || parameters.some(p => !items.some(i => i.parameter === p)) || items.some(i => i.value === null || !Number.isFinite(i.value) || !['safe', 'warning', 'critical', 'not-assessed'].includes(i.state))) return null;
   return Object.fromEntries(items.map(i => [i.parameter, i.value])) as WaterParams;
 }
 export const parameterLabels = { ph: 'pH', temperature: 'Temperature / Temperatura', dissolvedOxygen: 'Dissolved oxygen (DO)', turbidity: 'Turbidity / Labo ng tubig', ammonia: 'Ammonia (NH3)' };
@@ -72,10 +78,12 @@ export function recommendationCopy(item: Recommendation, tl: boolean) {
   const states = {
     safe: ['Safe', 'Ligtas'], warning: ['Warning', 'Babala'], critical: ['Critical', 'Kritikal'],
     missing: ['No Measurement', 'Walang sukat'], unavailable: ['Sensor Unavailable', 'Hindi magamit ang sensor'],
-    stale: ['Stale', 'Lumang sukat'], unverified: ['Unverified estimate', 'Hindi pa beripikadong tantiya']
+    stale: ['Stale', 'Lumang sukat'], unverified: ['Unverified estimate', 'Hindi pa beripikadong tantiya'],
+    'not-assessed': ['Not assessed', 'Hindi tinatasa']
   };
   const why = item.rule === 'combined-low-do-high-ammonia-v1' ? ['Low dissolved oxygen and elevated ammonia were recorded together. Inspect fish promptly and verify both readings.', 'Sabay na naitala ang mababang oxygen at mataas na ammonia. Suriin agad ang isda at beripikahin ang dalawang sukat.'] : item.state === 'safe' ? ['Within the configured range for this reference.', 'Pasok sa itinakdang saklaw ng sangguniang ito.'] :
     ['warning', 'critical'].includes(item.state) ? ['Outside the configured range or an application critical limit.', 'Labas sa itinakdang saklaw o kritikal na limitasyon ng sistema.'] :
+    item.state === 'not-assessed' ? ['The turbidity operating thresholds are pending administrator and expert approval.', 'Hinihintay ang pag-apruba ng admin at eksperto sa mga limitasyon ng labo.'] :
     ['A recent, verified measurement is needed before assessing this parameter.', 'Kailangan ng bago at beripikadong sukat bago suriin ang parameter na ito.'];
   const actions: Record<Parameter, [string, string]> = {
     ph: ['Recheck with a calibrated meter or test kit. Observe fish and consult BFAR/LGU before any treatment.', 'Sukatin muli gamit ang calibrated meter o test kit. Obserbahan ang isda at kumonsulta sa BFAR/LGU bago maggamot.'],
@@ -84,8 +92,10 @@ export function recommendationCopy(item: Recommendation, tl: boolean) {
     turbidity: ['Inspect water color, odor, nets, and surrounding lake conditions. Avoid disturbing the lake bottom. Recheck the sample.', 'Suriin ang kulay, amoy, lambat at kondisyon ng lawa. Iwasang galawin ang ilalim ng lawa. Sukatin muli ang sample.'],
     ammonia: ['Inspect organic waste and fish behavior. Review feeding and confirm with a water test kit; consult BFAR/LGU before treatment.', 'Suriin ang organikong basura at kilos ng isda. Suriin ang pagpapakain at kumpirmahin gamit ang water test kit; kumonsulta bago maggamot.']
   };
-  const action = item.state === 'safe' ? ['Continue routine observation and record the next measurement.', 'Ipagpatuloy ang pagmamasid at itala ang susunod na sukat.'] :
+  const turbidityAction = item.parameter === 'turbidity' && (item.state === 'safe' || item.state === 'warning' || item.state === 'critical') ? turbidityAlertCopy[item.state] : null;
+  const action = turbidityAction ? [turbidityAction.en, turbidityAction.tl] : item.state === 'safe' ? ['Continue routine observation and record the next measurement.', 'Ipagpatuloy ang pagmamasid at itala ang susunod na sukat.'] :
     ['warning', 'critical'].includes(item.state) ? actions[item.parameter] :
+    item.state === 'not-assessed' ? ['Keep recording observations while the proposal is reviewed.', 'Ipagpatuloy ang pagtatala habang sinusuri ang mungkahi.'] :
     ['Check the instrument and obtain a fresh measurement. Do not substitute zero for missing data.', 'Suriin ang instrumento at kumuha ng bagong sukat. Huwag gawing zero ang nawawalang datos.'];
   return { label: states[item.state][tl ? 1 : 0], why: why[tl ? 1 : 0], action: action[tl ? 1 : 0],
     followup: tl ? 'Sukatin muli matapos ang inspeksyon; kung may patuloy na distress, kumonsulta sa lokal na fisheries officer.' : 'Retest after inspection; if fish distress persists, consult the local fisheries officer.' };

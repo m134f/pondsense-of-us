@@ -34,9 +34,11 @@ test('pH and turbidity explicitly prohibit lake chemical treatments', () => {
   for (const ph of [5, 6.2, 9.2]) {
     assert.match(renderToStaticMarkup(<SensorActionCard item={row('ph', { ...snapshot, ph })} lang="en" />), /Do not add lime, acid, fertilizer/);
   }
-  const turbid = renderToStaticMarkup(<SensorActionCard item={row('turbidity')} lang="en" />);
-  assert.match(turbid, /Monitoring status: <strong>Critical/);
-  assert.match(turbid, /Check water flow around the nets/);
+  const pending = row('turbidity');
+  assert.equal(renderToStaticMarkup(<SensorActionCard item={pending} lang="en" />), '');
+  const turbid = renderToStaticMarkup(<SensorActionCard item={{ ...pending, state: 'critical' }} lang="en" />);
+  assert.doesNotMatch(turbid, /Monitoring status:/);
+  assert.match(turbid, /Verify the measurement, inspect fish for distress/);
   assert.match(turbid, /Do not add alum, gypsum, fertilizer/);
   assert.match(turbid, /Turbidity \(NTU\) and TSS \(mg\/L\) are not interchangeable/);
   assert.doesNotMatch(turbid, /manually start|early harvest/);

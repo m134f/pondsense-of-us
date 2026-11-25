@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { compareSensorSamples, sensorConnectionState, sensorTurbidityValue } from './sensorDisplay';
 
 test('calibrated NTU is never capped by a presentation limit', () => {
-  for (const value of [0, 133.25, 500, 750.5, 1000]) assert.equal(sensorTurbidityValue({turbidityNtu:value,rawValue:2000}),value);
+  for (const value of [0, 133.25, 500, 750.5, 1000]) assert.equal(sensorTurbidityValue({ turbidityNtu: value, voltage: 2.5 }), value);
 });
 
 test('freshness uses sample and receipt times; no timestamp is not a live measurement', () => {
@@ -23,9 +23,8 @@ test('live chart sorts by measurement time rather than upload ID', () => {
   const values = [{ id: 3, recordedAt: '2026-11-22T08:00:03Z' }, { id: 4, recordedAt: '2026-11-22T08:00:00Z' }, { id: 2, recordedAt: '2026-11-22T08:00:03Z' }];
   assert.deepEqual(values.sort(compareSensorSamples).map(item => item.id), [4, 2, 3]);
 });
-test('provisional NTU matches the LCD conversion across every 12-bit ADC sample', () => {
-  for(let raw=0;raw<=4095;raw++){
-    const lcd=Math.round(Math.fround(Math.fround(1-Math.fround(raw/4095))*250));
-    assert.equal(sensorTurbidityValue({turbidityNtu:null,rawValue:raw}),lcd);
-  }
+test('provisional NTU follows the transmitted GPIO34 voltage', () => {
+  assert.equal(sensorTurbidityValue({ turbidityNtu: null, voltage: 1.757 }), 55.01);
+  assert.equal(sensorTurbidityValue({ turbidityNtu: null, voltage: 3.3 }), null);
+  assert.equal(sensorTurbidityValue({ turbidityNtu: null, voltage: null }), null);
 });

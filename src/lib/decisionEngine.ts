@@ -75,15 +75,6 @@ export function detectRisks(params: WaterParams): AlertItem[] {
     });
   }
 
-  if (params.turbidity > 150) {
-    alerts.push({
-      level: "warning",
-      title: "High Turbidity",
-      message: "Water is too cloudy and may affect fish health.",
-      actions: ["Stop feeding temporarily if fish are stressed", "Clean net or cage area", "Avoid disturbing the lake bottom", "Do not use chemicals without expert guidance"]
-    });
-  }
-
   if (params.ph < 6 || params.ph > 9) {
     alerts.push({
       level: "critical",

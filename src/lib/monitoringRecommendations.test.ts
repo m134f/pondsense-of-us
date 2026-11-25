@@ -15,9 +15,9 @@ test('manual results and previous sensor records remain separate from the displa
   assert.deepEqual(partitionMonitoringRecommendations([manual, previous, sensor, historicalAmmonia], sample), { manual: [manual], other: [previous] });
 });
 
-test('all simultaneous warnings and critical readings are assessed, with critical first', () => {
+test('pH and temperature retain alert ordering while turbidity is pending', () => {
   assert.deepEqual(monitoringAssessment(snapshot, now).map(({ parameter, state }) => [parameter, state]), [
-    ['ph', 'critical'], ['temperature', 'warning'], ['turbidity', 'warning'], ['dissolvedOxygen', 'missing']
+    ['ph', 'critical'], ['temperature', 'warning'], ['dissolvedOxygen', 'missing'], ['turbidity', 'not-assessed']
   ]);
 });
 

@@ -37,7 +37,7 @@ async function main() {
     });
     for (const width of widths) {
       await page.setViewportSize({ width, height: 900 });
-      await page.goto('http://localhost:5175/analysis');
+      await page.goto(`${process.env.PONDSENSE_BROWSER_URL || 'http://localhost:5175'}/analysis`);
       for (const [key, value] of Object.entries(values)) await page.locator(`#manual-${key}`).fill(String(value));
       const beforeReview = saveCount;
       await button('Review measurements').click();
@@ -67,18 +67,19 @@ async function main() {
         await page.getByText('No suitable fish identified from the measured parameters').waitFor();
         assert.equal(await page.getByText('0 of 4 measurements in range', { exact: true }).count(), 2);
         const headers = actions.getByRole('tab');
-        assert.deepEqual(await headers.evaluateAll(tabs => tabs.map(tab => tab.getAttribute('aria-label'))), ['Dissolved Oxygen (DO), Critical', 'Turbidity, Critical', 'pH, Warning', 'Water Temperature, Warning']);
+        assert.deepEqual(await headers.evaluateAll(tabs => tabs.map(tab => tab.getAttribute('aria-label'))), ['Dissolved Oxygen (DO), Critical', 'pH, Warning', 'Water Temperature, Warning']);
+        await page.getByRole('region', { name: /Water quality summary/ }).getByText('Not assessed', { exact: true }).waitFor();
         const panel = actions.getByRole('tabpanel');
         assert.equal(await panel.count(), 1);
         assert.equal(await actions.getByRole('tab', { selected: true }).getAttribute('aria-label'), 'Dissolved Oxygen (DO), Critical');
         const oxygen = headers.first();
         await oxygen.focus();
         await page.keyboard.press('ArrowRight');
-        const turbidity = headers.nth(1);
-        assert.equal(await turbidity.getAttribute('aria-selected'), 'true');
+        const ph = headers.nth(1);
+        assert.equal(await ph.getAttribute('aria-selected'), 'true');
         await page.getByText(/start manual aeration now/i).waitFor();
-        await panel.getByText('References (2)').press('Enter');
-        await actions.getByRole('link', { name: /USGS/ }).waitFor();
+        await panel.getByText('References (3)').press('Enter');
+        await actions.getByRole('link', { name: /Yokogawa/ }).waitFor();
         await headers.last().click();
         assert.equal(await headers.last().getAttribute('aria-selected'), 'true');
         await headers.last().press('Home');

@@ -2,13 +2,13 @@ import { useId, useRef, useState, type KeyboardEvent } from 'react';
 import type { WaterParams } from '../types';
 import { manualParameters } from '../lib/manualValidation';
 import { measuredStatus, parameterStatus } from '../lib/measurementStatus';
-import { recommendationCopy, referenceThresholds, units } from '../lib/recommendations';
+import { recommendationCopy, referenceThresholds, units, type Recommendation } from '../lib/recommendations';
 import { SensorActionCard, sensorActionName } from './SensorActionCard';
 
 function manualItems(values: Partial<WaterParams>) {
   return manualParameters.map(parameter => {
     const value = values[parameter] ?? null;
-    const state = value === null ? 'missing' as const : parameterStatus(parameter, value);
+    const state: Recommendation['state'] = value === null ? 'missing' : parameterStatus(parameter, value) ?? 'not-assessed';
     return { parameter, value, state, source: 'manual' as const, range: referenceThresholds[parameter],
       recordedAt: null, priority: 'NORMAL' as const, rule: 'manual-measured-status' };
   });
@@ -34,7 +34,7 @@ export function ManualAssessment({ values, lang }: { values: Partial<WaterParams
   const measured = items.filter(item => item.value !== null).length;
   const overall = measuredStatus(values);
   const urgentOxygen = items.some(item => item.parameter === 'dissolvedOxygen' && item.state === 'critical');
-  const overallLabel = overall === 'partial' ? (tl ? 'Walang sukat' : 'No measurements') : overall === 'safe' ?
+  const overallLabel = overall === 'partial' ? (measured ? (tl ? 'Hindi tinatasa' : 'Not assessed') : (tl ? 'Walang sukat' : 'No measurements')) : overall === 'safe' ?
     (tl ? 'Pasok ang mga nasukat' : 'Measured values in range') : recommendationCopy({ ...items[0], state: overall }, tl).label;
   return <section className="card manual-summary p-4 sm:p-5" data-severity={overall} aria-labelledby="manual-summary-heading">
     <header className="manual-summary-header">
@@ -61,6 +61,7 @@ export function ManualAssessment({ values, lang }: { values: Partial<WaterParams
         </dd>
       </div>)}
     </dl>
+    {items.some(item => item.state === 'not-assessed') && <p className="text-sm text-slate-600">{tl ? 'Hinihintay ang pag-apruba sa mga limitasyon ng labo.' : 'Turbidity alert thresholds are pending approval.'}</p>}
     <p className="manual-summary-note text-sm text-slate-600">{tl ? 'Manu-manong sukat ito, hindi live. Hindi nito kinukumpirma ang kaligtasan ng buong tubig.' : 'These are manual readings, not live sensor data. They do not confirm overall water safety.'}</p>
   </section>;
 }

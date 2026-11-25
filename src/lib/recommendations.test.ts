@@ -31,7 +31,8 @@ test('configured ranges and critical combination explain priority', () => {
 test('complete measured values preserve all five parameters without redistribution', () => {
   const values = { ph: 7.5, temperature: 28, dissolvedOxygen: 6, turbidity: 50, ammonia: .02 };
   const items = recommend(Object.fromEntries(Object.entries(values).map(([k,v]) => [k, measurement(v, 'manual')])), referenceThresholds, now);
-  assert.equal(waterSummary(items), 'safe');
+  assert.equal(waterSummary(items), 'incomplete');
+  assert.equal(items.find(item => item.parameter === 'turbidity')?.state, 'not-assessed');
   assert.deepEqual(completeMeasuredValues(items), values);
 });
 test('impossible sensor values cannot produce a safe assessment or full score', () => {

@@ -7,7 +7,7 @@ import { SensorActionCard, sensorActionName } from './SensorActionCard';
 
 export type WaterContext = { recommendations: Recommendation[]; status: string; reference: string; fishpenName: string | null; deviceAssigned: boolean };
 type HistoryRow = { id: number; fishpenName: string | null; deviceId: number | null; recordedAt: string; acknowledgedAt: string | null; payload: Recommendation & { reference: string } };
-const colors = { critical: 'border-red-200 bg-red-50 text-red-900', warning: 'border-amber-200 bg-amber-50 text-amber-950', safe: 'border-emerald-200 bg-emerald-50 text-emerald-950', missing: 'border-slate-200 bg-slate-50 text-slate-700', stale: 'border-slate-200 bg-slate-50 text-slate-700', unavailable: 'border-slate-200 bg-slate-50 text-slate-700', unverified: 'border-slate-200 bg-slate-50 text-slate-700' };
+const colors = { critical: 'border-red-200 bg-red-50 text-red-900', warning: 'border-amber-200 bg-amber-50 text-amber-950', safe: 'border-emerald-200 bg-emerald-50 text-emerald-950', missing: 'border-slate-200 bg-slate-50 text-slate-700', stale: 'border-slate-200 bg-slate-50 text-slate-700', unavailable: 'border-slate-200 bg-slate-50 text-slate-700', unverified: 'border-slate-200 bg-slate-50 text-slate-700', 'not-assessed': 'border-slate-200 bg-slate-50 text-slate-700' };
 export function RecommendationDetails({ item, reference, lang }: { item: Recommendation; reference: string; lang: 'en' | 'tl' }) {
   const copy = recommendationCopy(item, lang === 'tl');
   const oxygen = lowOxygenGuidance(item, lang === 'tl');
@@ -26,7 +26,7 @@ export function RecommendationDetails({ item, reference, lang }: { item: Recomme
       <div><dt className="font-semibold">{lang === 'tl' ? 'Opisyal na sanggunian' : 'Scientific or Official Reference'}</dt><dd>{oxygen ? <><a className="underline" href={lldaAdvisoryUrl} target="_blank" rel="noreferrer">LLDA algal bloom and fish kill advisory</a>. {lang === 'tl' ? 'Hindi nagbibigay ang abiso ng numerong DO threshold; galing sa app ang severity.' : 'The advisory does not set a numerical DO threshold; severity comes from the application rule.'}</> : (lang === 'tl' ? 'Saklaw ng app; walang beripikadong opisyal na sanggunian para sa payong ito.' : 'Application range; no verified official citation for this action.')}</dd></div>
     </dl>
     <details className="mt-2 text-sm"><summary className="cursor-pointer py-1 font-semibold">{lang === 'tl' ? 'Bakit ito ipinapakita?' : 'Why am I seeing this?'}</summary>
-      <p className="mt-2">{copy.why}</p><p>{reference}: {item.range.join(' - ')} {units[item.parameter]}</p>
+      <p className="mt-2">{copy.why}</p>{item.state !== 'not-assessed' && <p>{reference}: {item.range.join(' - ')} {units[item.parameter]}</p>}
       <p className="mt-1">{copy.followup}</p><p className="mt-1 text-xs">{lang === 'tl' ? 'Patakaran' : 'Rule'}: {item.rule}</p>
     </details>
   </article>;

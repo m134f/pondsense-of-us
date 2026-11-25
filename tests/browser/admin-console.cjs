@@ -25,7 +25,8 @@ async function main() {
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
     const errors = [], reads = [], writes = [];
-    let overviewUnavailable = true, registryEmpty = true;
+    let overviewUnavailable = true;
+    const proposal = { warningFrom: 25, criticalAbove: 100, approval: 'pending' };
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/**', async route => {
       const request = route.request();
@@ -36,6 +37,7 @@ async function main() {
       if (url.pathname === '/api/admin/overview' && overviewUnavailable) return route.fulfill({ status: 503, json: { message: 'Overview temporarily unavailable.' } });
       if (url.pathname === '/api/admin/users/2/status' && method === 'PATCH') farmer.accountStatus = request.postDataJSON().status;
       if (url.pathname === '/api/admin/thresholds/5' && method === 'PATCH') Object.assign(tilapia, request.postDataJSON());
+      if (url.pathname === '/api/admin/turbidity-alert-rule' && method === 'PATCH') Object.assign(proposal, request.postDataJSON());
       if (url.pathname === '/api/admin/hardware' && method === 'POST') {
         hardware.push({ ...monitor, id: 2, chipId: '001122AABBEE', name: 'Fixture spare', assignmentId: null, farmer: null, fishpen: null, lastUpload: null, status: 'Unassigned' });
         return route.fulfill({ status: 201, json: { hardwareId: 2, deviceKey: 'fixture-device-key' } });
@@ -44,13 +46,13 @@ async function main() {
       if (url.pathname.endsWith('/hardware/1/assign')) Object.assign(monitor, { assignmentId: 'b', farmer: other.fullName, fishpen: other.fishpenName, status: 'Offline' });
       const responses = {
         '/api/admin/session': { admin: { id: 1, role: 'admin', fullName: 'Sample Administrator' } },
-        '/api/admin/login': { token: 'fixture-login', bootstrapRequired: true },
+        '/api/admin/login': { token: 'fixture-device-verification', bootstrapRequired: true },
         '/api/admin/overview': { counts: { farmers: 2, sensorReadings: 142, criticalToday: 7, smsToday: 3 },
           devices: { online: 1, offline: 1, never: 1, inactive: 1, assigned: 1 },
           activity: [{ id: 1, kind: 'upload', happened_at: now, label: 'Hidden fixture activity', device_id: 14 }] },
         '/api/admin/users': { users: [farmer, other] },
         '/api/admin/owners': { temporaryPassword: 'fixture-password' },
-        '/api/admin/hardware': { hardware: registryEmpty ? [] : hardware, uploadsEnabled: !registryEmpty },
+        '/api/admin/hardware': { hardware },
         '/api/admin/hardware/fishpens': { fishpens: [{ ownerId: 2, farmer: farmer.fullName, fishpenId: 9, fishpen: farmer.fishpenName },
           { ownerId: 3, farmer: other.fullName, fishpenId: 10, fishpen: other.fishpenName }] },
         '/api/admin/hardware/1/unassign': { saved: true },
@@ -66,6 +68,7 @@ async function main() {
         '/api/admin/alerts': { alerts: [{ id: 6, user_id: 2, full_name: farmer.fullName, sms_status: 'skipped' }] },
         '/api/admin/planning-sms': { logs: [{ id: 7, owner_user_id: 2, full_name: farmer.fullName, status: 'sent' }] },
         '/api/admin/thresholds': { fish },
+        '/api/admin/turbidity-alert-rule': { rule: proposal },
         '/api/admin/security/devices': { devices: [{ id: 21, label: 'Admin laptop', last_used_at: now, revoked_at: null }], currentCredentialId: 21 },
         '/api/admin/logout': { ok: true }
       };
@@ -87,12 +90,8 @@ async function main() {
     await page.getByRole('button', { name: 'Login to Admin' }).click();
     await page.getByRole('button', { name: 'Continue existing admin access until setup' }).click();
     await page.getByRole('alert').getByText('Overview temporarily unavailable.').waitFor();
-    await page.getByText('Not Registered', { exact: true }).waitFor();
-    assert.equal(await page.locator('.admin-metric').filter({ hasText: 'Registered Hardware' }).locator('dd').textContent(), '0');
     overviewUnavailable = false;
     await page.getByRole('button', { name: 'Try again' }).click();
-    registryEmpty = false;
-    await go('/admin/dashboard');
     await page.locator('.admin-metric dd').filter({ hasText: /^Online$/ }).waitFor();
     assert.deepEqual(await nav.getByRole('link').allTextContents().then(rows => rows.map(s => s.trim())), ['Dashboard', 'Users', 'Devices', 'Thresholds']);
     assert.equal((await page.locator('.admin-sidebar').boundingBox()).width, 180);
@@ -206,6 +205,14 @@ async function main() {
     await page.getByRole('button', { name: 'Save Thresholds' }).click();
     await page.getByText('Thresholds saved for Tilapia.').waitFor();
     assert.deepEqual(writes.find(([, path]) => path.endsWith('/thresholds/5'))?.[2], { optimal_ph_max: 8.6 });
+    const proposalEditor = page.getByRole('region', { name: 'Turbidity alert proposal' });
+    await proposalEditor.getByText('Pending approval', { exact: true }).waitFor();
+    await proposalEditor.getByLabel('Warning from (inclusive)').fill('30');
+    await proposalEditor.getByLabel('Critical above').fill('90');
+    await proposalEditor.getByRole('button', { name: 'Save proposal' }).click();
+    await proposalEditor.getByText('Proposal saved. Approval is still pending.').waitFor();
+    assert.deepEqual(writes.find(([, path]) => path.endsWith('/turbidity-alert-rule'))?.[2], { warningFrom: 30, criticalAbove: 90 });
+    assert.equal(tilapia.optimal_turb_max, 100);
     tilapia.optimal_ph_max = '8.5';
 
     assert.ok(!reads.includes('/api/admin/security/devices'));

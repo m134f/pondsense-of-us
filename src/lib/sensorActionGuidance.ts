@@ -1,6 +1,7 @@
 import { parameterStatus } from './measurementStatus';
 import type { MonitoringParameter } from './monitoringRecommendations';
 import { lldaAdvisoryUrl, type Recommendation } from './recommendations';
+import { turbidityAlertCopy } from './turbidityAlert';
 
 type Copy = [english: string, filipino: string];
 type ActionCopy = { condition: Copy; check: Copy; action: Copy; escalate: Copy };
@@ -18,7 +19,7 @@ export function sensorActionGuidance(item: Recommendation & { parameter: Monitor
   if (!item.source || item.value === null || !Number.isFinite(item.value) ||
     (item.state !== 'warning' && item.state !== 'critical')) return null;
   const critical = item.state === 'critical';
-  const dashboardStatus = parameterStatus(item.parameter, item.value);
+  const dashboardStatus = parameterStatus(item.parameter, item.value) ?? item.state;
   const low = item.value < item.range[0];
   let copy: ActionCopy;
   switch (item.parameter) {
@@ -65,9 +66,10 @@ export function sensorActionGuidance(item: Recommendation & { parameter: Monitor
           ? ['The reading is below the app reference range. Clearer water alone is not evidence of fish distress.', 'Mas mababa sa saklaw ng app ang sukat. Hindi sapat ang mas malinaw na tubig para masabing hirap ang isda.']
           : ['Cloudiness may come from sediment, runoff, or algae. Turbidity alone cannot identify an algal bloom.', 'Maaaring galing sa putik, agos mula sa ulan, o algae ang labo. Hindi makukumpirma ang algal bloom gamit lang ang sukat ng labo.'],
         check: ['Check calibration and repeat the reading. Note muddy or green water, recent rain, and fish behavior. Measure DO if possible, especially near dawn or after cloudy weather.', 'Suriin ang calibration at sukatin ulit. Itala kung maputik o berde ang tubig, kung umulan, at ang kilos ng isda. Sukatin ang DO kung maaari, lalo na sa madaling araw o pagkatapos ng maulap na panahon.'],
-        action: (critical || dashboardStatus === 'critical') && !low
-          ? ['Check water flow around the nets and monitor DO for oxygen stress. If fish are stressed or eating less, reduce or pause feeding. Do not add alum, gypsum, fertilizer, or other pond-treatment chemicals.', 'Suriin ang daloy sa paligid ng lambat at bantayan ang DO. Kung hirap o mahina ang kain ng isda, bawasan o itigil muna ang pakain. Huwag maglagay ng tawas, gypsum, abono, o ibang kemikal na pang-pond.']
-          : ['Monitor readings, DO, and fish behavior more often. Do not add alum, gypsum, fertilizer, or other pond-treatment chemicals.', 'Mas madalas na bantayan ang mga sukat, DO, at kilos ng isda. Huwag maglagay ng tawas, gypsum, abono, o ibang kemikal na pang-pond.'],
+        action: [
+          `${turbidityAlertCopy[item.state].en} Do not add alum, gypsum, fertilizer, or other pond-treatment chemicals.`,
+          `${turbidityAlertCopy[item.state].tl} Huwag maglagay ng tawas, gypsum, abono, o ibang kemikal na pang-pond.`
+        ],
         escalate: ['Contact local fisheries staff if water stays unusually cloudy, DO falls, or fish show distress. Report unusual discoloration, foul odors, suspected blooms, or mass fish deaths to LLDA.', 'Kumonsulta sa lokal na fisheries officer kung tuloy ang matinding labo, bumababa ang DO, o hirap ang isda. Iulat sa LLDA ang kakaibang kulay, mabahong amoy, hinihinalang algal bloom, o maramihang pagkamatay ng isda.']
       };
   }

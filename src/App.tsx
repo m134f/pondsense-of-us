@@ -1,5 +1,8 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sensorTurbidityValue, compareSensorSamples, sensorConnectionState } from './lib/sensorDisplay';
+import { estimateTurbidity, turbidityValidityLabel } from './lib/turbidityEstimate';
+import { turbidityStatusLabel } from './lib/turbidityAlert';
+import { TurbidityCalculator } from './components/TurbidityCalculator';
 import { SessionLoading } from './components/SessionLoading';
 import { apiErrorMessage } from './lib/apiError';
 import { OwnerLogin, OwnerPasswordChange, OwnerPasswordForm, sessionOwner, type OwnerSession } from './components/OwnerAuthentication';
@@ -122,7 +125,7 @@ export type HarvestBatch = {
 type SensorAnalysisState = {
   status: "waiting" | "complete";
   secondsRemaining: number;
-  turbidity: number;
+  turbidity: number | null;
   isEstimated: boolean;
   recordedAt: string;
 };
@@ -440,7 +443,7 @@ function valueText(key: keyof WaterParams, value: number) {
   return value.toFixed(1);
 }
 
-function statusFor(key: keyof WaterParams, value: number): AlertLevel {
+function statusFor(key: keyof WaterParams, value: number) {
   return parameterStatus(key, value);
 }
 
@@ -1304,48 +1307,7 @@ function AnalysisPage({
       </section>
 
       {!showManual && sensorTelemetry ? (
-        <aside className="analysis-comparison card h-fit space-y-3 p-5">
-          <h2 className="font-black">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
-          <div className="flex flex-wrap items-center gap-2"><span className={`rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(sensorMeasuredStatus(sensorTelemetry))}`}>{statusText(sensorMeasuredStatus(sensorTelemetry), lang)}</span>{sensorTelemetry.dissolvedOxygen == null && <span className="text-xs text-slate-600">{lang === 'tl' ? 'Walang beripikadong sukat ng DO.' : 'No verified dissolved oxygen measurement.'}</span>}</div>
-          {!sensorFresh && <p className="rounded-md bg-amber-50 p-3 text-sm font-semibold text-amber-900">{lang === 'tl' ? 'Batay sa huling sukat, hindi live. Kumuha ng bagong sukat bago magpasya.' : 'Based on the last reading, not live. Obtain fresh measurements before making decisions.'}</p>}
-          {(() => {
-            const readings = { ph: sensorTelemetry.ph, temperature: sensorTelemetry.temperatureC, turbidity: sensorTelemetry.turbidityNtu, dissolvedOxygen: sensorTelemetry.dissolvedOxygen };
-            const measured = Object.entries(readings).filter(([, value]) => value !== null && Number.isFinite(value));
-            const ranked = rankPartialFish(fishDb.filter(fish => activeSpecies.some(species => species.id === fish.id)), readings);
-            if (!measured.length) return <p className="text-sm text-slate-600">{lang === "tl" ? "Wala pang beripikadong sukat para ihambing ang isda." : "No verified measurements yet for fish comparison."}</p>;
-            return <>
-              {sensorTelemetry.turbidityNtu === null && <p className="text-sm text-slate-600">{lang === 'tl' ? 'Hindi kasama ang tantyang turbidity sa paghahambing; kailangan muna ng calibration.' : 'Estimated turbidity is excluded from comparison until calibrated.'}</p>}
-              <p className="text-sm text-amber-800">{lang === "tl" ? `Batay lamang sa ${measured.length} sukat. Hindi pa kumpirmadong angkop ang isda hangga't kulang ang ibang sukat.` : `Based on ${measured.length} measured parameter${measured.length === 1 ? "" : "s"} only. This is not a full suitability recommendation.`}</p>
-              <p className="text-xs text-slate-600">{lang === 'tl' ? 'Ayos: mas maraming sukat na pasok sa saklaw, saka mas malapit sa saklaw ang mga labas na sukat.' : 'Order: more measurements within the species range, then closer to range for values outside it.'}</p>
-              {ranked.length && ranked.every(item => item.matches.length === 0) && <p className="rounded-md bg-red-50 p-2 text-sm font-semibold text-red-800">{lang === "tl" ? "Walang isdang nasa saklaw ng kasalukuyang sukat. Ang nasa itaas ay pinakamalapit lamang." : "No fish is within the measured range. The top fish is only the closest match."}</p>}
-              {ranked.map((item, index) => {
-                const previous = ranked[index - 1];
-                const next = ranked[index + 1];
-                const tied = (other: typeof item | undefined) => Boolean(other && other.matches.length === item.matches.length && Math.abs(other.distance - item.distance) < 0.000001);
-                const reason = index === 0
-                  ? tied(next) ? (lang === 'tl' ? 'Tabla sa nasukat; pangalan lamang ang nag-ayos ng puwesto.' : 'Tied on measured evidence; listed alphabetically.')
-                    : item.matches.length === measured.length ? (lang === 'tl' ? 'Pinakamaraming pasok sa nasukat na saklaw; hindi pa ito kumpletong rekomendasyon.' : 'Most measured values in range; still not a full recommendation.')
-                    : (lang === 'tl' ? 'Pinakamalapit sa saklaw sa mga nasukat, pero hindi pa kumpirmadong angkop.' : 'Closest on measured values, but not confirmed suitable.')
-                  : item.matches.length < previous.matches.length ? (lang === 'tl' ? 'Mas kaunting nasukat ang pasok kaysa sa nasa itaas.' : 'Fewer measured values are in range than the fish above.')
-                    : tied(previous) ? (lang === 'tl' ? 'Tabla sa nasa itaas; pangalan lamang ang nag-ayos ng puwesto.' : 'Tied with the fish above; listed alphabetically.')
-                    : (lang === 'tl' ? 'Pareho ang bilang na pasok, pero mas malayo sa saklaw ang labas na sukat.' : 'Same number in range, but the out-of-range value is farther from its species range.');
-                return <section key={item.fish.id} className="border-t border-slate-200 py-3">
-                  <div className="flex items-center gap-2"><span className="text-sm font-bold text-slate-500">#{index + 1}</span><img src={fishImageSrc(item.fish.id)} alt="" className="h-10 w-10 rounded-md object-cover" /><strong>{item.fish.name}</strong></div>
-                  <p className="mt-2 text-xs font-semibold text-slate-700">{lang === 'tl' ? `${item.matches.length} sa ${measured.length} nasukat ang pasok` : `${item.matches.length} of ${measured.length} measured values in range`}</p>
-                  {item.checks.map(check => {
-                    const label = check.key === 'ph' ? 'pH' : check.key === 'temperature' ? (lang === 'tl' ? 'Temperatura' : 'Temperature') : check.key === 'dissolvedOxygen' ? (lang === 'tl' ? 'Natunaw na oxygen' : 'Dissolved oxygen') : (lang === 'tl' ? 'Labo' : 'Turbidity');
-                    const unit = check.key === 'temperature' ? ' °C' : check.key === 'turbidity' ? ' NTU' : check.key === 'dissolvedOxygen' ? ' mg/L' : '';
-                    return <p key={check.key} className="mt-1 text-xs text-slate-600">
-                      {label} {check.value}{unit}: {check.result === 'unknown' ? (lang === 'tl' ? 'walang beripikadong saklaw' : 'no verified range') : <><span className={check.result === 'within' ? 'font-semibold text-emerald-700' : 'font-semibold text-amber-800'}>{check.result === 'within' ? (lang === 'tl' ? 'pasok' : 'within') : check.result === 'below' ? (lang === 'tl' ? 'mas mababa' : 'below') : (lang === 'tl' ? 'mas mataas' : 'above')}</span> ({check.min}–{check.max}{unit})</>}
-                    </p>;
-                  })}
-                  <p className="mt-2 text-xs leading-relaxed text-slate-700">{reason}</p>
-                </section>;
-              })}
-              {activeSpecies.filter(species => !fishDb.some(fish => fish.id === species.id)).map(species => <p key={species.id} className="text-xs text-slate-500">{species.name}: {lang === "tl" ? "kailangan ng kumpletong saklaw sa database" : "complete database thresholds needed"}</p>)}
-            </>;
-          })()}
-        </aside>
+        <SensorFishComparison key={`${ownerId}:${sensorTelemetry.assignmentId ?? sensorTelemetry.deviceId}`} telemetry={sensorTelemetry} live={sensorFresh} fish={fishDb} lang={lang} />
       ) : showManual && partialManual ? (
         <section className="analysis-comparison card manual-ranking h-fit min-w-0 p-4 sm:p-5" aria-labelledby="manual-ranking-heading">
           <h2 id="manual-ranking-heading" className="text-lg font-bold">{lang === "tl" ? "Paunang ranggo ng mga isda" : "Fish suitability ranking"}</h2>
@@ -1403,6 +1365,7 @@ function AnalysisPage({
         </aside>
       ) : null}
       {showManual && manualResult && <ManualRecommendedActions key={manualResult.id} values={manualResult.values} lang={lang} />}
+      <TurbidityCalculator lang={lang} />
       {!showManual && <WaterQualityTrends readings={sensorTrend} state={trendState} now={now} lang={lang} onRetry={retryTrend}
         connection={sensorState === 'loading' ? 'checking' : sensorState === 'error' ? 'unverified' : !sensorTelemetry ? 'no-upload' : sensorConnectionState(sensorTelemetry, now)} />}
     </main>
@@ -1431,6 +1394,60 @@ function AnalysisEmptyState({ sensorAnalysis, hasSensor }: { sensorAnalysis: Sen
   );
 }
 
+function SensorFishComparison({ telemetry, live, fish, lang }: { telemetry: SensorTelemetry; live: boolean; fish: FishSpecies[]; lang: Lang }) {
+  const tl = lang === 'tl';
+  const readings = { ph: telemetry.ph, temperature: telemetry.temperatureC, turbidity: telemetry.turbidityNtu, dissolvedOxygen: telemetry.dissolvedOxygen };
+  const profiles = fish.filter(profile => activeSpecies.some(species => species.id === profile.id));
+  const canAnalyze = live && profiles.length > 0 && Object.values(readings).some(value => typeof value === 'number' && Number.isFinite(value));
+  const [result, setResult] = useState<{
+    top: ReturnType<typeof rankPartialFish>[number]; tied: boolean; time: string;
+  } | null>(null);
+
+  useEffect(() => { if (!live) setResult(null); }, [live]);
+
+  const analyze = () => {
+    if (!canAnalyze) return;
+    const [top, next] = rankPartialFish(profiles, readings);
+    if (!top) return;
+    const tied = Boolean(next && next.matches.length === top.matches.length && Math.abs(next.distance - top.distance) < 0.000001);
+    setResult({ top, tied, time: telemetry.sampledAt ?? telemetry.recordedAt });
+  };
+
+  const current = live ? result : null;
+  return <aside className="analysis-comparison card h-fit min-w-0 space-y-3 p-5" aria-labelledby="sensor-fish-heading">
+    <div className="flex flex-wrap items-center justify-between gap-2">
+      <h2 id="sensor-fish-heading" className="font-bold">{tl ? 'Paunang paghahambing ng isda' : 'Preliminary fish comparison'}</h2>
+      <button type="button" className="primary-button min-h-11 disabled:opacity-60" disabled={!canAnalyze} onClick={analyze}><Fish size={16} aria-hidden="true" />{tl ? 'Suriin' : 'Analyze'}</button>
+    </div>
+    <div role="status">
+      {!canAnalyze && <p className="text-sm text-slate-600">{!live
+        ? (tl ? 'Maghintay ng bagong sukat mula sa sensor.' : 'Waiting for fresh sensor readings.')
+        : (tl ? 'Wala pang sapat na sukat o saklaw para ihambing ang isda.' : 'No measurements or fish ranges available for comparison.')}</p>}
+      {current && <section className="space-y-2 border-t border-slate-200 pt-3">
+        <div className="flex items-center gap-3">
+          <img src={fishImageSrc(current.top.fish.id)} alt="" className="h-10 w-10 shrink-0 rounded-md object-cover" />
+          <div className="min-w-0"><p className="text-xs font-semibold text-slate-600">{tl ? 'Pinakamalapit sa nasukat' : 'Top match for measured values'}</p><h3 className="font-bold">{current.top.fish.name}</h3></div>
+        </div>
+        <p className="text-sm font-semibold">{tl ? `${current.top.matches.length} sa ${current.top.checks.length} nasukat ang pasok` : `${current.top.matches.length} of ${current.top.checks.length} measured values in range`}</p>
+        {current.top.matches.length === 0 && <p className="text-sm font-semibold text-amber-900">{tl ? 'Walang pasok sa nasukat na saklaw. Pinakamalapit lang ito.' : 'No fish matches any measured range. This is only the closest match.'}</p>}
+        {current.tied && <p className="text-sm text-slate-600">{tl ? 'Tabla ang mga nanguna. Isa ang ipinakita ayon sa alpabeto.' : 'Top fish are tied. One is shown alphabetically.'}</p>}
+        <p className="text-sm text-slate-600">{tl ? 'Paunang paghahambing lamang. Hindi ito rekomendasyon na mag-stock.' : 'Preliminary comparison only. Not a stocking recommendation.'}</p>
+        <p className="text-xs text-slate-600"><time dateTime={current.time}>{new Date(current.time).toLocaleString('en-PH', { timeZone: 'Asia/Manila' })}</time> (PHT)</p>
+        <details className="text-sm text-slate-600">
+          <summary className="cursor-pointer font-semibold text-teal-800">{tl ? 'Mga sukat at saklaw' : 'Measurements and ranges'}</summary>
+          {current.top.checks.map(check => {
+            const label = check.key === 'ph' ? 'pH' : check.key === 'temperature' ? (tl ? 'Temperatura' : 'Temperature') : check.key === 'dissolvedOxygen' ? (tl ? 'Natunaw na oxygen' : 'Dissolved oxygen') : (tl ? 'Labo ng tubig' : 'Turbidity');
+            const unit = check.key === 'temperature' ? ' °C' : check.key === 'turbidity' ? ' NTU' : check.key === 'dissolvedOxygen' ? ' mg/L' : '';
+            const fit = check.result === 'unknown' ? (tl ? 'Walang beripikadong saklaw' : 'No verified range') : (tl ? `Saklaw: ${check.min}–${check.max}` : `Range: ${check.min}–${check.max}`) + unit;
+            return <p key={check.key} className="mt-1">{label}: {check.value}{unit} · {fit}</p>;
+          })}
+          {!current.top.checks.some(check => check.key === 'turbidity') && <p className="mt-1">{tl ? 'Hindi kasama ang turbidity na hindi calibrated.' : 'Uncalibrated turbidity is excluded.'}</p>}
+        </details>
+      </section>}
+    </div>
+  </aside>;
+}
+
 function LiveMonitoringOverview({ telemetry, requestState, hardwareAssigned, lang, now, onManual }: { telemetry: SensorTelemetry | null; requestState: RequestState; hardwareAssigned?: boolean; lang: Lang; now: number; onManual: () => void }) {
   const tl = lang === 'tl';
   const connection = sensorConnectionState(telemetry, now);
@@ -1444,12 +1461,12 @@ function LiveMonitoringOverview({ telemetry, requestState, hardwareAssigned, lan
   const partialSafe = measured === 'safe';
   const assessment = live && requestState === 'ready' ? (partialSafe ? (tl ? 'Pasok ang mga nasukat' : 'Measured values in range') : statusText(measured, lang)) : (tl ? 'Walang live na pagtatasa' : 'No live assessment');
   const hasAssessment = live && requestState === 'ready' && measured !== 'partial';
-  const hasTurbiditySignal = telemetry !== null && Number.isFinite(telemetry.rawValue) && telemetry.rawValue >= 0 && telemetry.rawValue <= 4095;
+  const turbidityEstimate = estimateTurbidity(telemetry?.voltage);
   const cards = [
     { label: 'pH', key: 'ph', value: telemetry?.ph ?? null, unit: '', decimals: 2, Icon: Droplets },
     { label: tl ? 'Temperatura' : 'Temperature', key: 'temperature', value: telemetry?.temperatureC ?? null, unit: ' °C', decimals: 1, Icon: Thermometer },
     { label: 'Dissolved oxygen', key: 'dissolvedOxygen', value: telemetry?.dissolvedOxygen ?? null, unit: ' mg/L', decimals: 1, Icon: Droplets },
-    { label: tl ? 'Labo ng tubig' : 'Turbidity', key: 'turbidity', value: telemetry && (telemetry.turbidityNtu !== null || hasTurbiditySignal) ? sensorTurbidityValue(telemetry) : null, unit: ' NTU', decimals: 0, Icon: Droplets, estimated: telemetry?.turbidityNtu === null },
+    { label: tl ? 'Labo ng tubig' : 'Turbidity', key: 'turbidity', value: telemetry?.turbidityNtu ?? turbidityEstimate.ntu, unit: ' NTU', decimals: 2, Icon: Droplets, estimated: telemetry?.turbidityNtu === null && turbidityEstimate.validity !== 'missing' },
   ] as const;
   const tone = live && requestState === 'ready' && measured !== 'partial' ? measured : 'neutral';
   const ConditionIcon = tone === 'safe' ? Activity : tone === 'neutral' ? Activity : AlertTriangle;
@@ -1465,9 +1482,12 @@ function LiveMonitoringOverview({ telemetry, requestState, hardwareAssigned, lan
         const estimated = 'estimated' in card && card.estimated;
         const valid = typeof value === 'number' && Number.isFinite(value) && (estimated || chartValue(key, value) !== null);
         const status = valid && !estimated && hasAssessment ? statusFor(key, value) : null;
-        return <article className="monitor-metric" key={key}><h2><Icon size={19} aria-hidden="true" />{label}</h2><strong>{!valid ? '—' : `${estimated ? '~' : ''}${key === 'turbidity' ? value : value.toFixed(decimals)}${unit}`}</strong>
-          {status && <span className={measurementBadge(status)}>{shortStatusText(status, lang)}</span>}
-          <p>{value === null ? (tl ? 'Walang sukat' : 'Missing') : !valid ? (tl ? 'Hindi wastong sukat' : 'Invalid reading') : estimated ? `${tl ? 'Tantiya' : 'Estimated'} · ${freshness}` : freshness}</p></article>;
+        return <article className="monitor-metric" key={key}><h2><Icon size={19} aria-hidden="true" />{label}</h2><strong>{!valid ? '—' : `${estimated ? '~' : ''}${value.toFixed(decimals)}${unit}`}</strong>
+          {estimated ? <span className={measurementBadge('partial')}>{turbidityValidityLabel(turbidityEstimate.validity, tl)}</span>
+            : status && <span className={measurementBadge(status)}>{shortStatusText(status, lang)}</span>}
+          {key === 'turbidity' && turbidityEstimate.voltage !== null && <p>GPIO34: {turbidityEstimate.voltage.toFixed(3)} V</p>}
+          {key === 'turbidity' && !status && <p>{tl ? 'Kalagayan' : 'Water quality'}: {turbidityStatusLabel(null, tl)}</p>}
+          <p>{estimated ? (valid ? `${tl ? 'Tantiya' : 'Estimated'} · ${freshness}` : freshness) : value === null ? (tl ? 'Walang sukat' : 'Missing') : !valid ? (tl ? 'Hindi wastong sukat' : 'Invalid reading') : freshness}</p></article>;
       })}
       <article className={`monitor-metric monitor-priority ${hasAssessment ? '' : 'monitor-priority-neutral'}`}><h2>{hasAssessment ? <AlertTriangle size={19} aria-hidden="true" /> : <Activity size={19} aria-hidden="true" />}{tl ? 'Susunod na Hakbang' : 'Next Step'}</h2><p>{!hasAssessment ? (tl ? 'Walang kasalukuyang sukat mula sa sensor. Itala ang manu-manong sukat kung mayroon.' : 'No current sensor assessment. Record a manual measurement when available.') : tl ? 'Tingnan ang gabay para sa mga nasukat.' : 'Review the guidance for your measured values.'}</p>{hasAssessment ? <a href="#farmer-recommended-actions">{tl ? 'Tingnan ang mga hakbang' : 'View sensor recommendations'}</a> : <button className="soft-button mt-2" onClick={onManual}>{tl ? 'Manu-manong pagsusuri' : 'Open manual test'}</button>}</article>
     </div>
@@ -1547,7 +1567,6 @@ function PhFishRanking({ ph, fish, lang }: { ph: number; fish: FishSpecies[]; la
 
 function TemperatureAssessment({ telemetry, lang }: { telemetry: SensorTelemetry; lang: Lang }) {
   const temperature = telemetry.temperatureC!;
-  const estimatedTurbidity = sensorTurbidityValue(telemetry);
   return (
     <section className="card border border-sky-200 p-5" aria-live="polite">
       <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1562,8 +1581,8 @@ function TemperatureAssessment({ telemetry, lang }: { telemetry: SensorTelemetry
       </p>
       <p className="mt-3 rounded-lg bg-amber-50 p-3 text-xs font-semibold leading-5 text-amber-900">
         {lang === "tl"
-          ? `Ang turbidity na ~${estimatedTurbidity} NTU ay tantiya pa lamang at hindi kasama sa ranking hanggang ma-calibrate. Kailangan pa rin ng pH, DO, at ammonia para sa buong water-quality decision.`
-          : `The ~${estimatedTurbidity} NTU turbidity value is still an estimate, so it is not used in the ranking until calibrated. pH, DO, and ammonia are still needed for a full water-quality decision.`}
+          ? 'Hindi kasama sa ranking ang tinatayang turbidity. Kailangan pa rin ng pH, DO, at ammonia para sa buong water-quality decision.'
+          : 'Estimated turbidity is not used in the ranking. pH, DO, and ammonia are still needed for a full water-quality decision.'}
       </p>
     </section>
   );
@@ -1595,13 +1614,14 @@ function TemperatureFishRanking({ temperature, fish, lang }: { temperature: numb
 function TurbidityAssessment({ telemetry, fish, lang }: { telemetry: SensorTelemetry; fish: FishSpecies[]; lang: Lang }) {
   const value = sensorTurbidityValue(telemetry);
   const estimated = telemetry.turbidityNtu === null;
+  if (value === null) return null;
   const level = statusFor("turbidity", value);
-  const closest = turbidityMatches(value, fish)[0];
+  const closest = estimated ? null : turbidityMatches(value, fish)[0];
   return (
-    <section className={`card border p-5 ${estimated ? "border-amber-200" : level === "critical" ? "border-red-200" : level === "warning" ? "border-amber-200" : "border-emerald-200"}`} aria-live="polite">
+    <section className={`card border p-5 ${estimated || !level ? "border-slate-200" : level === "critical" ? "border-red-200" : level === "warning" ? "border-amber-200" : "border-emerald-200"}`} aria-live="polite">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 className="text-lg font-black text-slate-950">{lang === "tl" ? "Awtomatikong pagsusuri ng labo ng tubig" : "Automatic turbidity assessment"}</h2>
-        <span className={`rounded-full px-3 py-1 text-xs font-black ${estimated ? "bg-amber-100 text-amber-900" : badgeClasses(level)}`}>{estimated ? (lang === "tl" ? "Tantya lamang" : "Estimate only") : level === "safe" ? (lang === "tl" ? "Katanggap-tanggap na labo" : "Acceptable turbidity") : level === "warning" ? (lang === "tl" ? "Maulap ang tubig" : "Cloudy water") : (lang === "tl" ? "Napakalabo ng tubig" : "Very cloudy water")}</span>
+        <span className={`rounded-full px-3 py-1 text-xs font-black ${badgeClasses(level ?? 'partial')}`}>{turbidityStatusLabel(estimated ? null : level, lang === 'tl')}</span>
       </div>
       <p className="mt-3 text-2xl font-black text-teal-800">{estimated ? "~" : ""}{value} NTU {estimated && <span className="text-sm text-amber-800">(estimate)</span>}</p>
       <p className="mt-2 text-sm text-slate-700">{lang === "tl" ? "Awtomatikong nagbabago sa bawat bagong ESP32 reading; hindi kailangan pindutin ang Analyze." : "Updates automatically with each ESP32 reading; no Analyze click is needed."}</p>
@@ -1643,7 +1663,7 @@ function SensorAnalysisNotice({ analysis, lang }: { analysis: SensorAnalysisStat
         <div>
           <p className="font-black">{lang === "tl" ? "Live turbidity analysis" : "Live turbidity analysis"}</p>
           <p className="mt-1 text-sm font-semibold leading-5 text-amber-900">
-            {lang === "tl"
+            {analysis.turbidity === null ? (lang === "tl" ? "Walang wastong turbidity estimate." : "No valid turbidity estimate.") : lang === "tl"
               ? `Gamit ang ${measuredLabel} na ${analysis.turbidity} NTU. Patuloy itong nagre-refresh kapag may bagong sensor reading. Ang pH, temperatura, DO, at ammonia ay current dashboard values pa rin.`
               : `Using ${measuredLabel} of ${analysis.turbidity} NTU. This refreshes when a new sensor reading arrives. pH, temperature, DO, and ammonia still use the current dashboard values.`}
           </p>
@@ -1779,8 +1799,8 @@ function QuickStatusCards({ lang, params }: { lang: Lang; params: WaterParams })
           <article key={meta.key} className={`rounded-2xl border bg-white p-3 shadow-card sm:p-4 ${status === "critical" ? "border-red-200" : status === "warning" ? "border-amber-200" : "border-emerald-100"}`}>
             <p className="text-xs font-bold text-slate-500">{meta.label[lang]}</p>
             <p className="mt-1 break-words text-xl font-black text-slate-950 sm:text-2xl">{valueText(meta.key, params[meta.key])}{meta.unit}</p>
-            <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-black ring-1 ${badgeClasses(status)}`}>
-              {status}
+            <span className={`mt-3 inline-flex rounded-full px-2.5 py-1 text-xs font-black ring-1 ${badgeClasses(status ?? 'partial')}`}>
+              {status ?? turbidityStatusLabel(null, lang === 'tl')}
             </span>
           </article>
         );

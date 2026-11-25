@@ -38,6 +38,7 @@ test('only recent verified data produces an alert signature', () => {
   assert.ok(items({ sampledAt: null }).every(i => alertSignature(i) === null));
   assert.ok(items({ verifiedParameters: [] }).every(i => alertSignature(i) === null));
   assert.equal(alertSignature(items({ probeSubmerged: false }).find(i => i.parameter === 'turbidity')!), null);
+  assert.equal(alertSignature(items({}).find(i => i.parameter === 'turbidity')!), null);
   assert.equal(alertSignature(items({}).find(i => i.parameter === 'ph')!), null);
 });
 test('expert-review gate fails closed', () => {
