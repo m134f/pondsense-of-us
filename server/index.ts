@@ -3,6 +3,8 @@ import { verifyStartupSchema } from './startupSchema';
 import { sensorAuthenticator } from './services/SensorAuthentication';
 import { ownerAccess } from './ownerAccess';
 import { isTrustedJsonRequest, trustedOrigins } from './trustedOrigin';
+import { parseTurbidityThresholds } from '../src/lib/turbidityAlert';
+import { loadTurbidityProposal, saveTurbidityProposal } from './services/TurbidityAlertRule';
 import { ownerAccountsRouter } from './routes/ownerAccounts';
 import { adminReportingRouter } from './routes/adminReporting';
 import { assignedFishpen } from './services/OwnerFishpen';
@@ -1221,6 +1223,27 @@ app.get("/api/admin/audit-logs", requireAdmin, async (_req, res) => {
      LIMIT 250`
   );
   res.json({ auditLogs: rows });
+});
+
+const getTurbidityProposal: express.RequestHandler = async (_req, res) => {
+  if (!pool) return res.status(503).json({ message: 'Database is required.' });
+  try { res.json({ rule: await loadTurbidityProposal(pool) }); }
+  catch { res.status(503).json({ message: 'Could not load the turbidity proposal.' }); }
+};
+app.get('/api/turbidity-alert-rule', getTurbidityProposal); // Owner-access middleware applies above.
+app.get('/api/admin/turbidity-alert-rule', requireAdmin, getTurbidityProposal);
+app.patch('/api/admin/turbidity-alert-rule', requireAdmin, async (req: AuthRequest, res) => {
+  if (!isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request origin.' });
+  if (!pool) return res.status(503).json({ message: 'Database is required.' });
+  const thresholds = parseTurbidityThresholds(req.body);
+  if (!thresholds || Object.keys(req.body).some(key => key !== 'warningFrom' && key !== 'criticalAbove')) {
+    return res.status(400).json({ message: 'Enter two increasing NTU thresholds above zero, up to 1000, with at most two decimals.' });
+  }
+  try {
+    const rule = await saveTurbidityProposal(pool, thresholds);
+    await logAdminAction(req, 'turbidity_proposal_update', `Warning from ${rule.warningFrom} NTU; Critical above ${rule.criticalAbove} NTU; approval pending`);
+    res.json({ rule });
+  } catch { res.status(503).json({ message: 'Could not save the turbidity proposal.' }); }
 });
 
 app.get("/api/admin/thresholds", requireAdmin, async (_req, res) => {

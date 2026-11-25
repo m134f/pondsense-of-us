@@ -99,7 +99,7 @@ test('shared physical ESP32 lifecycle, sensor/SMS isolation and owner tools with
       const routes = [
         ['GET', '/admin/session'], ['GET', '/admin/users'], ['GET', '/admin/overview'], ['GET', '/admin/telemetry'],
         ['GET', '/admin/logs'], ['GET', '/admin/alerts'], ['GET', '/admin/water-sms'], ['GET', '/admin/audit-logs'],
-        ['GET', '/admin/thresholds'], ['GET', '/admin/security/devices'], ['GET', '/admin/hardware'],
+        ['GET', '/admin/thresholds'], ['GET', '/admin/turbidity-alert-rule'], ['PATCH', '/admin/turbidity-alert-rule'], ['GET', '/admin/security/devices'], ['GET', '/admin/hardware'],
         ['GET', '/admin/hardware/fishpens'], ['GET', `/admin/owners/${b.id}/sms-recipients`],
         ['POST', '/admin/owners'], ['POST', `/admin/owners/${b.id}/reset-password`],
         ['PATCH', `/admin/users/${b.id}/status`], ['PUT', `/admin/owners/${b.id}/sms-recipients`],
@@ -115,9 +115,24 @@ test('shared physical ESP32 lifecycle, sensor/SMS isolation and owner tools with
       for (const path of [`/admin/owners/${b.id}/reset-password`, `/admin/hardware/1/assign`]) {
         assert.equal((await request(path, { body: {}, cookie: admin, origin: 'https://untrusted.example' })).status, 403);
       }
-      for (const path of ['/readings', '/harvests', '/sensors/latest', '/fishpen-sms']) {
+      for (const path of ['/readings', '/harvests', '/sensors/latest', '/fishpen-sms', '/turbidity-alert-rule']) {
         assert.equal((await request(path)).status, 401, path);
       }
+    });
+    await t.test('turbidity proposal stays separate, persisted, owner-readable and pending', async () => {
+      const endpoint = '/admin/turbidity-alert-rule';
+      const save = (body: object, extra: { origin?: string } = {}) => request(endpoint, { method: 'PATCH', body, cookie: admin, ...extra });
+      assert.deepEqual((await adminGet('/turbidity-alert-rule')).data.rule, { warningFrom: 25, criticalAbove: 100, approval: 'pending' });
+      const speciesBefore = (await adminGet('/thresholds')).data;
+      assert.equal((await save({ warningFrom: 30, criticalAbove: 90 }, { origin: 'https://untrusted.example' })).status, 403);
+      assert.equal((await save({ warningFrom: 30, criticalAbove: 90, approval: 'approved' })).status, 400);
+      assert.equal((await save({ warningFrom: 91, criticalAbove: 90 })).status, 400);
+      const saved = await save({ warningFrom: 30, criticalAbove: 90 });
+      assert.equal(saved.status, 200);
+      assert.deepEqual(saved.data.rule, { warningFrom: 30, criticalAbove: 90, approval: 'pending' });
+      assert.deepEqual((await request('/turbidity-alert-rule', { cookie: a.cookie })).data.rule, saved.data.rule);
+      assert.deepEqual((await adminGet('/thresholds')).data, speciesBefore);
+      assert.equal((await rows("SELECT id FROM admin_audit_logs WHERE action = 'turbidity_proposal_update'")).length, 1);
     });
     assert.equal((await rows('SELECT id FROM sensor_devices')).length, 0);
     assert.equal((await adminGet('/hardware')).data.hardware.length, 0);
