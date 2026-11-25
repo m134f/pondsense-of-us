@@ -154,8 +154,8 @@ async function main() {
       await section.getByText('No live sensor recommendation is available.').waitFor();
       assert.equal(await section.getByRole('article').count(), 0);
       if (scenario === 'stale') {
-        assert.equal(await turbidity.locator('strong').getAttribute('title'), 'Extrapolated · Stale');
         await turbidity.getByText('Provisional: Warning', { exact: true }).waitFor();
+        assert.equal(await turbidity.locator('strong').getAttribute('title'), 'Extrapolated · Stale');
         await comparison.getByText('Waiting for fresh sensor readings.').waitFor();
         assert.equal(await analyze.isEnabled(), false);
       } else assert.equal(await turbidity.getByText(/^Provisional:/).count(), 0);
