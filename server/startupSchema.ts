@@ -25,7 +25,7 @@ const requiredColumns = {
   batch_water_measurements: 'id batch_id parameter_name measurement_value recorded_at',
   recommendation_history: 'id owner_user_id batch_id source_kind source_id parameter_name fishpen_name device_id severity payload recorded_at acknowledged_at',
   planning_sms_log: 'id owner_user_id send_day kind status error_message created_at',
-  sms_fishpens: 'id owner_user_id name device_id owner_enabled caretaker_phone caretaker_enabled updated_at',
+  sms_fishpens: 'id owner_user_id name device_id owner_enabled owner_alert_phone caretaker_phone caretaker_enabled updated_at',
   sms_water_state: 'fishpen_id parameter_name signature generation measured_at',
   sms_water_attempts: 'id fishpen_id owner_user_id fishpen_name device_id source_id source_kind recipient_type recipient_phone parameter_name severity generation reading_value measured_at message status provider_response provider_message_id provider created_at attempted_at',
   sms_critical_incidents: 'id fishpen_id owner_user_id device_id status opened_at resolved_at',
@@ -36,7 +36,8 @@ const requiredColumns = {
 const nullableColumns = {
   water_readings: 'ph temperature turbidity ammonia dissolved_oxygen status',
   sensor_telemetry: 'owner_user_id turbidity_ntu temperature_c ph client_reading_id sampled_at',
-  harvest_batches: 'actual_harvest_date'
+  harvest_batches: 'actual_harvest_date',
+  sms_fishpens: 'owner_alert_phone'
 };
 
 // These constraints protect lookups, upserts and duplicate SMS/upload claims.

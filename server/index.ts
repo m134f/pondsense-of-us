@@ -1226,28 +1226,8 @@ app.post("/api/admin/settings/pin", requireAdmin, async (req: AuthRequest, res) 
   res.json({ saved: true });
 });
 
-app.delete("/api/admin/logs", requireAdmin, async (req: AuthRequest, res) => {
-  const confirm = String(req.query.confirm || "");
-  if (confirm !== "CLEAR_LOGS") return res.status(400).json({ message: "Confirmation text CLEAR_LOGS is required." });
-  if (!pool) return res.status(503).json({ message: "Database is required." });
-  await pool.execute("DELETE FROM corrective_action_log");
-  await pool.execute("DELETE FROM alerts");
-  await pool.execute("DELETE FROM water_readings");
-  await logAdminAction(req, "clear_logs", "Cleared corrective actions, alerts, and water readings");
-  res.json({ cleared: true });
-});
-
-app.delete("/api/admin/factory-reset", requireAdmin, async (req: AuthRequest, res) => {
-  const confirm = String(req.query.confirm || "");
-  if (confirm !== "RESET_PONDSENSE") return res.status(400).json({ message: "Confirmation text RESET_PONDSENSE is required." });
-  if (!pool) return res.status(503).json({ message: "Database is required." });
-  await pool.execute("DELETE FROM corrective_action_log");
-  await pool.execute("DELETE FROM alerts");
-  await pool.execute("DELETE FROM water_readings");
-  await pool.execute("DELETE FROM users WHERE role = 'farmer'");
-  await logAdminAction(req, "factory_reset", "Deleted farmer accounts, alerts, readings, and corrective action logs");
-  res.json({ reset: true });
-});
+app.delete(['/api/admin/logs', '/api/admin/factory-reset'], requireAdmin,
+  (_req, res) => res.status(410).json({ message: 'This destructive operation has been retired.' }));
 
 app.get("/api/fish-species", async (_req, res) => {
   if (!pool) return res.json({ demo: true, fish: [] });

@@ -86,6 +86,7 @@
 .admin-detail-section { margin-top: 12px; padding-block: 8px; border-top: 1px solid var(--admin-border); }
 .admin-detail-section[open] > :not(summary) { margin-top: 8px; }
 .admin-detail-section summary { cursor: pointer; font-weight: 700; }
+.admin-shell .admin-recipient-check input[type="checkbox"] { width: 18px; min-height: 18px; flex: none; margin: 0; accent-color: var(--admin-teal); }
 .admin-record-table h3 { font-weight: 750; }
 .admin-record-table .admin-table-scroll { max-width: 100%; }
 .admin-species-select { display: block; width: min(250px, 100%); }

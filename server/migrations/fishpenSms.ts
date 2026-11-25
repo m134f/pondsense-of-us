@@ -1,4 +1,4 @@
-import type { Pool } from 'mysql2/promise';
+import type { Pool, RowDataPacket } from 'mysql2/promise';
 
 export async function migrateFishpenSms(db: Pool) {
   await db.query(`CREATE TABLE IF NOT EXISTS sms_fishpens (
@@ -9,6 +9,9 @@ export async function migrateFishpenSms(db: Pool) {
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     INDEX (owner_user_id)
   )`);
+  const [contacts] = await db.query<RowDataPacket[]>(`SELECT 1 FROM information_schema.COLUMNS
+    WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'sms_fishpens' AND COLUMN_NAME = 'owner_alert_phone'`);
+  if (!contacts.length) await db.query('ALTER TABLE sms_fishpens ADD COLUMN owner_alert_phone VARCHAR(20) NULL, ALGORITHM=INSTANT');
   await db.query(`CREATE TABLE IF NOT EXISTS sms_water_state (
     fishpen_id INT NOT NULL, parameter_name VARCHAR(30) NOT NULL,
     signature VARCHAR(40) NOT NULL, generation INT NOT NULL DEFAULT 1,

@@ -1,72 +1,45 @@
 import { useEffect, useState } from 'react';
-import { Bell, Save, LoaderCircle } from 'lucide-react';
+import { Bell } from 'lucide-react';
 import { apiJson } from '../lib/api';
 
-type Pen = { id: number; name: string; device_id: number | null; owner_enabled: number; caretaker_phone: string | null; caretaker_enabled: number };
-type Settings = { fishpens: Pen[]; devices: Array<{ id: number; device_name: string }>; ownerPhone: string; configured: boolean; policy: { reviewed: boolean } };
+type Pen = { id: number; name: string; owner_enabled: boolean; caretaker_phone: string | null; caretaker_enabled: boolean };
+type Settings = { fishpens: Pen[]; ownerPhone: string | null; configured: boolean; policy: { reviewed: boolean } };
 export const manualSmsPenKey = (owner: string | number) => `pondsense:manual-sms-fishpen:${owner}`;
+const maskedPhone = (phone: string) => `**** ${phone.slice(-4)}`;
 
 export function FishpenSmsSettings({ ownerId, lang, defaultOpen }: { ownerId: string | number; lang: string; defaultOpen?: boolean }) {
   const tl = lang === 'tl';
   const t = (en: string, fil: string) => tl ? fil : en;
-  const [data, setData] = useState<Settings | null>(null);
-  const [error, setError] = useState('');
-  const [message, setMessage] = useState('');
-  const [saving, setSaving] = useState(false);
-  const [selected, setSelected] = useState('new');
-  const [form, setForm] = useState({ name: '', deviceId: '', ownerEnabled: true, caretakerPhone: '', caretakerEnabled: false });
+  const [result, setResult] = useState<{ ownerId: string | number; data: Settings | null } | null>(null);
   useEffect(() => {
     let cancelled = false;
-    apiJson<Settings>('/api/fishpen-sms').then(result => {
-      if (cancelled) return;
-      if (result.error) setError(result.error);
-      else { setData(result.data); if (result.data?.fishpens[0]) choose(String(result.data.fishpens[0].id), result.data); }
+    apiJson<Settings>('/api/fishpen-sms').then(({ data }) => {
+      if (!cancelled) setResult({ ownerId, data });
     });
     return () => { cancelled = true; };
   }, [ownerId]);
-  function choose(id: string, settings = data) {
-    setSelected(id); setMessage(''); setError('');
-    const pen = settings?.fishpens.find(p => String(p.id) === id);
-    setForm(pen ? { name: pen.name, deviceId: pen.device_id === null ? '' : String(pen.device_id), ownerEnabled: true, caretakerPhone: pen.caretaker_phone || '', caretakerEnabled: Boolean(pen.caretaker_enabled) }
-      : { name: '', deviceId: '', ownerEnabled: true, caretakerPhone: '', caretakerEnabled: false });
-  }
-  async function save(event: React.FormEvent) {
-    event.preventDefault(); setSaving(true); setError(''); setMessage('');
-    try {
-      const result = await apiJson<{ id: number }>(`/api/fishpen-sms/${selected}`, { method: 'PUT', body: JSON.stringify({ ...form, deviceId: form.deviceId ? Number(form.deviceId) : null }) });
-      if (result.error || !result.data) { setError(result.error || t('Could not save.', 'Hindi na-save.')); return; }
-      const refreshed = await apiJson<Settings>('/api/fishpen-sms');
-      if (refreshed.data) { setData(refreshed.data); choose(String(result.data.id), refreshed.data); }
-      else setError(refreshed.error || '');
-      setMessage(t('SMS contacts saved.', 'Na-save ang mga SMS contact.'));
-    } finally { setSaving(false); }
-  }
-  const input = 'mt-1 w-full min-w-0 rounded-lg border border-slate-300 bg-white px-3 py-2.5 text-base focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100';
+  const current = result?.ownerId === ownerId ? result : null;
+  const data = current?.data;
+  const pen = data?.fishpens[0];
+  const status = (phone: string | null, enabled: boolean) => phone
+    ? `${maskedPhone(phone)} (${enabled ? t('Enabled', 'Naka-on') : t('Off', 'Naka-off')})`
+    : t('Not set', 'Walang nakalagay');
+
   return <details open={defaultOpen} className="card p-4 sm:p-5">
     <summary className="cursor-pointer py-2 text-lg font-bold text-slate-900"><Bell size={18} className="mr-2 inline text-teal-700" aria-hidden="true" />{t('SMS Notifications', 'Mga Abiso sa SMS')}</summary>
-    <div className="mt-2 space-y-4">
-      {!data && !error && <p role="status">{t('Loading contacts...', 'Kinukuha ang mga contact...')}</p>}
+    <div className="mt-2 space-y-4 text-sm text-slate-600">
+      {!current && <p role="status">{t('Loading SMS settings...', 'Kinukuha ang mga setting ng SMS...')}</p>}
+      {current && !data && <p role="alert" className="text-red-700">{t('SMS settings could not be loaded.', 'Hindi makuha ang mga setting ng SMS.')}</p>}
       {data && <>
-        <p className="text-sm text-slate-600">{t('Confirmed critical sensor alerts go to the owner and, if enabled, the caretaker. Manual tests and warnings do not send automatic SMS.', 'Ang kumpirmadong kritikal na sukat ng sensor ay ipapadala sa may-ari at, kung naka-enable, sa tagapag-alaga. Walang awtomatikong SMS para sa manwal na test o babala.')}</p>
-        {(!data.configured || !data.policy.reviewed) && <p className="rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{!data.policy.reviewed ? t('Automatic water SMS is awaiting administrator threshold review.', 'Naghihintay ng pagsusuri ng admin sa mga limitasyon bago magpadala ng awtomatikong SMS.') : t('SMS is temporarily unavailable. Your contacts can still be saved.', 'Pansamantalang hindi magamit ang SMS. Maaari pa ring i-save ang mga contact.')}</p>}
-        {data.fishpens.length > 1 ? <label className="block text-sm font-semibold">{t('Fishpen', 'Fishpen')}
-          <select className={input} value={selected} disabled={saving} onChange={e => choose(e.target.value)}>
-            <option value="new" disabled>{t('Ask the administrator to assign your fishpen', 'Ipa-assign sa administrator ang fishpen')}</option>
-            {data.fishpens.map(p => <option key={p.id} value={p.id}>{p.name}</option>)}
-          </select>
-        </label> : data.fishpens.length === 1 ? <p className="text-sm text-slate-600">{t('Fishpen', 'Fishpen')}: <strong className="text-slate-900">{data.fishpens[0].name}</strong></p> : <p className="text-sm text-amber-900">{t('Ask the administrator to assign a fishpen before saving SMS contacts.', 'Magpa-assign muna ng fishpen sa administrator bago mag-save ng SMS contacts.')}</p>}
-        {data.fishpens.length > 0 && <form onSubmit={save} className="space-y-4">
-          <fieldset disabled={saving || selected === 'new'} className="space-y-4 disabled:opacity-60">
-            <div className="border-t border-slate-200 pt-3"><p className="text-sm text-slate-600">{t('Owner (registered number)', 'May-ari (rehistradong numero)')}</p><p className="break-all font-semibold">{data.ownerPhone}</p></div>
-            <label className="block text-sm font-semibold">{t('Caretaker mobile number (optional)', 'Numero ng tagapag-alaga (opsyonal)')}<input type="tel" autoComplete="off" inputMode="tel" placeholder="09XXXXXXXXX" maxLength={25} className={input} value={form.caretakerPhone} onChange={e => setForm({ ...form, caretakerPhone: e.target.value })} /></label>
-            <label className="flex min-h-11 items-center gap-3 text-sm"><input type="checkbox" className="h-5 w-5 accent-teal-600" checked={form.caretakerEnabled} onChange={e => setForm({ ...form, caretakerEnabled: e.target.checked })} />{t('Send water SMS to caretaker', 'Ipadala ang SMS sa tagapag-alaga')}</label>
-            <p className="text-sm text-slate-600">{t('Get the caretaker\'s consent before enabling texts. Network availability and SMS credits affect sending.', 'Humingi ng pahintulot ng tagapag-alaga bago mag-enable. Nakadepende ang pagpapadala sa network at SMS credits.')}</p>
-            <button type="submit" className="primary-button">{saving ? <LoaderCircle size={18} className="animate-spin" /> : <Save size={18} />}{saving ? t('Saving...', 'Sine-save...') : t('Save contacts', 'I-save ang mga contact')}</button>
-          </fieldset>
-        </form>}
+        <p>{t('Automatic water alerts are sent only for confirmed critical sensor readings. Manual tests and warnings do not send SMS.', 'Nagpapadala lang ng awtomatikong SMS para sa kumpirmadong kritikal na sukat ng sensor. Walang SMS para sa manual test o babala.')}</p>
+        {(!data.configured || !data.policy.reviewed) && <p className="rounded-lg bg-amber-50 p-3 text-amber-900">{!data.policy.reviewed ? t('Automatic water SMS is awaiting administrator threshold review.', 'Naghihintay ng pagsusuri ng admin sa mga limitasyon bago magpadala ng awtomatikong SMS.') : t('Automatic water SMS is temporarily unavailable.', 'Pansamantalang hindi gumagana ang awtomatikong SMS para sa tubig.')}</p>}
+        {pen ? <dl className="space-y-3 border-t border-slate-200 pt-3">
+          <div><dt>{t('Fishpen', 'Fishpen')}</dt><dd className="font-semibold text-slate-900">{pen.name}</dd></div>
+          <div><dt>{t('Fishpen owner', 'May-ari ng fishpen')}</dt><dd className="font-semibold text-slate-900">{status(data.ownerPhone, pen.owner_enabled)}</dd></div>
+          <div><dt>{t('Caretaker', 'Tagapag-alaga')}</dt><dd className="font-semibold text-slate-900">{status(pen.caretaker_phone, pen.caretaker_enabled)}</dd></div>
+        </dl> : <p>{t('No fishpen is assigned yet.', 'Wala pang nakatalagang fishpen.')}</p>}
+        <p>{t('Contact the administrator to update SMS recipients.', 'Makipag-ugnayan sa admin para baguhin ang mga tatanggap ng SMS.')}</p>
       </>}
-      {error && <p role="alert" className="text-sm text-red-700">{t('Unable to save or load settings. ', 'Hindi ma-save o makuha ang settings. ')}{error}</p>}
-      {message && <p role="status" className="text-sm text-teal-800">{message}</p>}
     </div>
   </details>;
 }

@@ -108,7 +108,7 @@
   --farmer-border: #d5dfe8;
   --farmer-shadow: 0 1px 3px #142f3812;
   display: grid;
-  grid-template-columns: 224px minmax(0, 1fr);
+  grid-template-columns: 168px minmax(0, 1fr);
   grid-template-rows: auto 1fr;
   background: #f5f7f9;
   color: #13191e;
@@ -128,9 +128,11 @@
 .farmer-brand-bar { border-bottom: 1px solid #ffffff26; }
 .farmer-brand { display: flex; align-items: center; gap: 10px; min-height: 65px; padding: 12px 16px; font-size: 1.0625rem; font-weight: 700; }
 .farmer-brand img { flex: none; border-radius: 6px; background: #fff; object-fit: contain; }
-.farmer-nav-links { padding: 13px 12px; }
-.farmer-nav-caption { padding: 0 9px 8px; color: #bddecf; font-size: .8125rem; }
-.farmer-nav-links a { display: flex; align-items: center; gap: 10px; min-height: 44px; padding: 8px 10px; border-radius: 6px; font-size: .9375rem; }
+.farmer-nav .farmer-brand { gap: 6px; padding-inline: 8px; font-size: .875rem; }
+.farmer-nav .farmer-brand img { width: 28px; height: 28px; }
+.farmer-nav-links { padding: 13px 7px; }
+.farmer-nav-caption { padding: 0 8px 8px; color: #bddecf; font-size: .8125rem; }
+.farmer-nav-links a { display: flex; align-items: center; gap: 7px; min-height: 44px; padding: 7px 8px; border-radius: 6px; font-size: .875rem; line-height: 1.3; }
 .farmer-nav-links a + a { margin-top: 3px; }
 .farmer-nav-links a:last-child { margin-top: 15px; }
 .farmer-nav-links a:hover, .farmer-nav-links a[aria-current="page"] { background: #146856; }
@@ -139,7 +141,7 @@
 .farmer-language { display: inline-flex; flex-wrap: wrap; gap: 2px; padding: 2px; border: 1px solid var(--farmer-border); border-radius: 6px; background: #fff; }
 .farmer-language button { min-height: 44px; padding: 5px 10px; border-radius: 4px; font-size: .875rem; }
 .farmer-language button[aria-pressed="true"] { background: #e2f4ee; color: #095b4d; font-weight: 700; }
-.farmer-nav-footer { padding: 10px 16px; margin-top: auto; border-top: 1px solid #ffffff26; }
+.farmer-nav-footer { padding: 10px 12px; margin-top: auto; border-top: 1px solid #ffffff26; }
 .farmer-nav-footer button { display: flex; align-items: center; gap: 9px; }
 .farmer-nav a:focus-visible, .farmer-nav button:focus-visible { outline: 2px solid #ddfff5; outline-offset: -3px; }
 .farmer-topbar { grid-column: 2; display: flex; align-items: center; justify-content: space-between; gap: 12px; min-height: 64px; padding: 6px 30px; background: #fff; border-bottom: 1px solid var(--farmer-border); }

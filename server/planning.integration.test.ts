@@ -129,14 +129,14 @@ test('planning HTTP, database isolation, history, stock locks and SMS deduplicat
     const groups = (await request('/harvests', a)).data.harvests;
     assert.equal(groups.length, 2);
     assert.ok(groups.every((row: { fishpenName: string; sensorDeviceId: number }) => row.fishpenName === 'Test Pen A' && row.sensorDeviceId === d.insertId));
-    await t.test('owner SMS contact settings persist without sending SMS', async () => {
+    await t.test('owner SMS contact settings are read-only', async () => {
       const settings = await request('/fishpen-sms', a);
       assert.equal(settings.status, 200); assert.equal(settings.data.configured, false);
       assert.deepEqual(settings.data.fishpens.map((row: { id: number }) => row.id), [pens.insertId]);
       const body = { name: 'Test Pen A', deviceId: d.insertId, ownerEnabled: true, caretakerPhone: '09987654321', caretakerEnabled: true };
       assert.equal((await request(`/fishpen-sms/${pens.insertId}`, b, 'PUT', body)).status, 403);
-      assert.equal((await request(`/fishpen-sms/${pens.insertId}`, a, 'PUT', body)).status, 200);
-      assert.equal((await request('/fishpen-sms', a)).data.fishpens[0].caretaker_phone, '+639987654321');
+      assert.equal((await request(`/fishpen-sms/${pens.insertId}`, a, 'PUT', body)).status, 403);
+      assert.equal((await request('/fishpen-sms', a)).data.fishpens[0].caretaker_phone, null);
     });
     await t.test('migration is repeatable and keeps batches', async () => { await migratePlanning(scoped); await migratePlanning(scoped); const [rows] = await scoped.query<RowDataPacket[]>('SELECT * FROM harvest_batches WHERE id = ?', [id]); assert.equal(rows[0].notes, batch.notes); });
     await t.test('cross-account access denied on every planning write/read', async () => {

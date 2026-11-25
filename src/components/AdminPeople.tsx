@@ -4,6 +4,7 @@ import { apiJson } from '../lib/api';
 import { AdminFishpenAssignments } from './AdminFishpenAssignments';
 import { ProvisionOwner } from './ProvisionOwner';
 import { DeviceRecords, FarmerRecords } from './AdminRecords';
+import { AdminSmsRecipients } from './AdminSmsRecipients';
 import { AdminBadge, AdminDetails, AdminHeading, AdminLoad, AdminRefresh, AdminTable, DeviceKeyOnce, adminTime, useAdminResource } from './AdminControls';
 import type { AdminAccount } from './AdminWorkspace';
 
@@ -67,6 +68,7 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
         <button type="button" className="soft-button" disabled={busy || !!users.error} onClick={() => void resetPassword(owner)}><KeyRound size={15} aria-hidden="true" /> Reset password</button>
       </div>
       <ActionMessage message={message} />
+      <AdminSmsRecipients key={owner.id} ownerId={owner.id} />
       <FarmerRecords ownerId={owner.id} />
     </AdminDetails>}
     {password && <AdminDetails title="Temporary password" close={() => setPassword(null)}>

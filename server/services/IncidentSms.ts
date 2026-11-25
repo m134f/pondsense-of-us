@@ -3,7 +3,7 @@ import type { ResultSetHeader, RowDataPacket } from 'mysql2';
 import type { Measurements, Parameter } from '../../src/lib/recommendations';
 import { assignedFishpen } from './OwnerFishpen';
 import { isSmsConfigured, sendSms } from '../sms';
-import { recipients, waterSmsPolicy } from './FishpenSms';
+import { incidentRecipients, waterSmsPolicy } from './FishpenSms';
 import { advanceIncident, chooseNotification, sensorSnapshot, SNAPSHOT_MAX_AGE_MS, type IncidentState } from './IncidentPolicy';
 
 const sqlTime = (ms: number) => new Date(ms).toISOString().slice(0, 23).replace('T', ' ');
@@ -12,7 +12,6 @@ const parseJson = <T>(value: unknown, fallback: T): T => {
   catch { return fallback; }
 };
 const asMs = (value: unknown) => value ? Date.parse(String(value)) : null;
-const incidentRecipients = (pen: Parameters<typeof recipients>[0]) => recipients({ ...pen, owner_enabled: 1 });
 
 function combinedMessage(name: string, keys: Parameter[], values: Partial<Record<Parameter, number>>, at: number) {
   const readings = keys.map(key => `${key}: ${values[key]}`).join('; ');
@@ -74,7 +73,7 @@ export async function queueIncidentSms(db: Pool, input: { owner: number; deviceI
         JSON.stringify(result.state.everCritical), JSON.stringify(snapshot.values), result.state.recoverySince === null ? null : sqlTime(result.state.recoverySince), pen.id]);
     if (!incidentId || !result.state.confirmed.length) { await connection.commit(); return; }
     const keys = result.state.confirmed;
-    for (const recipient of incidentRecipients(pen as Parameters<typeof recipients>[0])) {
+    for (const recipient of incidentRecipients(pen as Parameters<typeof incidentRecipients>[0])) {
       const [prior] = await connection.query<RowDataPacket[]>(`SELECT id, kind, critical_keys, status,
         DATE_FORMAT(created_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS created_iso FROM sms_critical_notifications
         WHERE incident_id = ? AND recipient_phone = ? ORDER BY id`, [incidentId, recipient.phone]);
@@ -130,7 +129,7 @@ export async function drainIncidentSms(db: Pool, sender = sendSms, configured = 
       const [states] = await connection.query<RowDataPacket[]>(`SELECT incident_id, confirmed_json,
         DATE_FORMAT(last_sampled_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS sampled_iso FROM sms_critical_state WHERE fishpen_id = ?`, [job.fishpen_id]);
       const current = parseJson<Parameter[]>(states[0]?.confirmed_json, []);
-      const permitted = pens[0] && incidentRecipients(pens[0] as Parameters<typeof recipients>[0]).some(r => r.phone === job!.recipient_phone && r.type === job!.recipient_type);
+      const permitted = pens[0] && incidentRecipients(pens[0] as Parameters<typeof incidentRecipients>[0]).some(r => r.phone === job!.recipient_phone && r.type === job!.recipient_type);
       const currentKeys = String(job.critical_keys).split(',').filter(Boolean).sort().join(',') === [...current].sort().join(',');
       const fresh = Date.now() - Date.parse(job.measured_iso) <= SNAPSHOT_MAX_AGE_MS &&
         states[0]?.sampled_iso && Date.now() - Date.parse(states[0].sampled_iso) <= SNAPSHOT_MAX_AGE_MS;

@@ -34,6 +34,16 @@ export function recipients(pen: { owner_phone: unknown; owner_enabled: unknown; 
   return result;
 }
 
+type IncidentContacts = { owner_phone: unknown; owner_alert_phone?: unknown; caretaker_phone: unknown; caretaker_enabled: unknown };
+
+export function effectiveOwnerAlertPhone(pen: Pick<IncidentContacts, 'owner_phone' | 'owner_alert_phone'>) {
+  return philippinePhone(pen.owner_alert_phone ?? pen.owner_phone);
+}
+
+export function incidentRecipients(pen: IncidentContacts) {
+  return recipients({ ...pen, owner_phone: effectiveOwnerAlertPhone(pen), owner_enabled: true });
+}
+
 // Review is an explicit deployment gate, not a claim that software validates science.
 export function waterSmsPolicy() {
   const reference = (process.env.WATER_SMS_RULES_REFERENCE || '').trim();

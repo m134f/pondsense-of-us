@@ -6,6 +6,7 @@ import type { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { migrateFishpenSms } from './migrations/fishpenSms';
 import { migrateOwnerFishpen } from './migrations/ownerFishpen';
 import { queueWaterSms, drainWaterSms, sensorSmsMeasurements } from './services/FishpenSms';
+import { drainIncidentSms, queueIncidentSms } from './services/IncidentSms';
 import { fishpenSmsRouter } from './routes/fishpenSms';
 import { createAuthSession } from './auth';
 
@@ -16,10 +17,17 @@ test('fishpen SMS database and HTTP integration', { skip: process.env.RUN_SMS_DB
   process.env.WATER_SMS_RULES_REFERENCE = 'Test fixture only - not a real scientific validation';
   const database = `pondsense_sms_test_${Date.now()}`;
   const root = mysql.createPool({ host: '127.0.0.1', port: 3307, user: 'root', password: '' });
+  const [[instance]] = await root.query<RowDataPacket[]>('SELECT @@datadir AS dir');
+  assert.match(String(instance.dir).replaceAll('\\', '/'), /\/pondsense-admin-report-test-[^/]+\/?$/i);
   await root.query(`CREATE DATABASE ${database}`);
   const db = mysql.createPool({ host: '127.0.0.1', port: 3307, user: 'root', password: '', database, timezone: 'local' });
-  await db.query("CREATE TABLE users(id INT PRIMARY KEY, phone VARCHAR(20), role VARCHAR(10))");
-  await db.query("INSERT INTO users VALUES (1,'+639111111111','farmer'),(2,'+639222222222','farmer'),(3,'+639333333333','admin')");
+  await db.query("CREATE TABLE users(id INT PRIMARY KEY, phone VARCHAR(20), role VARCHAR(10), account_status VARCHAR(12) NOT NULL DEFAULT 'ACTIVE')");
+  await db.query("INSERT INTO users (id, phone, role) VALUES (1,'+639111111111','farmer'),(2,'+639222222222','farmer'),(3,'+639333333333','admin')");
+  await db.query('CREATE TABLE admin_security (id INT PRIMARY KEY, admin_id INT, enforced BOOLEAN)');
+  await db.query('INSERT INTO admin_security VALUES (1, 3, TRUE)');
+  await db.query('CREATE TABLE admin_credentials (id INT PRIMARY KEY, admin_id INT, revoked_at DATETIME NULL)');
+  await db.query('INSERT INTO admin_credentials VALUES (7, 3, NULL), (8, 3, UTC_TIMESTAMP())');
+  await db.query('CREATE TABLE admin_audit_logs (admin_id INT, action VARCHAR(100), details TEXT)');
   await db.query('CREATE TABLE sensor_devices(id INT PRIMARY KEY, owner_user_id INT, device_name VARCHAR(100), is_active BOOLEAN DEFAULT TRUE)');
   await db.query("INSERT INTO sensor_devices(id,owner_user_id,device_name) VALUES (1,1,'Cuyab A'),(2,2,'Cuyab B')");
   await migrateFishpenSms(db);
@@ -29,13 +37,13 @@ test('fishpen SMS database and HTTP integration', { skip: process.env.RUN_SMS_DB
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
   const port = (server.address() as { port: number }).port;
-  const cookie = (owner: number) => {
+  const cookie = (owner: number, credential?: number) => {
     let value = '';
-    createAuthSession({ cookie: (name: string, token: string) => { value = `${name}=${token}`; } } as never, owner, owner === 3 ? 'admin' : 'farmer');
+    createAuthSession({ cookie: (name: string, token: string) => { value = `${name}=${token}`; } } as never, owner, owner === 3 ? 'admin' : 'farmer', 0, credential);
     return value;
   };
-  const request = async (path: string, owner: number, method = 'GET', body?: object) => {
-    const response = await fetch(`http://127.0.0.1:${port}/api${path}`, { method, headers: { 'Content-Type': 'application/json', ...(owner ? { Cookie: cookie(owner) } : {}) }, body: body ? JSON.stringify(body) : undefined });
+  const request = async (path: string, owner: number, method = 'GET', body?: object, credential?: number, origin = 'http://localhost:5173') => {
+    const response = await fetch(`http://127.0.0.1:${port}/api${path}`, { method, headers: { 'Content-Type': 'application/json', Origin: origin, ...(owner ? { Cookie: cookie(owner, credential) } : {}) }, body: body ? JSON.stringify(body) : undefined });
     return { status: response.status, data: await response.json() };
   };
   const calls: Array<{ phone: string; message: string }> = [];
@@ -105,28 +113,64 @@ test('fishpen SMS database and HTTP integration', { skip: process.env.RUN_SMS_DB
       await queue(pen); await db.query(`UPDATE sms_water_attempts SET measured_at=DATE_SUB(UTC_TIMESTAMP(), INTERVAL 1 MINUTE) WHERE fishpen_id=${pen}`);
       const start = calls.length; await drainWaterSms(db, sender, true); assert.equal(calls.length, start);
     });
-    await t.test('HTTP settings enforce authentication, ownership, role and phone validation', async () => {
+    await t.test('only authorized admin devices edit recipients; farmers get masked, scoped data and saving sends no SMS', async () => {
+      const start = calls.length;
+      const before = (await rows('SELECT COUNT(*) AS total FROM sms_water_attempts'))[0].total;
       const ownerResult = await request('/fishpen-sms', 1);
       const foreignResult = await request('/fishpen-sms', 2);
       assert.equal(ownerResult.status, 200, JSON.stringify(ownerResult.data));
       assert.equal(foreignResult.status, 200, JSON.stringify(foreignResult.data));
       const pens = ownerResult.data.fishpens;
       const foreign = foreignResult.data.fishpens[0].id;
-      const body = { name: pens[0].name, deviceId: 1, ownerEnabled: true, caretakerPhone: '09987654321', caretakerEnabled: true };
+      const path = '/admin/owners/1/sms-recipients';
+      const body = { fishpenId: pens[0].id, ownerAlertPhone: null, caretakerPhone: '09987654321', caretakerEnabled: true, consentConfirmed: true };
       assert.equal(pens.length, 1);
       assert.equal((await request('/fishpen-sms', 0)).status, 401);
       assert.equal((await request('/fishpen-sms', 3)).status, 403);
-      assert.equal((await request(`/fishpen-sms/${foreign}`, 1, 'PUT', { ...body, deviceId: null })).status, 403);
-      assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', { ...body, name: 'Renamed Cuyab A' })).status, 403);
-      assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', { ...body, deviceId: 2 })).status, 403);
-      assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', { ...body, caretakerPhone: '123' })).status, 400);
-      assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', body)).status, 200);
-      assert.equal((await request('/fishpen-sms', 1)).data.fishpens[0].caretaker_phone, '+639987654321');
+      assert.equal((await request(`/fishpen-sms/${foreign}`, 1, 'PUT', body)).status, 403);
+      assert.equal((await request(`/fishpen-sms/${pens[0].id}`, 1, 'PUT', body)).status, 403);
+      assert.equal((await request(path, 0)).status, 401);
+      assert.equal((await request(path, 1)).status, 403);
+      assert.equal((await request(path, 3)).status, 403);
+      assert.equal((await request(path, 3, 'PUT', body, 8)).status, 403);
+      assert.equal((await request(path, 3, 'PUT', body, 7, 'https://unconfigured.example')).status, 403);
+      assert.equal((await request(path, 3, 'PUT', { ...body, fishpenId: foreign }, 7)).status, 409);
+      assert.equal((await request(path, 3, 'PUT', { ...body, caretakerPhone: '123' }, 7)).status, 400);
+      assert.equal((await request(path, 3, 'PUT', { ...body, ownerAlertPhone: '123' }, 7)).status, 400);
+      assert.equal((await request(path, 3, 'PUT', { ...body, consentConfirmed: false }, 7)).status, 400);
+      assert.equal((await request(path, 3, 'PUT', body, 7)).status, 200);
+      assert.equal((await request(path, 3, 'PUT', { ...body, consentConfirmed: false }, 7)).status, 200);
+      assert.equal((await request(path, 3, 'GET', undefined, 7)).data.fishpen.caretakerPhone, '+639987654321');
+      assert.equal((await request('/fishpen-sms', 1)).data.fishpens[0].caretaker_phone, '**** 4321');
+      assert.equal((await request('/fishpen-sms', 2)).data.fishpens[0].caretaker_phone, null);
+      assert.equal((await request(path, 3, 'PUT', { ...body, caretakerPhone: '0911-111-1111', consentConfirmed: false }, 7)).data.fishpen.caretakerEnabled, false);
+      assert.equal((await request('/fishpen-sms', 1)).data.fishpens[0].owner_enabled, true);
+      const audit = await rows('SELECT * FROM admin_audit_logs');
+      assert.equal(audit.length, 2);
+      assert.ok(audit.every(row => row.admin_id === 3 && !/987654321|0911/.test(row.details)));
+      assert.equal((await rows('SELECT COUNT(*) AS total FROM sms_water_attempts'))[0].total, before);
+      assert.equal(calls.length, start);
       assert.equal((await request('/admin/water-sms', 1)).status, 403);
       const waterHistory = await request('/admin/water-sms', 3);
       assert.equal(waterHistory.status, 200);
       assert.ok(waterHistory.data.logs.length > 0);
       assert.ok(waterHistory.data.logs.every((row: { owner_user_id: number }) => row.owner_user_id === 1));
+    });
+    await t.test('active legacy-device critical alerts honor the SMS override without changing login or device ownership', async () => {
+      const path = '/admin/owners/1/sms-recipients';
+      const { fishpen } = (await request(path, 3, 'GET', undefined, 7)).data;
+      assert.equal((await request(path, 3, 'PUT', { fishpenId: fishpen.id, ownerAlertPhone: '0914 444 4444',
+        caretakerPhone: '09987654321', caretakerEnabled: true, consentConfirmed: true }, 7)).status, 200);
+      const start = calls.length;
+      const now = Date.now();
+      for (const [sourceId, offset] of [[101, 2000], [102, 1000]]) {
+        await queueIncidentSms(db, { owner: 1, deviceId: 1, sourceId, sourceKind: 'telemetry',
+          measurements: sensorSmsMeasurements({ ph: 5 }, { sampledAt: new Date(now - offset).toISOString(), verifiedParameters: ['ph'] }) });
+      }
+      await drainIncidentSms(db, sender, true);
+      assert.deepEqual(calls.slice(start).map(call => call.phone).sort(), ['+639144444444', '+639987654321']);
+      assert.equal((await rows('SELECT phone FROM users WHERE id=1'))[0].phone, '+639111111111');
+      assert.equal((await rows('SELECT owner_user_id FROM sensor_devices WHERE id=1'))[0].owner_user_id, 1);
     });
     await t.test('multiple fishpens and device reassignment do not leak recipients', async () => {
       const a = await newPen('+639444444444'), b = await newPen('+639555555555', 2); const start = calls.length;

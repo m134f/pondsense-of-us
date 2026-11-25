@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { chromium } = require(process.env.PONDSENSE_PLAYWRIGHT || 'playwright');
 
-const base = 'http://localhost:5175';
+const base = process.env.PONDSENSE_BROWSER_URL || 'http://localhost:5175';
 const output = 'outputs/admin-simplified';
 const now = new Date().toISOString();
 const farmer = { id: 2, role: 'farmer', fullName: 'Sample Farmer', phone: '+639111111111', accountStatus: 'ACTIVE', fishpenName: 'Cuyab Demonstration Pen', deviceId: 14 };
@@ -68,8 +68,8 @@ async function main() {
     const go = path => page.goto(base + path, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     const nav = page.getByRole('navigation', { name: 'Admin navigation' });
     const open = name => nav.getByRole('link', { name, exact: true }).click();
-    const save = name => page.screenshot({ path: output + '/' + name + '.png', fullPage: true, animations: 'disabled' });
-    fs.mkdirSync(output, { recursive: true });
+    const save = name => process.env.PONDSENSE_BROWSER_SKIP_SCREENSHOTS ? Promise.resolve() : page.screenshot({ path: output + '/' + name + '.png', fullPage: true, animations: 'disabled' });
+    if (!process.env.PONDSENSE_BROWSER_SKIP_SCREENSHOTS) fs.mkdirSync(output, { recursive: true });
 
     await go('/admin/login');
     await page.getByText('Recover admin access', { exact: true }).click();

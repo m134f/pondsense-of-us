@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { philippinePhone, recipients, validateSmsSettings, sensorSmsMeasurements, alertSignature, waterSmsPolicy } from './services/FishpenSms';
+import { incidentRecipients, philippinePhone, recipients, validateSmsSettings, sensorSmsMeasurements, alertSignature, waterSmsPolicy } from './services/FishpenSms';
 import { recommend, referenceThresholds } from '../src/lib/recommendations';
 import { sendSms } from './sms';
 
@@ -22,6 +22,12 @@ test('settings validation rejects invalid numbers, switches, devices and names',
   const body = { name: 'Cuyab 1', deviceId: null, ownerEnabled: true, caretakerPhone: '', caretakerEnabled: false };
   assert.equal(validateSmsSettings(body).caretakerPhone, null);
   for (const change of [{ caretakerPhone: '123' }, { caretakerEnabled: true }, { ownerEnabled: 'false' }, { name: '\n' }, { deviceId: -1 }]) assert.throws(() => validateSmsSettings({ ...body, ...change }));
+});
+test('critical alerts use the separate owner number, normalize duplicates and do not route an invalid override to the login phone', () => {
+  const pen = { owner_phone: '09111111111', caretaker_phone: '0913 333 3333', caretaker_enabled: true };
+  assert.deepEqual(incidentRecipients({ ...pen, owner_alert_phone: null }).map(contact => contact.phone), ['+639111111111', '+639133333333']);
+  assert.deepEqual(incidentRecipients({ ...pen, owner_alert_phone: '639133333333' }), [{ type: 'owner', phone: '+639133333333' }]);
+  assert.deepEqual(incidentRecipients({ ...pen, owner_alert_phone: 'invalid' }), [{ type: 'caretaker', phone: '+639133333333' }]);
 });
 test('only recent verified data produces an alert signature', () => {
   const now = Date.now();

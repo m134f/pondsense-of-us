@@ -2308,7 +2308,7 @@ function ProfilePage({ currentUser, lang, setLang, telemetry, now, focusDevice, 
         <section className="card p-5">
           <h2 className="flex items-center gap-2 text-lg font-bold"><User size={20} className="text-teal-700" />{tl ? 'Aking Profile' : 'My Profile'}</h2>
           <dl className="mt-3 divide-y divide-slate-200">
-            {[[tl ? 'Pangalan' : 'Name', currentUser.fullName], [tl ? 'Numero ng cellphone' : 'Mobile number', currentUser.phone], [tl ? 'Tungkulin' : 'Role', currentUser.role === 'farmer' ? (tl ? 'May-ari' : 'Fishpen owner') : currentUser.role], ['Fishpen', currentUser.fishpenAssignment?.name]].map(([label, value]) => <div key={label} className="grid gap-1 py-3 sm:grid-cols-2"><dt className="text-slate-600">{label}</dt><dd className="break-words font-semibold">{value || '—'}</dd></div>)}
+            {[[tl ? 'Pangalan' : 'Name', currentUser.fullName], [tl ? 'Numero ng cellphone' : 'Mobile number', currentUser.phone], [tl ? 'Tungkulin' : 'Role', currentUser.role === 'farmer' ? (tl ? 'Tagapamahala ng fishpen' : 'Fishpen operator') : currentUser.role], ['Fishpen', currentUser.fishpenAssignment?.name]].map(([label, value]) => <div key={label} className="grid gap-1 py-3 sm:grid-cols-2"><dt className="text-slate-600">{label}</dt><dd className="break-words font-semibold">{value || '—'}</dd></div>)}
           </dl>
         </section>
         <section className="card p-5"><h2 className="mb-3 text-lg font-bold">{tl ? 'Wika' : 'Language'}</h2><FarmerLanguage lang={lang} setLang={setLang} /></section>
