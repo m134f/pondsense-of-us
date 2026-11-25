@@ -48,7 +48,7 @@ async function listDevices(db: Pool, cutoff: number) {
     connection: adminDeviceConnection(device.is_active, device.current_upload_at, freshness_age, cutoff) }));
 }
 
-export function adminReportingRouter(db: Pool | null) {
+export function adminReportingRouter(db: Pool | null, shared = false) {
   const router = Router();
   const admin = requireRole('admin', db);
   router.get('/admin/devices', admin, async (_req, res) => {
@@ -96,7 +96,9 @@ export function adminReportingRouter(db: Pool | null) {
     try {
       const [readings] = await db.query<RowDataPacket[]>(`SELECT t.id, t.device_id, d.device_name, u.full_name AS owner_name,
         t.sampled_at, t.recorded_at, t.ph, t.temperature_c, t.turbidity_ntu, t.water_contact_confirmed
+        ${shared ? ', t.dissolved_oxygen, a.fishpen_name AS fishpen_at_upload' : ''}
         FROM sensor_telemetry t LEFT JOIN sensor_devices d ON d.id = t.device_id
+        ${shared ? 'LEFT JOIN hardware_assignments a ON a.id = t.assignment_id' : ''}
         LEFT JOIN users u ON u.id = t.owner_user_id ORDER BY t.recorded_at DESC, t.id DESC LIMIT 250`);
       res.set('Cache-Control', 'no-store').json({ readings });
     } catch { res.status(503).json({ message: 'Could not load ESP32 uploads.' }); }

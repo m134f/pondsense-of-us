@@ -1,5 +1,10 @@
 import type { Request } from 'express';
 
+const deviceUploads = new Set(['/v1/sensors/measurements', '/v1/sensors/turbidity', '/v1/sensors/data', '/sensor/readings',
+  '/v2/hardware/assignment', '/v2/hardware/readings']);
+
+export const isDeviceUpload = (req: Request) => req.method === 'POST' && deviceUploads.has(req.path);
+
 const productionOrigin = 'https://pondsense-of-us.vercel.app';
 
 export function trustedOrigins(): string[] {

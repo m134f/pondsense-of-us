@@ -38,6 +38,7 @@
 .admin-metric dt { display: flex; align-items: flex-start; gap: 8px; font-weight: 700; }
 .admin-metric dt svg { flex: none; margin-top: 2px; }
 .admin-metric dd { margin-top: auto; font-variant-numeric: tabular-nums; font-size: 1.5rem; font-weight: 760; }
+.admin-metric dd.admin-metric-label { font-size: 1rem; overflow-wrap: anywhere; }
 .admin-quick { padding-block: 10px; }
 .admin-quick h2 { font-weight: 750; margin-bottom: 10px; }
 .admin-badge { display: inline-flex; width: fit-content; max-width: 100%; padding: 3px 7px; border-radius: 5px; background: #edf2f4; color: #344b56; font-size: .8125rem; font-weight: 650; overflow-wrap: anywhere; }
@@ -70,6 +71,8 @@
 .admin-detail-link { min-height: 34px; color: #075e53; font-weight: 750; text-decoration: underline; text-underline-offset: 3px; }
 .admin-form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); align-items: end; justify-items: start; gap: 10px 14px; margin: 12px 0; }
 .admin-form-grid label { width: 100%; }
+.admin-form-grid .hardware-check { display: flex; gap: 8px; align-items: center; }
+.admin-shell .hardware-check input { width: 18px; min-height: 18px; flex: none; margin: 0; accent-color: var(--admin-teal); }
 .admin-shell summary { cursor: pointer; font-weight: 750; }
 .admin-create summary, .admin-assignments summary { padding-block: 4px; }
 .admin-credential { border-top: 1px solid var(--admin-border); padding-top: 12px; display: grid; gap: 7px; justify-items: start; }

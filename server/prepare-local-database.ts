@@ -2,7 +2,8 @@ import 'dotenv/config';
 import bcrypt from 'bcryptjs';
 import type { RowDataPacket } from 'mysql2';
 import { pool } from './db';
-import { verifyStartupSchema } from './startupSchema';
+import { verifySharedHardwareBaseline, verifyStartupSchema } from './startupSchema';
+import { migrateSharedHardware } from './migrations/sharedHardware';
 import { migrateAccountStatus } from './migrations/accountStatus';
 import { migrateOwnerFishpen } from './migrations/ownerFishpen';
 import { migrateProvisionedOwners } from './migrations/provisionedOwners';
@@ -205,8 +206,14 @@ try {
   await migrateOwnerFishpen(pool);
   await migrateProvisionedOwners(pool);
   await migrateActiveFishSpecies(pool);
-  await verifyStartupSchema(pool);
-  console.log('Local database preparation complete.');
+  if (process.argv.includes('--pre-shared-hardware')) {
+    await verifySharedHardwareBaseline(pool);
+    console.log('Local pre-release baseline prepared. Shared hardware migration was not applied.');
+  } else {
+    await migrateSharedHardware(pool);
+    await verifyStartupSchema(pool);
+    console.log('Local database preparation complete.');
+  }
 } finally {
   await pool.end();
 }

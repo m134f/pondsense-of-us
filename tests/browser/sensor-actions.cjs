@@ -7,7 +7,7 @@ async function main() {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   try {
     const page = await browser.newPage({ viewport: { width: 1440, height: 920 }, serviceWorkers: 'block' });
-    const url = 'http://localhost:5175/dashboard';
+    const url = (process.env.PONDSENSE_BROWSER_URL || 'http://localhost:5175') + '/dashboard';
     const output = 'outputs/sensor-actions';
     const pen = { id: 42, name: 'Test Fishpen', deviceId: 14 };
     const writes = [];
@@ -24,7 +24,7 @@ async function main() {
         id: 44, deviceId: 14, deviceName: 'Test ESP32', sampledAt: timestamp, recordedAt: timestamp,
         receivedAt: new Date().toISOString(), rawValue: 2200, voltage: 2.5,
         ph: scenario === 'normal' ? 7.2 : 5, temperatureC: scenario === 'normal' ? 27 : 35,
-        // The production endpoint does not supply DO; only this isolated browser fixture does.
+        // The three-sensor firmware omits DO. A separate fixture exercises guidance for measured DO.
         dissolvedOxygen: scenario === 'alerts' ? 2.4 : null,
         turbidityNtu: scenario === 'normal' ? null : 210
       };
@@ -57,7 +57,7 @@ async function main() {
       await oxygen.getByText(/Application guidance range/).waitFor();
       assert.equal(await oxygen.getByRole('link', { name: /LLDA/ }).getAttribute('href'), 'https://llda.gov.ph/presence-of-algal-bloom-in-selected-areas-of-laguna-de-bay/');
       await noOverflow();
-      if (width === 390 || width === 1440) await section.screenshot({
+      if (!process.env.PONDSENSE_BROWSER_SKIP_SCREENSHOTS && (width === 390 || width === 1440)) await section.screenshot({
         path: `${output}/monitoring-${width}.png`,
         style: '.farmer-topbar, .farmer-bottom-nav { visibility: hidden; }'
       });
@@ -67,6 +67,12 @@ async function main() {
     await section.getByText('Siyentipiko / Opisyal na Sanggunian', { exact: true }).first().waitFor();
     await noOverflow();
     await page.getByRole('button', { name: 'English', exact: true }).click();
+    scenario = 'three-sensor';
+    await page.goto(url);
+    await section.getByRole('article', { name: 'pH', exact: true }).waitFor();
+    assert.equal(await section.getByRole('article', { name: 'Dissolved Oxygen (DO)' }).count(), 0);
+    await page.locator('.monitor-metric').filter({ has: page.getByRole('heading', { name: 'Dissolved oxygen', exact: true }) })
+      .getByText('Missing', { exact: true }).waitFor();
     scenario = 'normal';
     await page.goto(url);
     await section.getByRole('heading', { name: 'Readings within the guidance range' }).waitFor();
@@ -80,7 +86,7 @@ async function main() {
       assert.equal(await section.getByRole('article').count(), 0);
     }
     assert.deepEqual(writes, []);
-    console.log('Passed 5 viewport widths, keyboard disclosure, sources, language switch, simultaneous severities, normal, stale, and missing. No API writes.');
+    console.log('Passed 5 viewport widths, keyboard disclosure, sources, language switch, simultaneous severities, three-sensor DO missing, normal, stale, and missing. No API writes.');
   } finally {
     await browser.close();
   }

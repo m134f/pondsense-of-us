@@ -19,14 +19,17 @@ function combinedMessage(name: string, keys: Parameter[], values: Partial<Record
   return `PONDSENSE CRITICAL WATER ALERT\nFishpen: ${name}\n${readings}\nMeasured: ${time} PHT\nCheck fish and water now. Confirm with a fresh test; contact BFAR/LGU if distress continues.`.slice(0, 480);
 }
 
-export async function queueIncidentSms(db: Pool, input: { owner: number; deviceId: number; sourceId: number; sourceKind: 'telemetry' | 'sensor-full'; measurements: Measurements }, now = Date.now()) {
+export async function queueIncidentSms(db: Pool, input: { owner: number; deviceId: number; fishpenId?: number; assignmentId?: string; sourceId: number; sourceKind: 'telemetry' | 'sensor-full'; measurements: Measurements }, now = Date.now()) {
   if (!waterSmsPolicy().reviewed) return;
   const snapshot = sensorSnapshot(input.measurements, now);
   const connection = await db.getConnection();
   try {
     await connection.beginTransaction();
-    const assignment = await assignedFishpen(connection, input.owner, true);
-    if (!assignment || assignment.deviceId !== input.deviceId) { await connection.rollback(); return; }
+    const assignment = await assignedFishpen(connection, input.owner, true, !!input.assignmentId);
+    if (!assignment || assignment.deviceId !== input.deviceId || (input.assignmentId &&
+        (!('assignmentId' in assignment) || assignment.assignmentId !== input.assignmentId || assignment.id !== input.fishpenId))) {
+      await connection.rollback(); return;
+    }
     const [pens] = await connection.query<RowDataPacket[]>(`SELECT p.*, u.phone AS owner_phone FROM sms_fishpens p JOIN users u ON u.id = p.owner_user_id
       WHERE p.id = ? AND p.owner_user_id = ? AND u.role = 'farmer' AND u.account_status = 'ACTIVE' FOR UPDATE`, [assignment.id, input.owner]);
     const pen = pens[0];
@@ -37,15 +40,17 @@ export async function queueIncidentSms(db: Pool, input: { owner: number; deviceI
     const [states] = await connection.query<RowDataPacket[]>(`SELECT *, DATE_FORMAT(last_sampled_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS sampled_iso,
       DATE_FORMAT(recovery_started_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS recovery_iso FROM sms_critical_state WHERE fishpen_id = ? FOR UPDATE`, [pen.id]);
     const row = states[0];
-    if (Number(row.device_id) !== input.deviceId) {
-      if (row.incident_id) await connection.execute("UPDATE sms_critical_incidents SET status = 'resolved', resolved_at = UTC_TIMESTAMP(3) WHERE id = ?", [row.incident_id]);
+    if (Number(row.device_id) !== input.deviceId || (row.assignment_id ?? null) !== (input.assignmentId ?? null)) {
+      if (row.incident_id) await connection.execute("UPDATE sms_critical_incidents SET status = 'ended', resolved_at = UTC_TIMESTAMP(3) WHERE id = ?", [row.incident_id]);
       await connection.execute("UPDATE sms_critical_notifications SET status = 'cancelled', provider_response = 'Monitoring device changed.' WHERE incident_id = ? AND status = 'pending'", [row.incident_id || 0]);
       row.incident_id = null;
       row.sampled_iso = null;
       row.counts_json = '{}'; row.confirmed_json = '[]'; row.ever_critical_json = '[]'; row.recovery_iso = null;
     }
     if (!snapshot) {
-      await connection.execute("UPDATE sms_critical_state SET device_id = ?, counts_json = '{}', recovery_started_at = NULL WHERE fishpen_id = ?", [input.deviceId, pen.id]);
+      await connection.execute(`UPDATE sms_critical_state SET device_id = ?, assignment_id = ?, incident_id = ?, last_sampled_at = ?, counts_json = '{}',
+        confirmed_json = ?, ever_critical_json = ?, recovery_started_at = NULL WHERE fishpen_id = ?`,
+        [input.deviceId, input.assignmentId ?? null, row.incident_id ?? null, row.sampled_iso ? sqlTime(Date.parse(row.sampled_iso)) : null, row.confirmed_json, row.ever_critical_json, pen.id]);
       await connection.commit(); return;
     }
     const previous: IncidentState = {
@@ -67,9 +72,9 @@ export async function queueIncidentSms(db: Pool, input: { owner: number; deviceI
       const [created] = await connection.execute<ResultSetHeader>('INSERT INTO sms_critical_incidents (fishpen_id, owner_user_id, device_id, opened_at) VALUES (?, ?, ?, ?)', [pen.id, input.owner, input.deviceId, sqlTime(snapshot.at)]);
       incidentId = created.insertId;
     }
-    await connection.execute(`UPDATE sms_critical_state SET owner_user_id = ?, device_id = ?, incident_id = ?, last_sampled_at = ?,
+    await connection.execute(`UPDATE sms_critical_state SET owner_user_id = ?, device_id = ?, assignment_id = ?, incident_id = ?, last_sampled_at = ?,
       counts_json = ?, confirmed_json = ?, ever_critical_json = ?, values_json = ?, recovery_started_at = ? WHERE fishpen_id = ?`,
-      [input.owner, input.deviceId, incidentId, sqlTime(snapshot.at), JSON.stringify(result.state.counts), JSON.stringify(result.state.confirmed),
+      [input.owner, input.deviceId, input.assignmentId ?? null, incidentId, sqlTime(snapshot.at), JSON.stringify(result.state.counts), JSON.stringify(result.state.confirmed),
         JSON.stringify(result.state.everCritical), JSON.stringify(snapshot.values), result.state.recoverySince === null ? null : sqlTime(result.state.recoverySince), pen.id]);
     if (!incidentId || !result.state.confirmed.length) { await connection.commit(); return; }
     const keys = result.state.confirmed;
@@ -97,17 +102,17 @@ export async function queueIncidentSms(db: Pool, input: { owner: number; deviceI
           !chooseNotification('initial', prior.map(item => ({ kind: String(item.kind), at: Date.parse(item.created_iso), status: String(item.status) })), now))) continue;
       await connection.execute(`INSERT IGNORE INTO sms_critical_notifications
         (incident_id, fishpen_id, owner_user_id, device_id, fishpen_name, recipient_type, recipient_phone,
-         kind, critical_keys, source_kind, source_id, measured_at, message)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         kind, critical_keys, source_kind, source_id, measured_at, message, assignment_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [incidentId, pen.id, input.owner, input.deviceId, pen.name, recipient.type, recipient.phone, kind, keys.join(','),
-          input.sourceKind, input.sourceId, sqlTime(snapshot.at), combinedMessage(pen.name, keys, snapshot.values, snapshot.at)]);
+          input.sourceKind, input.sourceId, sqlTime(snapshot.at), combinedMessage(pen.name, keys, snapshot.values, snapshot.at), input.assignmentId ?? null]);
     }
     await connection.commit();
   } catch (error) { await connection.rollback(); throw error; }
   finally { connection.release(); }
 }
 
-export async function drainIncidentSms(db: Pool, sender = sendSms, configured = isSmsConfigured()) {
+export async function drainIncidentSms(db: Pool, sender = sendSms, configured = isSmsConfigured(), shared = false) {
   await db.execute(`UPDATE sms_critical_notifications SET status = 'cancelled', provider_response = 'Snapshot expired before submission.'
     WHERE status = 'pending' AND measured_at < DATE_SUB(UTC_TIMESTAMP(3), INTERVAL 30 SECOND)`);
   await db.execute(`UPDATE sms_critical_notifications SET status = 'unknown', provider_response = 'Worker interrupted; delivery unknown. No automatic retry.'
@@ -122,18 +127,26 @@ export async function drainIncidentSms(db: Pool, sender = sendSms, configured = 
         FROM sms_critical_notifications n WHERE n.status = 'pending' ORDER BY n.id LIMIT 1 FOR UPDATE`);
       job = rows[0];
       if (!job) { await connection.commit(); break; }
-      const [pens] = await connection.query<RowDataPacket[]>(`SELECT p.*, u.phone AS owner_phone FROM sms_fishpens p
+      const [pens] = shared ? await connection.query<RowDataPacket[]>(`SELECT p.*, u.phone AS owner_phone FROM hardware_assignments m
+        JOIN registered_hardware h ON h.id = m.hardware_id
+        JOIN sensor_devices d ON d.id = h.credential_device_id AND d.is_active = 1
+        JOIN sms_fishpens p ON p.id = m.fishpen_id AND p.owner_user_id = m.owner_user_id
+        JOIN users u ON u.id = m.owner_user_id AND u.role = 'farmer' AND u.account_status = 'ACTIVE'
+        JOIN owner_fishpen_assignments a ON a.owner_user_id = u.id AND a.fishpen_id = p.id
+        WHERE m.id = ? AND m.ended_at IS NULL AND p.id = ? AND p.owner_user_id = ? AND d.id = ?`,
+        [job.assignment_id, job.fishpen_id, job.owner_user_id, job.device_id]) : await connection.query<RowDataPacket[]>(`SELECT p.*, u.phone AS owner_phone FROM sms_fishpens p
         JOIN users u ON u.id = p.owner_user_id JOIN owner_fishpen_assignments a ON a.fishpen_id = p.id AND a.owner_user_id = u.id
         JOIN sensor_devices d ON d.id = p.device_id AND d.owner_user_id = u.id AND d.is_active = 1
         WHERE p.id = ? AND p.owner_user_id = ? AND p.device_id = ? AND u.role = 'farmer' AND u.account_status = 'ACTIVE'`, [job.fishpen_id, job.owner_user_id, job.device_id]);
-      const [states] = await connection.query<RowDataPacket[]>(`SELECT incident_id, confirmed_json,
+      const [states] = await connection.query<RowDataPacket[]>(`SELECT incident_id, confirmed_json, assignment_id,
         DATE_FORMAT(last_sampled_at, '%Y-%m-%dT%H:%i:%s.%fZ') AS sampled_iso FROM sms_critical_state WHERE fishpen_id = ?`, [job.fishpen_id]);
       const current = parseJson<Parameter[]>(states[0]?.confirmed_json, []);
       const permitted = pens[0] && incidentRecipients(pens[0] as Parameters<typeof incidentRecipients>[0]).some(r => r.phone === job!.recipient_phone && r.type === job!.recipient_type);
       const currentKeys = String(job.critical_keys).split(',').filter(Boolean).sort().join(',') === [...current].sort().join(',');
       const fresh = Date.now() - Date.parse(job.measured_iso) <= SNAPSHOT_MAX_AGE_MS &&
         states[0]?.sampled_iso && Date.now() - Date.parse(states[0].sampled_iso) <= SNAPSHOT_MAX_AGE_MS;
-      const status = permitted && Number(states[0]?.incident_id) === Number(job.incident_id) && currentKeys && fresh ? 'sending' : 'cancelled';
+      const status = permitted && Number(states[0]?.incident_id) === Number(job.incident_id) &&
+        (!shared || states[0]?.assignment_id === job.assignment_id) && currentKeys && fresh ? 'sending' : 'cancelled';
       await connection.execute('UPDATE sms_critical_notifications SET status = ?, attempted_at = UTC_TIMESTAMP(3), provider_response = ? WHERE id = ?',
         [status, status === 'cancelled' ? 'Stale, changed, resolved, reassigned, or recipient disabled before send.' : null, job.id]);
       await connection.commit();

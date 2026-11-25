@@ -12,7 +12,8 @@
     "preview": "vite preview --host 0.0.0.0",
     "start:api": "tsx server/index.ts",
     "import:schema": "tsx server/import-schema.ts",
-    "db:prepare:local": "tsx server/prepare-local-database.ts"
+    "db:prepare:local": "tsx server/prepare-local-database.ts",
+    "db:hardware:local": "tsx server/prepare-shared-hardware.ts"
   },
   "dependencies": {
     "@simplewebauthn/browser": "^14.0.0",

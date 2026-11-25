@@ -13,7 +13,9 @@ const requiredColumns = {
   admin_security: 'id admin_id enforced',
   admin_credentials: 'id admin_id credential_id credential_hash public_key signature_counter label created_at last_used_at revoked_at',
   sensor_devices: 'id device_name api_key_hash owner_user_id pairing_code_hash pairing_expires_at is_active last_seen_at created_at',
-  sensor_telemetry: 'id device_id owner_user_id turbidity_raw turbidity_voltage turbidity_ntu temperature_c ph client_reading_id sampled_at water_contact_confirmed recorded_at',
+  registered_hardware: 'id name chip_id credential_device_id created_at',
+  hardware_assignments: 'id hardware_id owner_user_id fishpen_id fishpen_name started_at ended_at active_hardware_id active_fishpen_id',
+  sensor_telemetry: 'id device_id owner_user_id turbidity_raw turbidity_voltage turbidity_ntu temperature_c ph client_reading_id sampled_at water_contact_confirmed recorded_at hardware_id fishpen_id assignment_id dissolved_oxygen',
   public_monitoring: 'id device_id',
   owner_fishpen_assignments: 'owner_user_id fishpen_id updated_by updated_at',
   harvest_batches: 'id owner_user_id species stocking_date stocked_count target_harvest_date actual_harvest_date harvested_kg selling_price fishpen_name target_weight_g reminder_sms notes sensor_device_id fishpen_id created_at',
@@ -29,13 +31,13 @@ const requiredColumns = {
   sms_water_state: 'fishpen_id parameter_name signature generation measured_at',
   sms_water_attempts: 'id fishpen_id owner_user_id fishpen_name device_id source_id source_kind recipient_type recipient_phone parameter_name severity generation reading_value measured_at message status provider_response provider_message_id provider created_at attempted_at',
   sms_critical_incidents: 'id fishpen_id owner_user_id device_id status opened_at resolved_at',
-  sms_critical_state: 'fishpen_id owner_user_id device_id incident_id last_sampled_at counts_json confirmed_json ever_critical_json values_json recovery_started_at',
-  sms_critical_notifications: 'id incident_id fishpen_id owner_user_id device_id fishpen_name recipient_type recipient_phone kind critical_keys source_kind source_id measured_at message status provider_response provider_message_id provider created_at attempted_at'
+  sms_critical_state: 'fishpen_id owner_user_id device_id incident_id last_sampled_at counts_json confirmed_json ever_critical_json values_json recovery_started_at assignment_id',
+  sms_critical_notifications: 'id incident_id fishpen_id owner_user_id device_id fishpen_name recipient_type recipient_phone kind critical_keys source_kind source_id measured_at message status provider_response provider_message_id provider created_at attempted_at assignment_id'
 };
 
 const nullableColumns = {
   water_readings: 'ph temperature turbidity ammonia dissolved_oxygen status',
-  sensor_telemetry: 'owner_user_id turbidity_ntu temperature_c ph client_reading_id sampled_at',
+  sensor_telemetry: 'owner_user_id turbidity_ntu temperature_c ph client_reading_id sampled_at hardware_id fishpen_id assignment_id dissolved_oxygen',
   harvest_batches: 'actual_harvest_date',
   sms_fishpens: 'owner_alert_phone'
 };
@@ -49,6 +51,8 @@ const requiredUniqueKeys = {
   admin_security: ['id'],
   admin_credentials: ['credential_hash'],
   sensor_telemetry: ['device_id client_reading_id'],
+  registered_hardware: ['chip_id', 'credential_device_id'],
+  hardware_assignments: ['active_hardware_id', 'active_fishpen_id'],
   owner_fishpen_assignments: ['owner_user_id', 'fishpen_id'],
   harvest_reminder_log: ['batch_id reminder_day target_date'],
   planning_sms_log: ['owner_user_id send_day'],
@@ -58,21 +62,40 @@ const requiredUniqueKeys = {
   sms_critical_notifications: ['incident_id recipient_phone kind source_kind source_id']
 };
 
-export async function verifyStartupSchema(db: Pick<Pool, 'query'>) {
+const newSharedTables = new Set(['registered_hardware', 'hardware_assignments']);
+const newSharedColumns = new Set([
+  'sensor_telemetry.hardware_id', 'sensor_telemetry.fishpen_id', 'sensor_telemetry.assignment_id', 'sensor_telemetry.dissolved_oxygen',
+  'sms_critical_state.assignment_id', 'sms_critical_notifications.assignment_id'
+]);
+
+export function verifyStartupSchema(db: Pick<Pool, 'query'>) {
+  return verifySchema(db, false);
+}
+
+export function verifySharedHardwareBaseline(db: Pick<Pool, 'query'>) {
+  return verifySchema(db, true);
+}
+
+async function verifySchema(db: Pick<Pool, 'query'>, beforeSharedHardware: boolean) {
+  const checkTable = (name: string) => !beforeSharedHardware || !newSharedTables.has(name);
+  const purpose = beforeSharedHardware ? 'Shared ESP32 migration blocked' : 'PondSense startup blocked';
   const issues: string[] = [];
   try {
-    const names = Object.keys(requiredColumns);
+    const names = Object.keys(requiredColumns).filter(checkTable);
     const [columns] = await db.query<RowDataPacket[]>(
       `SELECT TABLE_NAME AS table_name, COLUMN_NAME AS column_name, IS_NULLABLE AS is_nullable
        FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (?)`, [names]);
     const metadata = new Map(columns.map(row => [`${row.table_name}.${row.column_name}`, row.is_nullable]));
     for (const [table, fields] of Object.entries(requiredColumns)) {
+      if (!checkTable(table)) continue;
       if (!columns.some(row => row.table_name === table)) {
         issues.push(`missing table ${table}`);
         continue;
       }
       for (const field of fields.split(' ')) {
-        if (!metadata.has(`${table}.${field}`)) issues.push(`missing column ${table}.${field}`);
+        const qualified = `${table}.${field}`;
+        if (beforeSharedHardware && newSharedColumns.has(qualified)) continue;
+        if (!metadata.has(qualified)) issues.push(`missing column ${qualified}`);
       }
     }
     for (const [table, fields] of Object.entries(nullableColumns)) {
@@ -85,7 +108,7 @@ export async function verifyStartupSchema(db: Pick<Pool, 'query'>) {
               SUB_PART AS sub_part
        FROM information_schema.STATISTICS
        WHERE TABLE_SCHEMA = DATABASE() AND NON_UNIQUE = 0 AND TABLE_NAME IN (?)
-       ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX`, [Object.keys(requiredUniqueKeys)]);
+       ORDER BY TABLE_NAME, INDEX_NAME, SEQ_IN_INDEX`, [Object.keys(requiredUniqueKeys).filter(checkTable)]);
     const keys = new Map<string, string[]>();
     for (const row of indexes) {
       const name = `${row.table_name}.${row.index_name}`;
@@ -94,6 +117,7 @@ export async function verifyStartupSchema(db: Pick<Pool, 'query'>) {
       keys.set(name, fields);
     }
     for (const [table, indexesNeeded] of Object.entries(requiredUniqueKeys)) {
+      if (!checkTable(table)) continue;
       for (const index of indexesNeeded) {
         if (![...keys].some(([name, fields]) => name.startsWith(`${table}.`) &&
             [...fields].sort().join(' ') === index.split(' ').sort().join(' '))) {
@@ -110,9 +134,9 @@ export async function verifyStartupSchema(db: Pick<Pool, 'query'>) {
   } catch (error) {
     const code = (error as { code?: string } | null)?.code;
     const suffix = code && /^[A-Z0-9_]+$/.test(code) ? ` (${code})` : '';
-    throw new Error(`PondSense startup blocked: unable to verify the MySQL schema${suffix}. Check database connectivity and permissions. No schema changes were attempted.`);
+    throw new Error(`${purpose}: unable to verify the MySQL schema${suffix}. Check database connectivity and permissions. No schema changes were attempted.`);
   }
   if (issues.length) {
-    throw new Error(`PondSense startup blocked: incompatible MySQL schema: ${issues.join('; ')}. No schema changes were attempted.`);
+    throw new Error(`${purpose}: incompatible MySQL schema: ${issues.join('; ')}. No schema changes were attempted.`);
   }
 }

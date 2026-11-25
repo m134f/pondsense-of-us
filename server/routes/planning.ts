@@ -6,7 +6,7 @@ import { archiveRecommendations, planningContext } from '../services/PlanningSer
 import { parameters } from '../../src/lib/recommendations';
 
 export const observationCategories = ['normal', 'reduced_feeding', 'surface_gathering', 'unusual_color', 'unusual_odor', 'mortalities', 'net_damage', 'other'];
-export function planningRouter(db: Pool | null) {
+export function planningRouter(db: Pool | null, shared = false) {
   const router = Router();
   router.use((req, res, next) => {
     if (!/^\/(recommendations(?:\/|$)|harvests\/[^/]+\/(review|observations|water)(?:\/|$))/.test(req.path)) return next();
@@ -18,7 +18,7 @@ export function planningRouter(db: Pool | null) {
     const owner = verifyAuthToken(req)!.sub;
     const batchId = Number(req.query.batchId || 0);
     if (!Number.isSafeInteger(batchId) || batchId < 0) return res.status(400).json({ message: 'Invalid batch.' });
-    const context = await planningContext(db!, owner, batchId);
+    const context = await planningContext(db!, owner, batchId, Date.now(), undefined, shared);
     if (!context) return res.status(404).json({ message: 'Batch not found.' });
     res.json(context);
   });
@@ -44,7 +44,7 @@ export function planningRouter(db: Pool | null) {
   router.get('/harvests/:id/review', async (req, res) => {
     const owner = verifyAuthToken(req)!.sub;
     if (!Number.isSafeInteger(Number(req.params.id)) || Number(req.params.id) <= 0) return res.status(400).json({ message: 'Invalid batch.' });
-    const context = await planningContext(db!, owner, Number(req.params.id));
+    const context = await planningContext(db!, owner, Number(req.params.id), Date.now(), undefined, shared);
     if (!context) return res.status(404).json({ message: 'Batch not found.' });
     const [observations] = await db!.query<RowDataPacket[]>(`SELECT id, DATE_FORMAT(observed_at, '%Y-%m-%d') AS date, category, notes
       FROM harvest_observations WHERE batch_id = ? ORDER BY observed_at DESC, id DESC LIMIT 100`, [req.params.id]);
@@ -83,7 +83,7 @@ export function planningRouter(db: Pool | null) {
       await connection.commit();
     } finally { await connection.rollback(); connection.release(); }
     let historySaved = true;
-    await archiveRecommendations(db!, owner, 'batch-manual', measurementId, batchId).catch(error => {
+    await archiveRecommendations(db!, owner, 'batch-manual', measurementId, batchId, shared).catch(error => {
       historySaved = false;
       console.error('Manual measurement recommendation archive:', error);
     });

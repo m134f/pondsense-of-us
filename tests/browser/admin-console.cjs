@@ -4,15 +4,15 @@ const fs = require('node:fs');
 const { chromium } = require(process.env.PONDSENSE_PLAYWRIGHT || 'playwright');
 
 const base = process.env.PONDSENSE_BROWSER_URL || 'http://localhost:5175';
-const output = 'outputs/admin-simplified';
+assert.ok(['127.0.0.1', 'localhost'].includes(new URL(base).hostname));
+const output = 'outputs/shared-hardware';
 const now = new Date().toISOString();
 const farmer = { id: 2, role: 'farmer', fullName: 'Sample Farmer', phone: '+639111111111', accountStatus: 'ACTIVE', fishpenName: 'Cuyab Demonstration Pen', deviceId: 14 };
 const other = { ...farmer, id: 3, fullName: 'Other Farmer', phone: '+639222222222', fishpenName: 'Other Pen', deviceId: 17 };
-const monitor = { id: 14, device_name: 'ESP32', owner_user_id: 2, owner_name: farmer.fullName, is_active: 1, monitoring_fishpen_id: 9,
-  fishpen_name: farmer.fishpenName, current_upload_at: now, last_reading_at: now, connection: 'online' };
-const offline = { ...monitor, id: 15, monitoring_fishpen_id: null, fishpen_name: null, connection: 'offline', current_upload_at: '2026-01-02T00:00:00Z' };
-const never = { ...offline, id: 16, connection: 'never', current_upload_at: null };
-const inactive = { ...offline, id: 17, owner_user_id: 3, owner_name: other.fullName, is_active: 0, connection: 'inactive' };
+const sampleAssignment = 'aaaaaaaa-1234-4321-1234-123456789abc';
+const monitor = { id: 1, credentialDeviceId: 14, name: 'Shared ESP32', chipId: '001122AABBCC', farmer: farmer.fullName,
+  fishpen: farmer.fishpenName, assignmentId: sampleAssignment, status: 'Online', lastUpload: now, active: 1 };
+const hardware = [monitor];
 const tilapia = { id: 5, name: 'Tilapia', optimal_ph_min: '6.5', optimal_ph_max: '8.5', optimal_temp_min: 25, optimal_temp_max: 32,
   optimal_do_min: 5, optimal_do_max: 8, optimal_turb_min: 25, optimal_turb_max: 100, max_ammonia: '0.0500' };
 const fish = [tilapia, { id: 'mamali', name: 'Mamali', validationPending: true }, { ...tilapia, id: 6, name: 'Bangus (Milkfish)' }];
@@ -25,7 +25,7 @@ async function main() {
     const page = await context.newPage();
     page.setDefaultTimeout(10_000);
     const errors = [], reads = [], writes = [];
-    let overviewUnavailable = true;
+    let overviewUnavailable = true, registryEmpty = true;
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/**', async route => {
       const request = route.request();
@@ -36,6 +36,12 @@ async function main() {
       if (url.pathname === '/api/admin/overview' && overviewUnavailable) return route.fulfill({ status: 503, json: { message: 'Overview temporarily unavailable.' } });
       if (url.pathname === '/api/admin/users/2/status' && method === 'PATCH') farmer.accountStatus = request.postDataJSON().status;
       if (url.pathname === '/api/admin/thresholds/5' && method === 'PATCH') Object.assign(tilapia, request.postDataJSON());
+      if (url.pathname === '/api/admin/hardware' && method === 'POST') {
+        hardware.push({ ...monitor, id: 2, chipId: '001122AABBEE', name: 'Fixture spare', assignmentId: null, farmer: null, fishpen: null, lastUpload: null, status: 'Unassigned' });
+        return route.fulfill({ status: 201, json: { hardwareId: 2, deviceKey: 'fixture-device-key' } });
+      }
+      if (url.pathname.endsWith('/hardware/1/unassign')) Object.assign(monitor, { assignmentId: null, lastUpload: null, farmer: null, fishpen: null, status: 'Unassigned' });
+      if (url.pathname.endsWith('/hardware/1/assign')) Object.assign(monitor, { assignmentId: 'b', farmer: other.fullName, fishpen: other.fishpenName, status: 'Offline' });
       const responses = {
         '/api/admin/session': { admin: { id: 1, role: 'admin', fullName: 'Sample Administrator' } },
         '/api/admin/login': { token: 'fixture-login', bootstrapRequired: true },
@@ -43,13 +49,14 @@ async function main() {
           devices: { online: 1, offline: 1, never: 1, inactive: 1, assigned: 1 },
           activity: [{ id: 1, kind: 'upload', happened_at: now, label: 'Hidden fixture activity', device_id: 14 }] },
         '/api/admin/users': { users: [farmer, other] },
-        '/api/admin/owners': { temporaryPassword: 'fixture-password', deviceKey: 'fixture-device-key', deviceId: 55 },
+        '/api/admin/owners': { temporaryPassword: 'fixture-password' },
+        '/api/admin/hardware': { hardware: registryEmpty ? [] : hardware, uploadsEnabled: !registryEmpty },
+        '/api/admin/hardware/fishpens': { fishpens: [{ ownerId: 2, farmer: farmer.fullName, fishpenId: 9, fishpen: farmer.fishpenName },
+          { ownerId: 3, farmer: other.fullName, fishpenId: 10, fishpen: other.fishpenName }] },
+        '/api/admin/hardware/1/unassign': { saved: true },
+        '/api/admin/hardware/1/assign': { assignmentId: 'b' },
+        '/api/admin/hardware/1/key': { hardwareId: 1, deviceKey: 'fixture-replacement-key' },
         '/api/admin/owners/2/reset-password': { temporaryPassword: 'fixture-reset' },
-        '/api/admin/owners/2/device-key': { deviceId: 14, deviceKey: 'fixture-replacement-key' },
-        '/api/admin/devices': { devices: [monitor, offline, never, inactive], freshnessSeconds: 60 },
-        '/api/admin/fishpen-assignments': { owners: [{ id: 2, name: farmer.fullName, fishpenId: 9 }, { id: 3, name: other.fullName, fishpenId: 10 }],
-          fishpens: [{ id: 9, ownerId: 2, name: farmer.fishpenName, deviceId: 14 }, { id: 10, ownerId: 3, name: other.fishpenName, deviceId: 17 }],
-          devices: [{ id: 14, name: 'Primary ESP32', ownerId: 2 }, { id: 15, name: 'Spare ESP32', ownerId: 2 }, { id: 17, name: 'Other ESP32', ownerId: 3 }] },
         '/api/admin/telemetry': { readings: [{ id: 1, owner_name: farmer.fullName, device_id: 14, recorded_at: now, sampled_at: null, ph: null, temperature_c: 28, water_contact_confirmed: 1 },
           { id: 2, owner_name: 'Not this device', device_id: 15, recorded_at: now, temperature_c: 29 }] },
         '/api/admin/logs': { logs: [{ id: 4, user_id: 2, full_name: farmer.fullName, recorded_at: now, ph: 9, status: null },
@@ -68,8 +75,9 @@ async function main() {
     const go = path => page.goto(base + path, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     const nav = page.getByRole('navigation', { name: 'Admin navigation' });
     const open = name => nav.getByRole('link', { name, exact: true }).click();
-    const save = name => process.env.PONDSENSE_BROWSER_SKIP_SCREENSHOTS ? Promise.resolve() : page.screenshot({ path: output + '/' + name + '.png', fullPage: true, animations: 'disabled' });
-    if (!process.env.PONDSENSE_BROWSER_SKIP_SCREENSHOTS) fs.mkdirSync(output, { recursive: true });
+    const screenshots = !process.env.PONDSENSE_BROWSER_SKIP_SCREENSHOTS;
+    const save = name => screenshots && page.screenshot({ path: output + '/' + name + '.png', fullPage: true, animations: 'disabled' });
+    if (screenshots) fs.mkdirSync(output, { recursive: true });
 
     await go('/admin/login');
     await page.getByText('Recover admin access', { exact: true }).click();
@@ -79,13 +87,17 @@ async function main() {
     await page.getByRole('button', { name: 'Login to Admin' }).click();
     await page.getByRole('button', { name: 'Continue existing admin access until setup' }).click();
     await page.getByRole('alert').getByText('Overview temporarily unavailable.').waitFor();
+    await page.getByText('Not Registered', { exact: true }).waitFor();
+    assert.equal(await page.locator('.admin-metric').filter({ hasText: 'Registered Hardware' }).locator('dd').textContent(), '0');
     overviewUnavailable = false;
     await page.getByRole('button', { name: 'Try again' }).click();
-    await page.locator('.admin-metric dd').filter({ hasText: /^4$/ }).waitFor();
+    registryEmpty = false;
+    await go('/admin/dashboard');
+    await page.locator('.admin-metric dd').filter({ hasText: /^Online$/ }).waitFor();
     assert.deepEqual(await nav.getByRole('link').allTextContents().then(rows => rows.map(s => s.trim())), ['Dashboard', 'Users', 'Devices', 'Thresholds']);
     assert.equal((await page.locator('.admin-sidebar').boundingBox()).width, 180);
     assert.ok(await page.locator('.admin-sidebar-footer').getByRole('button', { name: 'Logout' }).isVisible());
-    assert.deepEqual(await page.locator('.admin-metric dd').allTextContents(), ['2', '4', '1', '1']);
+    assert.deepEqual(await page.locator('.admin-metric dd').allTextContents(), ['2', '1', 'Online', farmer.fullName]);
     assert.equal(await page.getByText(/Sensor Readings|Critical Alerts Today|Recent Activity|SMS Accepted|Farmer Dashboard|Danger Zone/).count(), 0);
     await save('desktop-dashboard');
 
@@ -95,10 +107,8 @@ async function main() {
     await page.getByLabel('Mobile number', { exact: true }).fill('09122222222');
     await page.getByLabel('Assigned fishpen name').fill('New sample pen');
     await page.getByRole('button', { name: 'Create owner and fishpen' }).click();
-    assert.equal(await page.getByText('fixture-device-key', { exact: true }).count(), 0);
-    await page.getByRole('button', { name: 'Copy Key', exact: true }).click();
-    await page.getByText(/Key copied/).waitFor();
-    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), 'fixture-device-key');
+    await page.getByText('fixture-password', { exact: true }).waitFor();
+    assert.equal(await page.getByRole('button', { name: 'Copy Key', exact: true }).count(), 0);
     await page.getByRole('button', { name: 'Hide credentials' }).click();
     await page.evaluate(() => navigator.clipboard.writeText(''));
     assert.equal(writes.filter(([, path]) => path === '/api/admin/owners').length, 1);
@@ -138,35 +148,46 @@ async function main() {
     assert.equal(writes.filter(([, path]) => path.endsWith('/device-key')).length, 0);
 
     await open('Devices');
-    const deviceTable = page.getByRole('table', { name: 'ESP32 devices' });
-    for (const label of ['Online', 'Offline', 'Never uploaded', 'Inactive']) await deviceTable.getByText(label, { exact: true }).waitFor();
+    const deviceTable = page.getByRole('table', { name: 'Registered hardware' });
+    await deviceTable.getByText('Online', { exact: true }).waitFor();
     await save('desktop-devices');
-    await page.getByLabel('Filter by connection').selectOption('online');
-    assert.equal(await deviceTable.getByRole('button', { name: 'View ESP32 #15' }).count(), 0);
-    await deviceTable.getByRole('button', { name: 'View ESP32 #14' }).click();
-    const device = page.getByRole('dialog', { name: 'ESP32 #14' });
-    assert.ok(!reads.includes('/api/admin/telemetry'));
+    await deviceTable.getByRole('button', { name: 'Shared ESP32', exact: true }).click();
+    const device = page.getByRole('dialog', { name: 'Shared ESP32' });
     await device.getByText('Upload history', { exact: true }).click();
     const uploads = device.getByRole('table', { name: 'ESP32 uploads' });
     await uploads.getByText('Confirmed', { exact: true }).waitFor();
     assert.equal(await uploads.getByText('Not this device').count(), 0);
     await page.keyboard.press('Escape');
-    await page.getByLabel('Filter by connection').selectOption('');
-    await page.getByText('Fishpen assignments', { exact: true }).click();
-    await page.getByLabel('Farmer', { exact: true }).selectOption('2');
-    const options = await page.getByLabel('Monitoring device', { exact: true }).locator('option').allTextContents();
-    assert.ok(options.some(s => s.includes('Spare ESP32')));
-    assert.ok(options.every(s => !s.includes('Other ESP32')));
-    await page.getByLabel('Monitoring device', { exact: true }).selectOption('15');
-    await page.getByRole('button', { name: 'Save assignment' }).click();
-    await page.getByText('Fishpen assignment saved.').waitFor();
-    assert.deepEqual(writes.find(([, path]) => path.endsWith('/fishpen-assignments/2'))?.[2], { fishpenId: 9, name: farmer.fishpenName, deviceId: 15 });
+
+    await page.getByRole('button', { name: 'Register Hardware' }).click();
+    const register = page.getByRole('dialog', { name: 'Register Hardware' });
+    await register.getByLabel('Hardware name').fill('Fixture spare');
+    await register.getByLabel('ESP32 Hardware ID').fill('001122AABBEE');
+    await register.getByRole('button', { name: 'Register', exact: true }).click();
+    const keyDialog = page.getByRole('dialog', { name: 'One-time hardware key' });
+    await keyDialog.getByRole('button', { name: 'Copy Key' }).click();
+    await keyDialog.getByText(/Key copied/).waitFor();
+    assert.equal(await page.evaluate(() => navigator.clipboard.readText()), 'fixture-device-key');
+    await page.keyboard.press('Escape');
+    await page.evaluate(() => navigator.clipboard.writeText(''));
+
+    const row = deviceTable.getByRole('row').filter({ hasText: '001122AABBCC' });
     page.once('dialog', dialog => dialog.accept());
-    await deviceTable.getByRole('button', { name: 'Replace key' }).click();
-    await page.getByRole('dialog', { name: 'Replacement device key' }).waitFor();
-    assert.deepEqual(writes.find(([, path]) => path.endsWith('/device-key'))?.[2], { expectedDeviceId: 14 });
-    assert.equal(await page.getByText('fixture-replacement-key', { exact: true }).count(), 0);
-    await page.getByRole('button', { name: 'Hide key', exact: true }).click();
+    await row.getByRole('button', { name: 'Unassign Hardware' }).click();
+    assert.deepEqual(writes.find(([, path]) => path.endsWith('/hardware/1/unassign'))?.[2], { assignmentId: sampleAssignment });
+    await row.getByRole('button', { name: 'Assign Hardware', exact: true }).click();
+    const assignment = page.getByRole('dialog', { name: 'Assign Shared ESP32' });
+    await assignment.getByLabel('Farmer and fishpen').selectOption('10');
+    assert.equal(await assignment.getByRole('button', { name: 'Activate assignment' }).isEnabled(), false);
+    await assignment.getByRole('checkbox').check();
+    await assignment.getByRole('button', { name: 'Activate assignment' }).click();
+    await row.getByText('Other Pen', { exact: true }).waitFor();
+    assert.deepEqual(writes.find(([, path]) => path.endsWith('/hardware/1/assign'))?.[2], { ownerId: 3, fishpenId: 10, confirmedMoved: true });
+    assert.ok(!writes.some(([, path]) => path.endsWith('/hardware/1/key')));
+    page.once('dialog', dialog => dialog.accept());
+    await row.getByRole('button', { name: 'Replace Key' }).click();
+    await keyDialog.getByRole('button', { name: 'Copy Key' }).waitFor();
+    await page.keyboard.press('Escape');
 
     await open('Thresholds');
     await page.getByRole('heading', { name: 'Tilapia' }).waitFor();
@@ -218,9 +239,9 @@ async function main() {
         assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), target + ' clips at ' + width);
         if (width === 390) {
           if (target === 'Users') await page.getByRole('table', { name: 'Farmer accounts' }).waitFor();
-          if (target === 'Devices') await page.getByRole('table', { name: 'ESP32 devices' }).waitFor();
+          if (target === 'Devices') await page.getByRole('table', { name: 'Registered hardware' }).waitFor();
           if (target === 'Thresholds') await page.getByRole('heading', { name: 'Tilapia' }).waitFor();
-          if (target === 'Dashboard') await page.locator('.admin-metric dd').filter({ hasText: /^4$/ }).waitFor();
+          if (target === 'Dashboard') await page.locator('.admin-metric dd li').filter({ hasText: 'Shared ESP32: Offline' }).waitFor();
           await save('mobile-' + slug);
         }
       }
@@ -228,7 +249,7 @@ async function main() {
     await page.getByRole('button', { name: 'Logout' }).click();
     await page.getByRole('heading', { name: 'Admin Login' }).waitFor();
     assert.deepEqual(errors, []);
-    console.log('Passed four admin pages at five widths, farmer actions, scoped records and CSV, key copying/replacement, same-owner assignment, species editing, login security, and logout. Fixture API only.');
+    console.log('Passed four admin pages at five widths, farmer actions, scoped records and CSV, key copying/replacement, physical hardware assignment and reassignment, species editing, login security, and logout. Fixture API only.');
   } finally { await browser.close(); }
 }
 

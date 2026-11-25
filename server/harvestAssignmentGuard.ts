@@ -4,14 +4,14 @@ import type { RowDataPacket } from 'mysql2';
 import { verifyAuthToken } from './auth';
 import { assignedFishpen } from './services/OwnerFishpen';
 
-export function harvestAssignmentGuard(pool: Pool | null) {
+export function harvestAssignmentGuard(pool: Pool | null, shared = false) {
   return async (req: Request, res: Response, next: NextFunction) => {
   const auth = verifyAuthToken(req);
   if (!auth) return res.status(401).json({ message: 'Login required.' });
   if (auth.role !== 'farmer') return res.status(403).json({ message: 'Farmer account required.' });
   if (!pool) return res.status(503).json({ message: 'Database unavailable.' });
   try {
-    const assignment = await assignedFishpen(pool, auth.sub);
+    const assignment = await assignedFishpen(pool, auth.sub, false, shared);
     res.locals.fishpenAssignment = assignment;
     const match = req.path.match(/^\/(\d+)(?:\/|$)/);
     if (match) {

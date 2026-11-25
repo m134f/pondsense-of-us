@@ -59,11 +59,11 @@ export function AdminDetails({ title, close, children, locked = false }: { title
   </dialog>;
 }
 
-export function DeviceKeyOnce({ deviceId, value }: { deviceId: number; value: string }) {
+export function DeviceKeyOnce({ deviceId, value, label = 'device' }: { deviceId: number; value: string; label?: string }) {
   const [visible, setVisible] = useState(false);
   const [message, setMessage] = useState('');
   return <div className="admin-key-once">
-    <p><strong>ESP32 key for device #{deviceId}</strong> <span className="admin-muted">Available in this view only.</span></p>
+    <p><strong>ESP32 key for {label} #{deviceId}</strong> <span className="admin-muted">Available in this view only.</span></p>
     {visible && <code className="admin-secret">{value}</code>}
     <div className="admin-actions">
       <button type="button" className="soft-button" onClick={async () => {

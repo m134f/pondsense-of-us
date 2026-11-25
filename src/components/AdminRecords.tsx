@@ -19,9 +19,9 @@ const analysisStatus = (row: Entry) => String(row.status || 'Not classified');
 
 const telemetry: Report = {
   label: 'ESP32 uploads', url: '/api/admin/telemetry', result: 'readings',
-  note: 'Latest 250 stored uploads. Farmer reflects ownership at upload. Historical fishpen IDs are not recorded.',
-  fields: [time('Sample time', 'sampled_at'), time('Upload time', 'recorded_at'), { label: 'Device', cell: device }, text('Farmer at upload', 'owner_name'),
-    text('pH', 'ph'), text('Temp (\u00b0C)', 'temperature_c'), text('Turbidity (NTU)', 'turbidity_ntu'), status('Water contact', contact)]
+  note: 'Latest 250 stored uploads. Fishpen is shown only when recorded at upload.',
+  fields: [text('Telemetry ID', 'id'), time('Sample time', 'sampled_at'), time('Upload time', 'recorded_at'), { label: 'Device', cell: device }, text('Farmer at upload', 'owner_name'), text('Fishpen at upload', 'fishpen_at_upload'),
+    text('pH', 'ph'), text('Temp (\u00b0C)', 'temperature_c'), text('DO (mg/L)', 'dissolved_oxygen'), text('Turbidity (NTU)', 'turbidity_ntu'), status('Water contact', contact)]
 };
 const analyses = (mode: 'manual' | 'sensor'): Report => ({
   label: mode === 'manual' ? 'Manual analyses' : 'Saved sensor analyses', url: `/api/admin/logs?mode=${mode}`, result: 'logs',

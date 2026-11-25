@@ -6,6 +6,7 @@ export const trendRanges = [1, 7, 30] as const;
 export type TrendRange = typeof trendRanges[number];
 export type TrendReading = {
   id: number;
+  assignmentId?: string | null;
   sampledAt?: string | null;
   ph: number | null;
   dissolvedOxygen?: number | null;
@@ -49,7 +50,7 @@ export function filterTrendReadings(readings: TrendReading[], days: TrendRange, 
 
 export function makeTrendSeries(points: ReturnType<typeof filterTrendReadings>['points'], parameter: TrendParameter, untimedIds: number[] = []) {
   const segments: number[] = [];
-  let previousValid: { time: number; id: number } | null = null;
+  let previousValid: { time: number; id: number; assignmentId?: string | null } | null = null;
   const rows = points.map(([time, reading]) => {
     const raw = parameter === 'temperature' ? reading.temperatureC : parameter === 'turbidity' ? reading.turbidityNtu : reading[parameter];
     // The sensor API supplies null NTU for raw-only uploads; never convert raw counts here.
@@ -62,9 +63,9 @@ export function makeTrendSeries(points: ReturnType<typeof filterTrendReadings>['
     }
     // An untimed upload cannot be plotted. Conservatively break the trace if it
     // arrived between these two records rather than assigning it a sample time.
-    if (previousValid === null || time - previousValid.time >= trendGapMs || untimedIds.some(id =>
+    if (previousValid === null || previousValid.assignmentId !== reading.assignmentId || time - previousValid.time >= trendGapMs || untimedIds.some(id =>
       previousValid !== null && id > Math.min(previousValid.id, reading.id) && id < Math.max(previousValid.id, reading.id))) segments.push(segments.length);
-    previousValid = { time, id: reading.id };
+    previousValid = { time, id: reading.id, assignmentId: reading.assignmentId };
     return { time, value, segment: segments.length - 1, uncalibrated: false };
   });
   const last = [...rows].reverse().find(row => row.value !== null);

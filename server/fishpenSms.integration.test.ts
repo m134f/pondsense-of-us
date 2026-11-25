@@ -31,6 +31,9 @@ test('fishpen SMS database and HTTP integration', { skip: process.env.RUN_SMS_DB
   await db.query('CREATE TABLE sensor_devices(id INT PRIMARY KEY, owner_user_id INT, device_name VARCHAR(100), is_active BOOLEAN DEFAULT TRUE)');
   await db.query("INSERT INTO sensor_devices(id,owner_user_id,device_name) VALUES (1,1,'Cuyab A'),(2,2,'Cuyab B')");
   await migrateFishpenSms(db);
+  // The legacy attribution check uses the production SMS worker after the shared-hardware migration.
+  await db.query('ALTER TABLE sms_critical_state ADD COLUMN assignment_id CHAR(36) NULL');
+  await db.query('ALTER TABLE sms_critical_notifications ADD COLUMN assignment_id CHAR(36) NULL');
   await db.query('CREATE TABLE harvest_batches(id INT PRIMARY KEY)');
   await migrateOwnerFishpen(db);
   const app = express(); app.use(express.json()); app.use('/api', fishpenSmsRouter(db));

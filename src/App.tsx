@@ -73,6 +73,8 @@ type SensorTelemetry = {
   turbidityNtu: number | null;
   temperatureC: number | null;
   ph: number | null;
+  dissolvedOxygen?: number | null;
+  assignmentId?: string | null;
   recordedAt: string;
   sampledAt?: string | null;
   receivedAt?: string;
@@ -83,7 +85,7 @@ type RequestState = 'loading' | 'ready' | 'error';
 const SENSOR_OFFLINE_MS = 60_000;
 
 function sensorMeasuredStatus(telemetry: SensorTelemetry): AlertLevel | 'partial' {
-  return measuredStatus({ ph: telemetry.ph, temperature: telemetry.temperatureC, turbidity: telemetry.turbidityNtu });
+  return measuredStatus({ ph: telemetry.ph, temperature: telemetry.temperatureC, turbidity: telemetry.turbidityNtu, dissolvedOxygen: telemetry.dissolvedOxygen });
 }
 
 function statusText(status: AlertLevel | 'partial', lang: Lang) {
@@ -650,6 +652,7 @@ export default function App() {
   const [hasAnalyzed, setHasAnalyzed] = useState(false);
   const [sensorTelemetry, setSensorTelemetry] = useState<SensorTelemetry | null>(null);
   const [sensorState, setSensorState] = useState<RequestState>('loading');
+  const [hardwareAssigned, setHardwareAssigned] = useState<boolean | undefined>();
   const [sensorTrend, setSensorTrend] = useState<SensorTelemetry[]>([]);
   const [trendState, setTrendState] = useState<RequestState>('loading');
   const retryTrendRef = useRef<(() => void) | null>(null);
@@ -728,7 +731,7 @@ export default function App() {
       turbidityEstimated: false,
       ph: sensorTelemetry.ph,
       temperature: sensorTelemetry.temperatureC,
-      dissolvedOxygen: null,
+      dissolvedOxygen: sensorTelemetry.dissolvedOxygen ?? null,
       turbidity: sensorTelemetry.turbidityNtu,
       ammonia: null,
       bestFish: "",
@@ -752,6 +755,7 @@ export default function App() {
     setSensorState('loading');
     setTrendState('loading');
     setSensorTrend([]);
+    setHardwareAssigned(undefined);
 
     if (!currentUser || currentUser.mustChangePassword || !currentUser.fishpenAssignment) {
       setSensorTelemetry(null);
@@ -763,7 +767,7 @@ export default function App() {
       const startedAt = Date.now();
       latestController = new AbortController();
       const timeout = window.setTimeout(() => latestController?.abort(), 8_000);
-      const result = await apiJson<{ telemetry: SensorTelemetry | null }>("/api/sensors/latest", { signal: latestController.signal });
+      const result = await apiJson<{ telemetry: SensorTelemetry | null; hardwareAssigned?: boolean }>("/api/sensors/latest", { signal: latestController.signal });
       window.clearTimeout(timeout);
       latestController = undefined;
       if (!active) return;
@@ -772,6 +776,7 @@ export default function App() {
       if (result.data) {
         failures = 0;
         setSensorState('ready');
+        setHardwareAssigned(result.data.hardwareAssigned);
         setSensorTelemetry(result.data.telemetry);
         if (result.data.telemetry) {
           const latest = result.data.telemetry;
@@ -1038,13 +1043,11 @@ export default function App() {
     );
   }
 
-  if (currentUser?.mustChangePassword) return <OwnerPasswordChange lang={lang} onDone={() => window.location.assign('/dashboard')} onLogout={async () => { await postJson('/api/logout', {}); storage.saveCurrentUser(null); setCurrentUser(null); navigate('/login'); }} />;
-  if (currentUser && !currentUser.fishpenAssignment) return <main className="mx-auto max-w-lg space-y-4 p-6"><h1 className="text-xl font-bold">Fishpen assignment needed</h1><p>No fishpen is assigned to your account. Contact your administrator. / Ipa-assign muna sa administrator ang iyong fishpen.</p><button className="soft-button" onClick={() => window.location.reload()}>Check again</button><button className="soft-button" onClick={async () => { await postJson('/api/logout', {}); storage.saveCurrentUser(null); setCurrentUser(null); navigate('/login'); }}>Logout</button></main>;
-
-  if (!currentUser) return <OwnerLogin navigate={navigate} onLogin={(user, message) => { setCurrentUser(user); storage.saveCurrentUser(user); setSms(message); navigate('/dashboard'); }} />;
-  const farmerPath = ["/analysis", "/history", "/harvest", "/profile", "/profile/device-sms"].includes(path) ? path : "/dashboard";
+  const logoutError = lang === 'tl' ? 'Hindi makumpirma ang pag-logout. Subukan muli.' : 'Logout could not be confirmed. Try again.';
   const logout = async () => {
-    await apiJson("/api/logout", { method: "POST", body: "{}" });
+    const result = await apiJson("/api/logout", { method: "POST", body: "{}" });
+    if (result.error && result.status !== 401) { setSms(logoutError); return; }
+    storage.clearSessions(currentUser);
     storage.saveCurrentUser(null);
     setCurrentUser(null);
     setParams(defaultParams);
@@ -1055,6 +1058,12 @@ export default function App() {
     setSessions(storage.sessions(null));
     navigate("/login");
   };
+
+  if (currentUser?.mustChangePassword) return <><OwnerPasswordChange lang={lang} onDone={() => window.location.assign('/dashboard')} onLogout={logout} />{sms === logoutError && <p role="alert" className="p-4 text-center">{logoutError}</p>}</>;
+  if (currentUser && !currentUser.fishpenAssignment) return <main className="mx-auto max-w-lg space-y-4 p-6"><h1 className="text-xl font-bold">Fishpen assignment needed</h1><p>No fishpen is assigned to your account. Contact your administrator. / Ipa-assign muna sa administrator ang iyong fishpen.</p><button className="soft-button" onClick={() => window.location.reload()}>Check again</button><button className="soft-button" onClick={logout}>Logout</button>{sms === logoutError && <p role="alert">{logoutError}</p>}</main>;
+
+  if (!currentUser) return <OwnerLogin navigate={navigate} onLogin={(user, message) => { setCurrentUser(user); storage.saveCurrentUser(user); setSms(message); navigate('/dashboard'); }} />;
+  const farmerPath = ["/analysis", "/history", "/harvest", "/profile", "/profile/device-sms"].includes(path) ? path : "/dashboard";
 
   return (
     <div className="farmer-shell min-h-screen bg-slate-100">
@@ -1087,6 +1096,7 @@ export default function App() {
           params={params}
           sensorTelemetry={sensorTelemetry}
           sensorState={sensorState}
+          hardwareAssigned={hardwareAssigned}
           sensorTrend={sensorTrend}
           trendState={trendState}
           retryTrend={() => retryTrendRef.current?.()}
@@ -1172,6 +1182,7 @@ function AnalysisPage({
   params,
   sensorTelemetry,
   sensorState,
+  hardwareAssigned,
   sensorTrend,
   trendState,
   retryTrend,
@@ -1196,6 +1207,7 @@ function AnalysisPage({
   params: WaterParams;
   sensorTelemetry: SensorTelemetry | null;
   sensorState: RequestState;
+  hardwareAssigned?: boolean;
   sensorTrend: SensorTelemetry[];
   trendState: RequestState;
   retryTrend: () => void;
@@ -1238,7 +1250,9 @@ function AnalysisPage({
           {[false, true].map(manual => <button key={String(manual)} aria-pressed={showManual === manual} onClick={() => { if (showManual !== manual) onModeChange(manual); }} className={`min-h-11 rounded-md px-3 text-sm font-semibold ${showManual === manual ? "bg-teal-700 text-white" : "text-slate-600"}`}>{showManual && (manual ? <Activity size={16} aria-hidden="true" /> : <Radio size={16} aria-hidden="true" />)}{manual ? (lang === 'tl' ? 'Manu-mano' : 'Manual test') : (lang === 'tl' ? 'Mga sensor' : 'Monitoring')}</button>)}
         </div>
       </div>
-      {!showManual && <LiveMonitoringOverview telemetry={sensorTelemetry} requestState={sensorState} lang={lang} now={now} onManual={() => onModeChange(true)} />}
+      {!showManual && sensorState === 'ready' && hardwareAssigned === false &&
+        <p className="rounded-md border border-slate-200 bg-white p-3" role="status">{lang === 'tl' ? 'Walang monitoring device na nakatalaga sa iyong fishpen.' : 'No monitoring device is currently assigned to your fishpen.'}</p>}
+      {!showManual && <LiveMonitoringOverview telemetry={sensorTelemetry} requestState={sensorState} hardwareAssigned={hardwareAssigned} lang={lang} now={now} onManual={() => onModeChange(true)} />}
       {showManual && <aside className="analysis-inputs space-y-4">
         <ManualWaterForm lang={lang} fish={fishDb} onAnalyze={submitManual} />
         {showManualResults && <FeedingCard params={params} lang={lang} text={text} />}
@@ -1292,10 +1306,10 @@ function AnalysisPage({
       {!showManual && sensorTelemetry ? (
         <aside className="analysis-comparison card h-fit space-y-3 p-5">
           <h2 className="font-black">{lang === "tl" ? "Paunang paghahambing ng isda" : "Preliminary fish comparison"}</h2>
-          <div className="flex flex-wrap items-center gap-2"><span className={`rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(sensorMeasuredStatus(sensorTelemetry))}`}>{statusText(sensorMeasuredStatus(sensorTelemetry), lang)}</span><span className="text-xs text-slate-600">{sensorTelemetry.turbidityNtu === null ? (lang === 'tl' ? 'Bahagyang pagsusuri; walang DO reading at hindi kasama ang tantiya sa turbidity.' : 'Partial assessment; DO is missing and estimated turbidity is excluded.') : (lang === 'tl' ? 'Bahagyang pagsusuri; walang DO reading.' : 'Partial assessment; DO is missing.')}</span></div>
+          <div className="flex flex-wrap items-center gap-2"><span className={`rounded-md px-2 py-1 text-xs font-bold ${badgeClasses(sensorMeasuredStatus(sensorTelemetry))}`}>{statusText(sensorMeasuredStatus(sensorTelemetry), lang)}</span>{sensorTelemetry.dissolvedOxygen == null && <span className="text-xs text-slate-600">{lang === 'tl' ? 'Walang beripikadong sukat ng DO.' : 'No verified dissolved oxygen measurement.'}</span>}</div>
           {!sensorFresh && <p className="rounded-md bg-amber-50 p-3 text-sm font-semibold text-amber-900">{lang === 'tl' ? 'Batay sa huling sukat, hindi live. Kumuha ng bagong sukat bago magpasya.' : 'Based on the last reading, not live. Obtain fresh measurements before making decisions.'}</p>}
           {(() => {
-            const readings = { ph: sensorTelemetry.ph, temperature: sensorTelemetry.temperatureC, turbidity: sensorTelemetry.turbidityNtu };
+            const readings = { ph: sensorTelemetry.ph, temperature: sensorTelemetry.temperatureC, turbidity: sensorTelemetry.turbidityNtu, dissolvedOxygen: sensorTelemetry.dissolvedOxygen };
             const measured = Object.entries(readings).filter(([, value]) => value !== null && Number.isFinite(value));
             const ranked = rankPartialFish(fishDb.filter(fish => activeSpecies.some(species => species.id === fish.id)), readings);
             if (!measured.length) return <p className="text-sm text-slate-600">{lang === "tl" ? "Wala pang beripikadong sukat para ihambing ang isda." : "No verified measurements yet for fish comparison."}</p>;
@@ -1318,9 +1332,13 @@ function AnalysisPage({
                 return <section key={item.fish.id} className="border-t border-slate-200 py-3">
                   <div className="flex items-center gap-2"><span className="text-sm font-bold text-slate-500">#{index + 1}</span><img src={fishImageSrc(item.fish.id)} alt="" className="h-10 w-10 rounded-md object-cover" /><strong>{item.fish.name}</strong></div>
                   <p className="mt-2 text-xs font-semibold text-slate-700">{lang === 'tl' ? `${item.matches.length} sa ${measured.length} nasukat ang pasok` : `${item.matches.length} of ${measured.length} measured values in range`}</p>
-                  {item.checks.map(check => <p key={check.key} className="mt-1 text-xs text-slate-600">
-                    {check.key === 'ph' ? 'pH' : check.key === 'temperature' ? (lang === 'tl' ? 'Temperatura' : 'Temperature') : (lang === 'tl' ? 'Labo' : 'Turbidity')} {check.value}{check.key === 'temperature' ? ' °C' : check.key === 'turbidity' ? ' NTU' : ''}: {check.result === 'unknown' ? (lang === 'tl' ? 'walang beripikadong saklaw' : 'no verified range') : <><span className={check.result === 'within' ? 'font-semibold text-emerald-700' : 'font-semibold text-amber-800'}>{check.result === 'within' ? (lang === 'tl' ? 'pasok' : 'within') : check.result === 'below' ? (lang === 'tl' ? 'mas mababa' : 'below') : (lang === 'tl' ? 'mas mataas' : 'above')}</span> ({check.min}–{check.max}{check.key === 'temperature' ? ' °C' : check.key === 'turbidity' ? ' NTU' : ''})</>}
-                  </p>)}
+                  {item.checks.map(check => {
+                    const label = check.key === 'ph' ? 'pH' : check.key === 'temperature' ? (lang === 'tl' ? 'Temperatura' : 'Temperature') : check.key === 'dissolvedOxygen' ? (lang === 'tl' ? 'Natunaw na oxygen' : 'Dissolved oxygen') : (lang === 'tl' ? 'Labo' : 'Turbidity');
+                    const unit = check.key === 'temperature' ? ' °C' : check.key === 'turbidity' ? ' NTU' : check.key === 'dissolvedOxygen' ? ' mg/L' : '';
+                    return <p key={check.key} className="mt-1 text-xs text-slate-600">
+                      {label} {check.value}{unit}: {check.result === 'unknown' ? (lang === 'tl' ? 'walang beripikadong saklaw' : 'no verified range') : <><span className={check.result === 'within' ? 'font-semibold text-emerald-700' : 'font-semibold text-amber-800'}>{check.result === 'within' ? (lang === 'tl' ? 'pasok' : 'within') : check.result === 'below' ? (lang === 'tl' ? 'mas mababa' : 'below') : (lang === 'tl' ? 'mas mataas' : 'above')}</span> ({check.min}–{check.max}{unit})</>}
+                    </p>;
+                  })}
                   <p className="mt-2 text-xs leading-relaxed text-slate-700">{reason}</p>
                 </section>;
               })}
@@ -1413,14 +1431,14 @@ function AnalysisEmptyState({ sensorAnalysis, hasSensor }: { sensorAnalysis: Sen
   );
 }
 
-function LiveMonitoringOverview({ telemetry, requestState, lang, now, onManual }: { telemetry: SensorTelemetry | null; requestState: RequestState; lang: Lang; now: number; onManual: () => void }) {
+function LiveMonitoringOverview({ telemetry, requestState, hardwareAssigned, lang, now, onManual }: { telemetry: SensorTelemetry | null; requestState: RequestState; hardwareAssigned?: boolean; lang: Lang; now: number; onManual: () => void }) {
   const tl = lang === 'tl';
   const connection = sensorConnectionState(telemetry, now);
   const live = connection === 'live';
   const measured = telemetry ? sensorMeasuredStatus(telemetry) : 'partial';
   const lastUpload = telemetry ? Date.parse(telemetry.receivedAt || telemetry.recordedAt) : NaN;
   const online = Number.isFinite(lastUpload) && Math.max(0, now - lastUpload) < SENSOR_OFFLINE_MS;
-  const connectionLabel = requestState === 'loading' ? (tl ? 'Sinusuri...' : 'Checking...') : requestState === 'error' ? (tl ? 'Hindi makumpirma' : 'Unable to verify') : telemetry ? (online ? 'Online' : 'Offline') : (tl ? 'Wala pang upload' : 'No upload yet');
+  const connectionLabel = requestState === 'loading' ? (tl ? 'Sinusuri...' : 'Checking...') : requestState === 'error' ? (tl ? 'Hindi makumpirma' : 'Unable to verify') : hardwareAssigned === false ? (tl ? 'Walang nakatalaga' : 'Unassigned') : telemetry ? (online ? 'Online' : 'Offline') : (tl ? 'Wala pang upload' : 'No upload yet');
   const timestampUnknown = telemetry?.sampledAt === null;
   const freshness = timestampUnknown ? (tl ? 'Hindi alam ang oras ng sukat' : 'Sample time unknown') : live && requestState !== 'error' ? 'Live' : telemetry ? (tl ? 'Lumang sukat' : 'Stale') : (tl ? 'Wala pang sukat' : 'No measurement');
   const partialSafe = measured === 'safe';
@@ -1430,7 +1448,7 @@ function LiveMonitoringOverview({ telemetry, requestState, lang, now, onManual }
   const cards = [
     { label: 'pH', key: 'ph', value: telemetry?.ph ?? null, unit: '', decimals: 2, Icon: Droplets },
     { label: tl ? 'Temperatura' : 'Temperature', key: 'temperature', value: telemetry?.temperatureC ?? null, unit: ' °C', decimals: 1, Icon: Thermometer },
-    { label: 'Dissolved oxygen', key: 'dissolvedOxygen', value: null, unit: ' mg/L', decimals: 1, Icon: Droplets },
+    { label: 'Dissolved oxygen', key: 'dissolvedOxygen', value: telemetry?.dissolvedOxygen ?? null, unit: ' mg/L', decimals: 1, Icon: Droplets },
     { label: tl ? 'Labo ng tubig' : 'Turbidity', key: 'turbidity', value: telemetry && (telemetry.turbidityNtu !== null || hasTurbiditySignal) ? sensorTurbidityValue(telemetry) : null, unit: ' NTU', decimals: 0, Icon: Droplets, estimated: telemetry?.turbidityNtu === null },
   ] as const;
   const tone = live && requestState === 'ready' && measured !== 'partial' ? measured : 'neutral';

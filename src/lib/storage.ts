@@ -30,6 +30,7 @@ export const storage = {
   saveCurrentUser: (user: AppUser | null) => set("pondsense.currentUser", user),
   sessions: (user?: AppUser | null) => get<SessionRecord[]>(sessionKey(user), []),
   saveSessions: (sessions: SessionRecord[], user?: AppUser | null) => set(sessionKey(user), sessions.slice(0, 10)),
+  clearSessions: (user?: AppUser | null) => localStorage.removeItem(sessionKey(user)),
   fishOverrides: () => get<FishSpecies[] | null>("pondsense.fishOverrides", null),
   saveFishOverrides: (fish: FishSpecies[]) => set("pondsense.fishOverrides", fish),
   language: () => (localStorage.getItem("pondsense.lang") as "en" | "tl") || "en",

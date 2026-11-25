@@ -1,8 +1,9 @@
 import type { Pool } from 'mysql2/promise';
 import type { RowDataPacket } from 'mysql2';
 import { recommend, referenceThresholds, waterSummary, type Measurements, type Thresholds } from '../../src/lib/recommendations';
+import { assignedFishpen } from './OwnerFishpen';
 
-export async function planningContext(db: Pool, owner: number, batchId = 0, now = Date.now(), snapshot?: Measurements) {
+export async function planningContext(db: Pool, owner: number, batchId = 0, now = Date.now(), snapshot?: Measurements, shared = false) {
   let batch: RowDataPacket | undefined;
   if (batchId) {
     const [rows] = await db.query<RowDataPacket[]>('SELECT * FROM harvest_batches WHERE id = ? AND owner_user_id = ?', [batchId, owner]);
@@ -25,14 +26,20 @@ export async function planningContext(db: Pool, owner: number, batchId = 0, now 
     }
   }
   const measurements: Measurements = {};
-  const [sensor] = await db.query<RowDataPacket[]>(
+  const pen = shared && !snapshot ? await assignedFishpen(db, owner, false, true) : null;
+  const assignmentId = pen && 'assignmentId' in pen && (!batch || Number(batch.fishpen_id) === pen.id) ? pen.assignmentId : null;
+  const [sensor] = snapshot || (shared && !assignmentId) ? [[]] : shared ? await db.query<RowDataPacket[]>(
+    `SELECT t.*, DATE_FORMAT(t.sampled_at, '%Y-%m-%dT%H:%i:%sZ') AS sampled_iso FROM sensor_telemetry t
+     JOIN hardware_assignments a ON a.id = t.assignment_id AND a.ended_at IS NULL
+     WHERE t.owner_user_id = ? AND t.assignment_id = ? AND t.water_contact_confirmed = TRUE
+     ORDER BY t.sampled_at DESC, t.id DESC LIMIT 1`, [owner, assignmentId]) : await db.query<RowDataPacket[]>(
     `SELECT t.* FROM sensor_telemetry t JOIN sensor_devices d ON d.id = t.device_id
      WHERE t.owner_user_id = ? AND d.owner_user_id = ? AND d.is_active = 1 AND t.water_contact_confirmed = TRUE ${batch ? 'AND t.device_id = ?' : ''}
      ORDER BY COALESCE(t.sampled_at, t.recorded_at) DESC, t.id DESC LIMIT 1`, batch ? [owner, owner, batch.sensor_device_id || 0] : [owner, owner]);
   const telemetry = sensor[0];
   if (telemetry) {
-    for (const [key, col] of [['ph', 'ph'], ['temperature', 'temperature_c'], ['turbidity', 'turbidity_ntu']] as const) {
-      measurements[key] = { value: telemetry[col] === null ? null : Number(telemetry[col]), source: 'sensor', recordedAt: telemetry.sampled_at == null ? null : new Date(telemetry.sampled_at).toISOString() };
+    for (const [key, col] of [['ph', 'ph'], ['temperature', 'temperature_c'], ['turbidity', 'turbidity_ntu'], ['dissolvedOxygen', 'dissolved_oxygen']] as const) {
+      measurements[key] = { value: telemetry[col] == null ? null : Number(telemetry[col]), source: 'sensor', recordedAt: telemetry.sampled_at == null ? null : telemetry.sampled_iso ?? new Date(telemetry.sampled_at).toISOString() };
     }
   }
   if (batch) {
@@ -57,34 +64,38 @@ export async function planningContext(db: Pool, owner: number, batchId = 0, now 
   }
   const recommendations = recommend(snapshot ?? measurements, ranges, now);
   return { batchId, fishpenName: batch?.fishpen_name ?? null, deviceId: telemetry?.device_id ?? null,
-    reference, recommendations, status: waterSummary(recommendations), deviceAssigned: Boolean(batch?.sensor_device_id) };
+    reference, recommendations, status: waterSummary(recommendations), deviceAssigned: shared ? Boolean(assignmentId) : Boolean(batch?.sensor_device_id) };
 }
 
-export async function archiveRecommendations(db: Pool, owner: number, kind: 'sensor' | 'manual' | 'batch-manual', sourceId: number, batchId = 0) {
+export async function archiveRecommendations(db: Pool, owner: number, kind: 'sensor' | 'manual' | 'batch-manual', sourceId: number, batchId = 0, shared = false) {
   // Archive the accepted event, never whichever upload happens to be latest now.
   const table = kind === 'sensor' ? 'sensor_telemetry' : kind === 'manual' ? 'water_readings' : 'batch_water_measurements';
-  const [sources] = await db.query<RowDataPacket[]>(`SELECT * FROM ${table} WHERE id = ?`, [sourceId]);
+  const [sources] = await db.query<RowDataPacket[]>(kind === 'sensor' && shared
+    ? `SELECT t.*, a.fishpen_name AS sample_fishpen, DATE_FORMAT(t.sampled_at, '%Y-%m-%dT%H:%i:%sZ') AS sampled_iso
+       FROM sensor_telemetry t JOIN hardware_assignments a ON a.id = t.assignment_id WHERE t.id = ?`
+    : `SELECT * FROM ${table} WHERE id = ?`, [sourceId]);
   const source = sources[0];
   if (!source || (kind === 'sensor' && Number(source.owner_user_id) !== owner) || (kind === 'manual' && Number(source.user_id) !== owner) || (kind === 'batch-manual' && Number(source.batch_id) !== batchId)) return null;
   const snapshot: Measurements = {};
   const measurementTime = kind === 'sensor' ? source.sampled_at : source.recorded_at;
-  const recordedAt = measurementTime == null ? null : new Date(measurementTime).toISOString();
-  const columns = kind === 'sensor' ? { ph: 'ph', temperature: 'temperature_c', turbidity: 'turbidity_ntu' } :
+  const recordedAt = measurementTime == null ? null : source.sampled_iso ?? new Date(measurementTime).toISOString();
+  const columns = kind === 'sensor' ? { ph: 'ph', temperature: 'temperature_c', turbidity: 'turbidity_ntu', dissolvedOxygen: 'dissolved_oxygen' } :
     kind === 'manual' ? { ph: 'ph', temperature: 'temperature', turbidity: 'turbidity', dissolvedOxygen: 'dissolved_oxygen', ammonia: 'ammonia' } : { [source.parameter_name]: 'measurement_value' };
   for (const [key, col] of Object.entries(columns)) snapshot[key as keyof Measurements] = {
     value: source[col] == null ? null : Number(source[col]), source: kind === 'sensor' ? 'sensor' : 'manual', recordedAt
   };
   const contexts = [batchId];
   if (kind === 'sensor') {
-    const [batches] = await db.query<RowDataPacket[]>(`SELECT b.id FROM harvest_batches b JOIN sensor_telemetry t ON t.device_id = b.sensor_device_id
+    const [batches] = await db.query<RowDataPacket[]>(`SELECT b.id FROM harvest_batches b JOIN sensor_telemetry t ON ${shared ? 't.fishpen_id = b.fishpen_id' : 't.device_id = b.sensor_device_id'}
       WHERE t.id = ? AND b.owner_user_id = ? AND b.actual_harvest_date IS NULL`, [sourceId, owner]);
     contexts.push(...batches.map(b => Number(b.id)));
   }
   let firstContext = null;
   for (const id of contexts) {
-    const context = await planningContext(db, owner, id, Date.now(), snapshot);
+    const context = await planningContext(db, owner, id, Date.now(), snapshot, shared);
     if (!context) continue;
     context.deviceId = kind === 'sensor' ? source.device_id : null;
+    if (kind === 'sensor' && shared) context.fishpenName = source.sample_fishpen;
     if (id === batchId) firstContext = context;
     for (const rec of context.recommendations) await db.execute(
       `INSERT IGNORE INTO recommendation_history (owner_user_id, batch_id, source_kind, source_id, parameter_name, fishpen_name, device_id, severity, payload)

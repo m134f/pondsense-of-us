@@ -28,11 +28,15 @@ import { sendDailySms } from './services/PlanningSms';
 import { fishpenSmsRouter } from './routes/fishpenSms';
 import { sensorSmsMeasurements } from './services/FishpenSms';
 import { drainIncidentSms, queueIncidentSms } from './services/IncidentSms';
+import { legacySensorFixture, sharedHardwareRouter } from './routes/sharedHardware';
 
 const app = express();
 const port = Number(process.env.PORT || 5000);
 const guestPhone = "+639000000000";
 const decisionSupport = new DecisionSupportService();
+const sharedRegistry = !legacySensorFixture();
+// The registry can ship before any board is flashed. Never fall back to V1 on a V2 emergency pause.
+const shared = sharedRegistry && process.env.PONDSENSE_ENABLE_SHARED_UPLOADS === 'true';
 
 type AlertPayload = {
   level?: "safe" | "warning" | "critical";
@@ -87,23 +91,36 @@ app.use('/api', async (req, res, next) => {
     next();
   } catch { res.status(503).json({ message: 'Unable to verify account access.' }); }
 });
-app.use('/api', ownerAccess(pool));
+app.use('/api', ownerAccess(pool, shared));
 app.all('/api/public/monitoring', (_req, res) => res.status(410).json({ message: 'Public monitoring is disabled. Sign in to your owner dashboard.' }));
 app.all('/api/admin/public-monitoring', requireAdmin, (_req, res) => res.status(410).json({ message: 'Public publication is disabled for private owner accounts.' }));
-app.use('/api', ownerAccountsRouter(pool));
-app.use('/api', adminReportingRouter(pool));
-app.use('/api/harvests', harvestAssignmentGuard(pool));
-app.use('/api', ownerFishpenRouter(pool));
+app.use('/api', ownerAccountsRouter(pool, !sharedRegistry));
+app.use('/api', sharedHardwareRouter(pool, shared, validateTurbidityTelemetry, event => {
+  const { owner, deviceId, fishpenId, assignmentId, telemetryId, snapshot, body } = event;
+  void (async () => {
+    if (!pool) return;
+    if (Math.abs(Date.now() - Date.parse(String(body.sampledAt))) <= 30_000) {
+      await queueIncidentSms(pool, { owner, deviceId, fishpenId, assignmentId, sourceId: telemetryId, sourceKind: 'telemetry',
+        measurements: sensorSmsMeasurements({ temperature: snapshot.temperatureC, ph: snapshot.ph, turbidity: snapshot.ntu, dissolvedOxygen: snapshot.dissolvedOxygen }, body) })
+        .catch(() => console.error('Could not queue shared hardware SMS.'));
+      void flushWaterSms();
+    }
+    await archiveRecommendations(pool, owner, 'sensor', telemetryId, 0, true);
+  })().catch(() => console.error('Could not archive shared hardware recommendations.'));
+}));
+app.use('/api', adminReportingRouter(pool, shared));
+app.use('/api/harvests', harvestAssignmentGuard(pool, shared));
+app.use('/api', ownerFishpenRouter(pool, sharedRegistry));
 app.use('/api', publicMonitoringRouter(pool));
 app.use('/api', adminWebauthnRouter(pool));
-app.use('/api', planningRouter(pool));
+app.use('/api', planningRouter(pool, shared));
 app.use('/api', fishpenSmsRouter(pool));
 
 let waterSmsBusy = false;
 async function flushWaterSms() {
   if (!pool || waterSmsBusy) return;
   waterSmsBusy = true;
-  try { await drainIncidentSms(pool); }
+  try { await drainIncidentSms(pool, undefined, undefined, shared); }
   catch { console.error('Water SMS queue temporarily unavailable.'); }
   finally { waterSmsBusy = false; }
 }
@@ -360,7 +377,7 @@ app.get("/api/session", async (req, res) => {
     [auth.sub]
   );
   if (!rows.length) return res.status(401).json({ message: "Login required." });
-  res.json({ user: adminPublicUser(rows[0]), fishpenAssignment: auth.role === 'farmer' ? await assignedFishpen(pool, auth.sub) : null });
+  res.json({ user: adminPublicUser(rows[0]), fishpenAssignment: auth.role === 'farmer' ? await assignedFishpen(pool, auth.sub, false, shared) : null });
 });
 
 app.get("/api/readings", async (req, res) => {
@@ -370,14 +387,15 @@ app.get("/api/readings", async (req, res) => {
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT * FROM (
        (SELECT CAST(id AS CHAR) AS id, input_mode, recorded_at, ph, temperature,
-        dissolved_oxygen, turbidity, ammonia, best_fish, best_score, 0 AS turbidity_estimated
+        dissolved_oxygen, turbidity, ammonia, best_fish, best_score, 0 AS turbidity_estimated, NULL AS fishpen_id, NULL AS fishpen_name
         FROM water_readings WHERE user_id = ? ORDER BY recorded_at DESC, id DESC LIMIT 50)
        UNION ALL
-       (SELECT CONCAT('sensor-', id) AS id, 'sensor' AS input_mode, COALESCE(sampled_at, recorded_at) AS recorded_at, ph,
-        temperature_c AS temperature, NULL AS dissolved_oxygen, turbidity_ntu AS turbidity,
-        NULL AS ammonia, NULL AS best_fish, NULL AS best_score, 0 AS turbidity_estimated
-        FROM sensor_telemetry WHERE owner_user_id = ? AND water_contact_confirmed = TRUE
-        ORDER BY COALESCE(sampled_at, recorded_at) DESC, sensor_telemetry.id DESC LIMIT 50)
+       (SELECT CONCAT('sensor-', t.id) AS id, 'sensor' AS input_mode, COALESCE(sampled_at, recorded_at) AS recorded_at, ph,
+        temperature_c AS temperature, dissolved_oxygen, turbidity_ntu AS turbidity,
+        NULL AS ammonia, NULL AS best_fish, NULL AS best_score, 0 AS turbidity_estimated, t.fishpen_id, a.fishpen_name
+        FROM sensor_telemetry t LEFT JOIN hardware_assignments a ON a.id = t.assignment_id
+        WHERE t.owner_user_id = ? AND t.water_contact_confirmed = TRUE
+        ORDER BY COALESCE(sampled_at, recorded_at) DESC, t.id DESC LIMIT 50)
      ) AS history ORDER BY recorded_at DESC, id DESC LIMIT 100`,
     [auth.sub, auth.sub]
   );
@@ -389,6 +407,7 @@ app.get("/api/readings", async (req, res) => {
       inputMode: row.input_mode,
       turbidityEstimated: Boolean(row.turbidity_estimated),
       ph: row.ph === null ? null : Number(row.ph),
+      ...(row.fishpen_id == null ? {} : { fishpenId: Number(row.fishpen_id), fishpenName: row.fishpen_name }),
       temperature: row.temperature === null ? null : Number(row.temperature),
       dissolvedOxygen: row.dissolved_oxygen === null ? null : Number(row.dissolved_oxygen),
       turbidity: row.turbidity === null ? null : Number(row.turbidity),
@@ -466,7 +485,7 @@ app.post("/api/readings", async (req, res) => {
     smsResult.message = 'Manual test saved. Manual and Warning readings do not trigger automatic SMS.';
 
     await logReadingAlerts(readingId, userId, alerts, smsResult, shouldSendSms);
-    if (isRegisteredUser) await archiveRecommendations(pool, userId, 'manual', readingId).catch(error => console.error('Recommendation archive:', error));
+    if (isRegisteredUser) await archiveRecommendations(pool, userId, 'manual', readingId, 0, shared).catch(error => console.error('Recommendation archive:', error));
 
     res.json({ saved: true, readingId, userId, sms: smsResult });
   } catch (error) {
@@ -478,6 +497,7 @@ app.post("/api/readings", async (req, res) => {
 app.post("/api/admin/devices", requireAdmin, (_req, res) => res.status(410).json({ message: "Devices are provisioned with owner accounts. Use the existing owner fishpen monitor instead." }));
 
 app.post("/api/admin/devices/:id/pairing-code", requireAdmin, async (req: AuthRequest, res) => {
+  if (sharedRegistry) return res.status(410).json({ message: 'Manage registered hardware instead.' });
   if (!pool) return res.status(503).json({ message: "Database is required." });
   const deviceId = Number(req.params.id);
   if (!Number.isSafeInteger(deviceId) || deviceId < 1) return res.status(400).json({ message: "Invalid device." });
@@ -496,6 +516,14 @@ app.get("/api/sensors/devices", async (req, res) => {
   if (!auth) return res.status(401).json({ message: "Login required." });
   if (auth.role !== "farmer") return res.status(403).json({ message: "Farmer account required." });
   if (!pool) return res.status(503).json({ message: "Database is required." });
+  if (shared) {
+    const [devices] = await pool.execute<RowDataPacket[]>(`SELECT d.id, d.device_name AS deviceName, h.id AS hardwareId,
+      (SELECT MAX(t.recorded_at) FROM sensor_telemetry t WHERE t.assignment_id = a.id) AS lastReadingAt
+      FROM hardware_assignments a JOIN registered_hardware h ON h.id = a.hardware_id
+      JOIN sensor_devices d ON d.id = h.credential_device_id AND d.is_active = 1 WHERE a.id = ? AND a.owner_user_id = ? AND a.ended_at IS NULL`,
+      [res.locals.ownerFishpen.assignmentId, auth.sub]);
+    return res.json({ devices });
+  }
   const [rows] = await pool.execute<RowDataPacket[]>(
     `SELECT d.id, d.device_name AS deviceName, d.last_seen_at AS lastSeenAt,
             (SELECT MAX(t.recorded_at) FROM sensor_telemetry t WHERE t.device_id = d.id) AS lastReadingAt
@@ -506,6 +534,7 @@ app.get("/api/sensors/devices", async (req, res) => {
 app.post('/api/sensors/connect', (_req, res) => res.status(410).json({ message: 'Monitoring devices are assigned by the administrator.' }));
 
 app.patch("/api/admin/devices/:id", requireAdmin, async (req: AuthRequest, res) => {
+  if (sharedRegistry) return res.status(410).json({ message: "Manage assignments under registered hardware." });
   if (!pool) return res.status(503).json({ message: "Database is required." });
   const deviceId = Number(req.params.id);
   const ownerUserId = Number(req.body?.ownerUserId);
@@ -525,19 +554,24 @@ app.get("/api/sensors/latest", async (req, res) => {
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
       `SELECT telemetry.id, telemetry.device_id, telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
-              telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, telemetry.sampled_at, device.device_name
+              telemetry.temperature_c, telemetry.ph, telemetry.dissolved_oxygen, telemetry.assignment_id, telemetry.recorded_at, telemetry.sampled_at, device.device_name,
+              DATE_FORMAT(telemetry.recorded_at, '%Y-%m-%dT%H:%i:%sZ') AS received_iso,
+              DATE_FORMAT(telemetry.sampled_at, '%Y-%m-%dT%H:%i:%sZ') AS sampled_iso
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE telemetry.owner_user_id = ? AND device.owner_user_id = ? AND device.id = ? AND telemetry.water_contact_confirmed = TRUE
+       WHERE telemetry.owner_user_id = ? AND ${shared ? `device.is_active = 1 AND telemetry.assignment_id = ?
+       AND EXISTS (SELECT 1 FROM hardware_assignments a WHERE a.id = telemetry.assignment_id AND a.ended_at IS NULL)` : 'device.owner_user_id = ? AND device.id = ?'}
+       AND telemetry.water_contact_confirmed = TRUE
        ORDER BY COALESCE(telemetry.sampled_at, telemetry.recorded_at) DESC, telemetry.id DESC
        LIMIT 1`,
-      [auth.sub, auth.sub, res.locals.ownerFishpen.deviceId || 0]
+      shared ? [auth.sub, res.locals.ownerFishpen.assignmentId] : [auth.sub, auth.sub, res.locals.ownerFishpen.deviceId || 0]
     );
 
     const latest = rows[0];
-    if (!latest) return res.json({ telemetry: null });
+    if (!latest) return res.json({ telemetry: null, ...(shared ? { hardwareAssigned: !!res.locals.ownerFishpen.assignmentId } : {}) });
 
     res.json({
+      ...(shared ? { hardwareAssigned: true } : {}),
       telemetry: {
         deviceName: String(latest.device_name),
         id: Number(latest.id),
@@ -547,9 +581,10 @@ app.get("/api/sensors/latest", async (req, res) => {
         turbidityNtu: latest.turbidity_ntu === null ? null : Number(latest.turbidity_ntu),
         temperatureC: latest.temperature_c === null ? null : Number(latest.temperature_c),
         ph: latest.ph === null ? null : Number(latest.ph),
-        recordedAt: latest.sampled_at ?? latest.recorded_at,
-        sampledAt: latest.sampled_at,
-        receivedAt: latest.recorded_at
+        ...(shared ? { dissolvedOxygen: latest.dissolved_oxygen === null ? null : Number(latest.dissolved_oxygen), assignmentId: latest.assignment_id } : {}),
+        recordedAt: shared ? latest.sampled_iso ?? latest.received_iso : latest.sampled_at ?? latest.recorded_at,
+        sampledAt: shared ? latest.sampled_iso : latest.sampled_at,
+        receivedAt: shared ? latest.received_iso : latest.recorded_at
       }
     });
   } catch (error) {
@@ -564,12 +599,14 @@ app.get("/api/sensors/trend", async (req, res) => {
   try {
     const [rows] = await pool.execute<RowDataPacket[]>(
       `SELECT telemetry.id, telemetry.device_id, telemetry.turbidity_raw, telemetry.turbidity_voltage, telemetry.turbidity_ntu,
-              telemetry.temperature_c, telemetry.ph, telemetry.recorded_at, telemetry.sampled_at, device.device_name
+              telemetry.temperature_c, telemetry.ph, telemetry.dissolved_oxygen, telemetry.assignment_id, telemetry.recorded_at, telemetry.sampled_at, device.device_name,
+              DATE_FORMAT(telemetry.recorded_at, '%Y-%m-%dT%H:%i:%sZ') AS received_iso,
+              DATE_FORMAT(telemetry.sampled_at, '%Y-%m-%dT%H:%i:%sZ') AS sampled_iso
        FROM sensor_telemetry AS telemetry
        INNER JOIN sensor_devices AS device ON device.id = telemetry.device_id
-       WHERE telemetry.owner_user_id = ? AND device.owner_user_id = ? AND device.id = ? AND telemetry.water_contact_confirmed = TRUE
+       WHERE telemetry.owner_user_id = ? ${shared ? '' : 'AND device.owner_user_id = ? AND device.id = ?'} AND telemetry.water_contact_confirmed = TRUE
        ORDER BY COALESCE(telemetry.sampled_at, telemetry.recorded_at) DESC, telemetry.id DESC LIMIT 60`,
-      [auth.sub, auth.sub, res.locals.ownerFishpen.deviceId || 0]
+      shared ? [auth.sub] : [auth.sub, auth.sub, res.locals.ownerFishpen.deviceId || 0]
     );
     res.json({ readings: rows.reverse().map((row) => ({
       deviceName: String(row.device_name),
@@ -580,9 +617,10 @@ app.get("/api/sensors/trend", async (req, res) => {
       turbidityNtu: row.turbidity_ntu === null ? null : Number(row.turbidity_ntu),
       temperatureC: row.temperature_c === null ? null : Number(row.temperature_c),
       ph: row.ph === null ? null : Number(row.ph),
-      recordedAt: row.sampled_at ?? row.recorded_at,
-      sampledAt: row.sampled_at,
-      receivedAt: row.recorded_at
+      ...(shared ? { dissolvedOxygen: row.dissolved_oxygen === null ? null : Number(row.dissolved_oxygen), assignmentId: row.assignment_id } : {}),
+      recordedAt: shared && row.assignment_id ? row.sampled_iso ?? row.received_iso : row.sampled_at ?? row.recorded_at,
+      sampledAt: shared && row.assignment_id ? row.sampled_iso : row.sampled_at,
+      receivedAt: shared && row.assignment_id ? row.received_iso : row.recorded_at
     })) });
   } catch (error) {
     console.error("Sensor trend error:", error);
@@ -591,6 +629,7 @@ app.get("/api/sensors/trend", async (req, res) => {
 });
 
 app.post(["/api/v1/sensors/turbidity", "/api/v1/sensors/measurements"], async (req, res) => {
+  if (shared) return res.status(410).json({ message: 'Update the ESP32 to use registered hardware assignments.' });
   const providedKey = String(req.headers["x-api-key"] || req.headers["x-sensor-key"] || "");
   if (!providedKey) return res.status(401).json({ message: "Sensor API key is required." });
   if (!pool) return res.status(503).json({ message: "Database is required for sensor readings." });
@@ -739,7 +778,7 @@ app.get("/api/harvests", async (req, res) => {
        FROM harvest_events e INNER JOIN harvest_batches b ON b.id = e.batch_id
        WHERE b.owner_user_id = ? ORDER BY e.harvest_date DESC, e.id DESC`, [auth.sub]) : [[] as RowDataPacket[]];
     const waterContexts = new Map<number, Awaited<ReturnType<typeof planningContext>>>();
-    for (const row of rows) waterContexts.set(Number(row.id), await planningContext(pool, auth.sub, Number(row.id)));
+    for (const row of rows) waterContexts.set(Number(row.id), await planningContext(pool, auth.sub, Number(row.id), Date.now(), undefined, shared));
     res.json({ fishpenAssignment: res.locals.fishpenAssignment, harvests: rows.map((row) => ({
       ...row,
       waterContext: waterContexts.get(Number(row.id)),
@@ -763,7 +802,7 @@ app.post("/api/harvests", async (req, res) => {
   const connection = await pool.getConnection();
   try {
     await connection.beginTransaction();
-    const pen = await assignedFishpen(connection, auth.sub, true);
+    const pen = await assignedFishpen(connection, auth.sub, true, shared);
     if (!pen) { await connection.rollback(); return res.status(409).json({ message: 'Ask the administrator to assign your fishpen first.' }); }
     const harvest = validateHarvest({ ...req.body, fishpenName: pen.name });
     if (!harvest || harvest.actualHarvestDate) { await connection.rollback(); return res.status(400).json({ message: 'Check the kind of fish, stocking date, fish count, and planned harvest date. Record actual harvests separately.' }); }
@@ -807,7 +846,7 @@ app.put("/api/harvests/:id", async (req, res) => {
   if (dates[0].first_record && harvest.stockingDate > new Date(dates[0].first_record).toLocaleDateString('en-CA')) { await connection.rollback(); return res.status(400).json({ message: 'Stocking date cannot follow existing batch records.' }); }
   if (Boolean(existing[0].actual_harvest_date) !== Boolean(harvest.actualHarvestDate)) { await connection.rollback(); return res.status(400).json({ message: 'Use Record Harvest to close a batch. Completed batches cannot be reopened here.' }); }
   const sensorDeviceId = existing[0].sensor_device_id;
-  if (sensorDeviceId) {
+  if (sensorDeviceId && !shared) {
     const [devices] = await connection.query<RowDataPacket[]>('SELECT id FROM sensor_devices WHERE id = ? AND owner_user_id = ? AND is_active = 1', [sensorDeviceId, auth.sub]);
     if (!devices.length) { await connection.rollback(); return res.status(400).json({ message: 'Choose a device assigned to your account.' }); }
   }
@@ -961,6 +1000,7 @@ app.post("/api/harvests/:id/events", async (req, res) => {
 });
 
 app.post(["/api/sensor/readings", "/api/v1/sensors/data"], async (req, res) => {
+  if (shared) return res.status(410).json({ message: 'Update the ESP32 to use registered hardware assignments.' });
   const providedKey = String(req.headers["x-api-key"] || req.headers["x-sensor-key"] || req.body?.deviceKey || "");
   if (!providedKey) return res.status(401).json({ message: "Sensor API key is required." });
   if (!pool) return res.status(503).json({ message: "Database is required for sensor readings." });
@@ -1114,7 +1154,7 @@ app.patch('/api/admin/users/:id/status', requireAdmin, async (req: AuthRequest, 
     const previous = String(rows[0].account_status);
     const permitted: Record<string, string[]> = { PENDING: ['ACTIVE'], ACTIVE: ['SUSPENDED'], SUSPENDED: ['ACTIVE'], REJECTED: ['ACTIVE'] };
     if (!permitted[previous]?.includes(status)) { await connection.rollback(); return res.status(409).json({ message: 'Account status changed. Refresh and try again.' }); }
-    if (status === 'ACTIVE' && !await assignedFishpen(connection, id, true)) { await connection.rollback(); return res.status(409).json({ message: 'Assign a valid fishpen before reactivating this owner.' }); }
+    if (status === 'ACTIVE' && !await assignedFishpen(connection, id, true, shared)) { await connection.rollback(); return res.status(409).json({ message: 'Assign a valid fishpen before reactivating this owner.' }); }
     await connection.execute('UPDATE users SET account_status = ?, auth_version = auth_version + 1 WHERE id = ?', [status, id]);
     await connection.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth!.sub, 'farmer_status_changed', JSON.stringify({ userId: id, previous, status })]);
     await connection.commit();
@@ -1127,10 +1167,11 @@ app.get("/api/admin/users", requireAdmin, async (_req, res) => {
   if (!pool) return res.status(503).json({ message: "Database is required." });
   try {
     const [rows] = await pool.query<RowDataPacket[]>(`SELECT u.id, u.full_name, u.username, u.email, u.phone, u.role, u.account_status, u.created_at,
-      p.name AS fishpen_name, d.id AS device_id FROM users u
+      p.name AS fishpen_name, ${sharedRegistry ? 'h.id' : 'd.id'} AS device_id FROM users u
       LEFT JOIN owner_fishpen_assignments a ON a.owner_user_id = u.id
       LEFT JOIN sms_fishpens p ON p.id = a.fishpen_id AND p.owner_user_id = u.id
-      LEFT JOIN sensor_devices d ON d.id = p.device_id AND d.owner_user_id = u.id AND d.is_active = 1
+      ${sharedRegistry ? `LEFT JOIN hardware_assignments m ON m.active_fishpen_id = p.id AND m.owner_user_id = u.id
+      LEFT JOIN registered_hardware h ON h.id = m.hardware_id` : 'LEFT JOIN sensor_devices d ON d.id = p.device_id AND d.owner_user_id = u.id AND d.is_active = 1'}
       ORDER BY u.created_at DESC, u.id DESC`);
     res.set('Cache-Control', 'no-store').json({ users: rows.map(row => ({ ...adminPublicUser(row), fishpenName: row.fishpen_name, deviceId: row.device_id })) });
   } catch { res.status(503).json({ message: 'Could not load accounts.' }); }
@@ -1225,7 +1266,6 @@ app.post("/api/admin/settings/pin", requireAdmin, async (req: AuthRequest, res) 
   await logAdminAction(req, "admin_pin_update", "Changed admin PIN");
   res.json({ saved: true });
 });
-
 app.delete(['/api/admin/logs', '/api/admin/factory-reset'], requireAdmin,
   (_req, res) => res.status(410).json({ message: 'This destructive operation has been retired.' }));
 
@@ -1256,6 +1296,16 @@ app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
     criticalToday: criticalToday[0]?.total ?? 0,
     smsToday: smsToday[0]?.total ?? 0
   });
+});
+
+app.use((error: unknown, _req: express.Request, res: express.Response, next: express.NextFunction) => {
+  if (res.headersSent) return next(new Error('API request failed.'));
+  const type = (error as { type?: string } | null)?.type;
+  if (type === 'entity.parse.failed') return res.status(400).json({ message: 'Invalid JSON request.' });
+  if (type === 'entity.too.large') return res.status(413).json({ message: 'Request body is too large.' });
+  if (type === 'encoding.unsupported' || type === 'charset.unsupported') return res.status(415).json({ message: 'Unsupported request encoding.' });
+  console.error('API request failed.');
+  res.status(500).json({ message: 'Unable to complete the request.' });
 });
 
 async function sendDueHarvestReminders() {
@@ -1294,8 +1344,10 @@ if (pool) {
 
 void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error));
 
-app.listen(port, () => {
+const onListening = () => {
   console.log(`PondSense API running on http://localhost:${port}`);
-});
+};
+if (process.env.NODE_ENV === 'test' && process.env.PONDSENSE_LOCAL_BENCH === '1') app.listen(port, '127.0.0.1', onListening);
+else app.listen(port, onListening);
 setInterval(() => void sendDueHarvestReminders().catch((error) => console.error("Harvest reminder check failed:", error)), 60 * 60 * 1000);
 setInterval(() => void flushWaterSms(), 5000).unref();

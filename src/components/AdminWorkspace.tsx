@@ -1,10 +1,11 @@
 import { useState } from 'react';
-import { Gauge, LayoutDashboard, LogOut, Radio, RadioTower, ShieldCheck, UserPlus, Users, Wifi, WifiOff } from 'lucide-react';
+import { Gauge, LayoutDashboard, LogOut, Radio, RadioTower, ShieldCheck, UserPlus, Users, Wifi } from 'lucide-react';
 import { apiJson } from '../lib/api';
 import { farmerBrand } from '../lib/farmerBrand';
 import { AdminDetails, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
 import { AdminDeviceSettings } from './AdminDeviceSecurity';
-import { AdminDevices, AdminUsers } from './AdminPeople';
+import { AdminUsers } from './AdminPeople';
+import { SharedHardware, type HardwareRow } from './SharedHardware';
 import { AdminThresholds } from './AdminPreferences';
 import './admin.css';
 
@@ -67,7 +68,7 @@ export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigat
       {error && <p className="admin-notice" data-tone="warning" role="alert">{error}</p>}
       {active.path === '/admin/dashboard' && <AdminOverview navigate={navigate} onCreate={() => { setCreateFarmer(true); navigate('/admin/users'); }} />}
       {active.path === '/admin/users' && <AdminUsers openCreate={createFarmer} />}
-      {active.path === '/admin/devices' && <AdminDevices />}
+      {active.path === '/admin/devices' && <SharedHardware />}
       {active.path === '/admin/thresholds' && <AdminThresholds />}
     </main>
     {security && <AdminDetails title="Login security" close={() => setSecurity(false)}><AdminDeviceSettings /></AdminDetails>}
@@ -76,26 +77,30 @@ export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigat
 
 type Overview = {
   counts: { farmers: number };
-  devices: { online: number; offline: number; never: number; inactive: number };
 };
 
 function AdminOverview({ navigate, onCreate }: { navigate: (path: string) => void; onCreate: () => void }) {
   const overview = useAdminResource<Overview>('/api/admin/overview', 30_000);
+  const inventory = useAdminResource<{ hardware: HardwareRow[] }>('/api/admin/hardware', 30_000);
   const data = overview.error ? null : overview.data;
-  const devices = data?.devices;
-  const total = devices ? devices.online + devices.offline + devices.never + devices.inactive : undefined;
+  const devices = inventory.error ? undefined : inventory.data?.hardware;
+  const fleetValue = (value: (row: HardwareRow) => string) => !devices ? undefined :
+    devices.length === 0 ? 'Not Registered' : devices.length === 1 ? value(devices[0]) :
+      <ul>{devices.map(row => <li key={row.id}><span>{row.name}: </span>{value(row)}</li>)}</ul>;
   const counts = [
     ['Total Farmers', data?.counts.farmers, Users],
-    ['Total ESP32 Devices', total, RadioTower],
-    ['Online Devices', devices?.online, Wifi],
-    ['Offline Devices', devices?.offline, WifiOff]
+    ['Registered Hardware', devices?.length, RadioTower],
+    ['Hardware Status', fleetValue(row => row.status), Wifi],
+    ['Currently Assigned Farmer', devices?.length === 0 ? 'None' : fleetValue(row => row.farmer ?? 'None'), UserPlus]
   ] as const;
-  const count = (value?: number) => typeof value === 'number' && Number.isFinite(value) ? value.toLocaleString('en-PH') : '\u2014';
   return <>
-    <AdminHeading title="Dashboard"><AdminRefresh busy={overview.busy} refresh={overview.refresh} /></AdminHeading>
+    <AdminHeading title="Dashboard"><AdminRefresh busy={overview.busy || inventory.busy} refresh={() => { void overview.refresh(); void inventory.refresh(); }} /></AdminHeading>
     <AdminLoad resource={{ ...overview, data }} />
+    <AdminLoad resource={{ ...inventory, data: inventory.error ? null : inventory.data }} />
     <dl className="admin-metrics">{counts.map(([label, value, Icon]) => <div className="admin-panel admin-metric" key={label}>
-      <dt><Icon size={17} aria-hidden="true" /> {label}</dt><dd>{count(value)}</dd>
+      <dt><Icon size={17} aria-hidden="true" /> {label}</dt><dd className={typeof value !== 'number' ? 'admin-metric-label' : undefined}>
+        {typeof value === 'number' ? value.toLocaleString('en-PH') : value ?? 'Unavailable'}
+      </dd>
     </div>)}</dl>
     <section className="admin-quick" aria-labelledby="admin-quick-title">
       <h2 id="admin-quick-title">Quick actions</h2>

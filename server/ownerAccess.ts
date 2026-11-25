@@ -3,13 +3,12 @@ import type { Pool } from 'mysql2/promise';
 import type { RowDataPacket } from 'mysql2';
 import { verifyAuthToken, clearAuthSession } from './auth';
 import { assignedFishpen } from './services/OwnerFishpen';
-import { isTrustedJsonRequest } from './trustedOrigin';
+import { isDeviceUpload, isTrustedJsonRequest } from './trustedOrigin';
 
-const deviceUploads = new Set(['/v1/sensors/measurements', '/v1/sensors/turbidity', '/v1/sensors/data', '/sensor/readings']);
-export function ownerAccess(db: Pool | null) {
+export function ownerAccess(db: Pool | null, shared = false) {
   return async (req: Request, res: Response, next: NextFunction) => {
     res.setHeader('Cache-Control', 'no-store');
-    if (req.method === 'POST' && deviceUploads.has(req.path)) return next(); // Existing device-key guards remain mandatory.
+    if (isDeviceUpload(req)) return next(); // Existing device-key guards remain mandatory.
     if (['/health', '/login', '/logout', '/register'].includes(req.path) || req.path.startsWith('/admin/')) return next();
     const auth = verifyAuthToken(req);
     if (!auth) return res.status(401).json({ message: 'Owner login required.' });
@@ -29,7 +28,7 @@ export function ownerAccess(db: Pool | null) {
       }
       if (['/session', '/owner/password'].includes(req.path)) return next();
       if (user.must_change_password) return res.status(403).json({ message: 'Change your temporary password before accessing fishpen features.', code: 'PASSWORD_CHANGE_REQUIRED' });
-      const assignment = await assignedFishpen(db, auth.sub);
+      const assignment = await assignedFishpen(db, auth.sub, false, shared);
       if (!assignment) return res.status(403).json({ message: 'No valid fishpen is assigned. Contact the administrator.', code: 'FISHPEN_ASSIGNMENT_REQUIRED' });
       res.locals.ownerFishpen = assignment;
       next();

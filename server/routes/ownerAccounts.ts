@@ -8,7 +8,7 @@ import { allowAdminAttempt } from './adminWebauthn';
 import { isTrustedJsonRequest } from '../trustedOrigin';
 
 export const validOwnerPassword = (value: unknown): value is string => typeof value === 'string' && value.length >= 12 && Buffer.byteLength(value, 'utf8') <= 72;
-export function ownerAccountsRouter(db: Pool | null) {
+export function ownerAccountsRouter(db: Pool | null, legacyManagement = false) {
   const router = Router();
   const requireAdmin = requireRole('admin', db);
   router.use(['/admin/owners', '/owner/password'], (req, res, next) => {
@@ -28,17 +28,15 @@ export function ownerAccountsRouter(db: Pool | null) {
       await c.beginTransaction();
       const [result] = await c.execute<ResultSetHeader>(`INSERT INTO users (full_name, phone, password_hash, role, account_status, must_change_password, temporary_password_expires_at)
         VALUES (?, ?, ?, 'farmer', 'ACTIVE', TRUE, DATE_ADD(UTC_TIMESTAMP(), INTERVAL 24 HOUR))`, [fullName.trim(), phone, hash]);
-      const deviceKey = `ps_${crypto.randomBytes(24).toString('base64url')}`;
-      const [device] = await c.execute<ResultSetHeader>('INSERT INTO sensor_devices (device_name, api_key_hash, owner_user_id) VALUES (?, ?, ?)',
-        ['PondSense ESP32', await bcrypt.hash(deviceKey, 10), result.insertId]);
-      const [pen] = await c.execute<ResultSetHeader>('INSERT INTO sms_fishpens (owner_user_id, name, device_id) VALUES (?, ?, ?)', [result.insertId, fishpenName.trim(), device.insertId]);
+      const [pen] = await c.execute<ResultSetHeader>('INSERT INTO sms_fishpens (owner_user_id, name) VALUES (?, ?)', [result.insertId, fishpenName.trim()]);
       await c.execute('INSERT INTO owner_fishpen_assignments (owner_user_id, fishpen_id, updated_by) VALUES (?, ?, ?)', [result.insertId, pen.insertId, req.auth!.sub]);
-      await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth!.sub, 'owner_provisioned', JSON.stringify({ ownerId: result.insertId, fishpenId: pen.insertId, deviceId: device.insertId })]);
-      await c.commit(); res.set('Cache-Control', 'no-store').json({ id: result.insertId, temporaryPassword, deviceKey, deviceId: device.insertId, expiresInHours: 24 });
+      await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth!.sub, 'owner_provisioned', JSON.stringify({ ownerId: result.insertId, fishpenId: pen.insertId })]);
+      await c.commit(); res.set('Cache-Control', 'no-store').json({ id: result.insertId, temporaryPassword, expiresInHours: 24 });
     } catch (error) { await c.rollback(); res.status((error as {code?: string}).code === 'ER_DUP_ENTRY' ? 409 : 503).json({ message: (error as {code?: string}).code === 'ER_DUP_ENTRY' ? 'That mobile number already has an account. Manage the existing account instead.' : 'Unable to create owner account.' }); }
     finally { c.release(); }
   });
   router.put('/admin/owners/:id/monitoring-device', requireAdmin, async (req: AuthRequest, res) => {
+    if (!legacyManagement) return res.status(410).json({ message: 'Manage assignments under registered hardware.' });
     const owner = Number(req.params.id);
     const deviceId = Number(req.body?.deviceId);
     if (!Number.isSafeInteger(owner) || owner <= 0 || !Number.isSafeInteger(deviceId) || deviceId <= 0) return res.status(400).json({ message: 'Choose a valid owner and monitoring device.' });
@@ -63,6 +61,7 @@ export function ownerAccountsRouter(db: Pool | null) {
     } finally { c.release(); }
   });
   router.post('/admin/owners/:id/device-key', requireAdmin, async (req: AuthRequest, res) => {
+    if (!legacyManagement) return res.status(410).json({ message: 'Replace keys under registered hardware.' });
     const owner = Number(req.params.id);
     if (!Number.isSafeInteger(owner) || owner <= 0) return res.status(400).json({ message: 'Invalid owner.' });
     const expectedDeviceId = req.body?.expectedDeviceId;

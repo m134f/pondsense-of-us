@@ -21,7 +21,7 @@ test('planning HTTP, database isolation, history, stock locks and SMS deduplicat
   const origin = 'http://localhost:5173';
   const env = {
     ...process.env, PORT: '5001', MYSQL_HOST: '127.0.0.1', MYSQL_PORT: '3307', MYSQL_USER: 'root', MYSQL_PASSWORD: '', MYSQL_DATABASE: database,
-    MYSQL_SSL: 'false', SESSION_SECRET: secret, IPROG_SMS_API_TOKEN: '', NODE_ENV: 'test', FRONTEND_URL: origin,
+    MYSQL_SSL: 'false', SESSION_SECRET: secret, IPROG_SMS_API_TOKEN: '', NODE_ENV: 'test', FRONTEND_URL: origin, PONDSENSE_LEGACY_TEST: '1',
     ADMIN_USERNAME: 'staging-admin', ADMIN_PHONE: '+639199999999', ADMIN_PASSWORD: 'planning-test-password', ADMIN_PIN: 'planning-test-pin'
   };
   const prepare = spawn(process.execPath, ['--import', 'tsx', 'server/prepare-local-database.ts'], { windowsHide: true, env, stdio: 'inherit' });

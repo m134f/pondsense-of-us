@@ -10,7 +10,16 @@
 #include "device_secrets.h"
 #include "server_ca_cert.h"
 
-const char* API_URL = "https://pondsense-of-us.onrender.com/api/v1/sensors/measurements";
+#if defined(PONDSENSE_BENCH) && (!defined(PONDSENSE_HARDWARE_API) || !defined(PONDSENSE_HARDWARE_CA))
+#error "Bench testing requires a separate HTTPS API URL and trusted bench CA in device_secrets.h."
+#endif
+#ifndef PONDSENSE_HARDWARE_API
+#define PONDSENSE_HARDWARE_API "https://pondsense-of-us.onrender.com/api/v2/hardware"
+#endif
+#ifndef PONDSENSE_HARDWARE_CA
+#define PONDSENSE_HARDWARE_CA DEFAULT_API_CA_CERT
+#endif
+String hardwareChipId;
 
 constexpr int TURBIDITY_PIN = 34;
 constexpr int TEMPERATURE_PIN = 4;
@@ -121,8 +130,10 @@ void connectWifi() {
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 }
 
-String makeSample(int rawValue, float voltage, float turbidityNtu, float temperatureC, float phVoltage, float ph, time_t sampledAt) {
+String makeSample(int rawValue, float voltage, float turbidityNtu, float temperatureC, float phVoltage, float ph, time_t sampledAt, const String& assignment) {
   JsonDocument payload;
+  payload["chipId"] = hardwareChipId;
+  payload["assignmentId"] = assignment;
   payload["waterContactConfirmed"] = true;
   payload["waterContactSource"] = USE_WATER_SWITCH ? "switch" : "configured-submerged-installation";
   char readingId[40];
@@ -152,6 +163,31 @@ String makeSample(int rawValue, float voltage, float turbidityNtu, float tempera
   return body;
 }
 
+String syncAssignment() {
+  if (WiFi.status() != WL_CONNECTED || time(nullptr) < 1700000000) return "";
+  secureClient.setCACert(PONDSENSE_HARDWARE_CA);
+  HTTPClient http;
+  if (!http.begin(secureClient, String(PONDSENSE_HARDWARE_API) + "/assignment")) return "";
+  http.setConnectTimeout(15000);
+  http.setTimeout(HTTP_TIMEOUT_MS);
+  http.addHeader("Content-Type", "application/json");
+  http.addHeader("X-API-Key", SENSOR_API_KEY);
+  JsonDocument request;
+  request["chipId"] = hardwareChipId;
+  String body;
+  serializeJson(request, body);
+  const int status = http.POST(body);
+  JsonDocument response;
+  String id = "";
+  if (status == 200 && !deserializeJson(response, http.getString())) {
+    const char* value = response["assignmentId"] | "";
+    if (strlen(value) == 36) id = value;
+  }
+  http.end();
+  if (id.isEmpty()) showLine(3, status == 409 ? "Not assigned" : status == 401 ? "Key or ID invalid" : "Assignment unavail.");
+  return id;
+}
+
 bool sendTelemetry(const String& body) {
   if (WiFi.status() != WL_CONNECTED) {
     showLine(3, "WiFi offline");
@@ -162,9 +198,9 @@ bool sendTelemetry(const String& body) {
     showLine(3, "Waiting for clock");
     return false;
   }
-  secureClient.setCACert(DEFAULT_API_CA_CERT);
+  secureClient.setCACert(PONDSENSE_HARDWARE_CA);
   HTTPClient http;
-  if (!http.begin(secureClient, API_URL)) {
+  if (!http.begin(secureClient, String(PONDSENSE_HARDWARE_API) + "/readings")) {
     showLine(3, "Server URL error");
     return false;
   }
@@ -177,7 +213,6 @@ bool sendTelemetry(const String& body) {
   int statusCode = http.POST(body);
   String response = statusCode > 0 ? http.getString() : "";
   Serial.printf("Sensor upload HTTP status: %d (%s)\n", statusCode, http.errorToString(statusCode).c_str());
-  if (statusCode > 0 && statusCode != 201) Serial.println(response);
   JsonDocument confirmation;
   bool validResponse = deserializeJson(confirmation, response) == DeserializationError::Ok;
 
@@ -185,11 +220,20 @@ bool sendTelemetry(const String& body) {
       confirmation["assigned"] == true && confirmation["telemetryId"].as<int>() > 0) {
     Serial.printf("Server accepted device #%d, telemetry #%d\n",
       confirmation["deviceId"].as<int>(), confirmation["telemetryId"].as<int>());
+    JsonDocument sample;
+    if (!deserializeJson(sample, body)) {
+      const auto numberOrMissing = [](JsonVariantConst value) {
+        return value.isNull() ? String("--") : String(value.as<float>(), 2);
+      };
+      Serial.printf("Saved sample %s | pH %s | temperature %s C | turbidity %s NTU\n",
+        sample["sampledAt"] | "--", numberOrMissing(sample["ph"]).c_str(),
+        numberOrMissing(sample["temperatureC"]).c_str(), numberOrMissing(sample["turbidityNtu"]).c_str());
+    }
     showLine(3, "Updated device #" + String(confirmation["deviceId"].as<int>()));
   } else if (statusCode == 401) {
     showLine(3, "Server: Key invalid");
   } else if (statusCode == 409) {
-    showLine(3, "Server: Not assigned");
+    showLine(3, "Assignment changed");
   } else if (statusCode == HTTPC_ERROR_READ_TIMEOUT) {
     showLine(3, "Server: Timed out");
   } else {
@@ -202,6 +246,13 @@ bool sendTelemetry(const String& body) {
 
 void setup() {
   Serial.begin(115200);
+  char chip[13];
+  snprintf(chip, sizeof(chip), "%012llX", ESP.getEfuseMac() & 0xFFFFFFFFFFFFULL);
+  hardwareChipId = chip;
+  Serial.printf("ESP32 Hardware ID: %s\n", chip);
+#ifdef PONDSENSE_BENCH
+  Serial.println("Local bench firmware. Do not use with production credentials.");
+#endif
   // Dry-contact float switch at probe height: closed to GND only when submerged.
   if (USE_WATER_SWITCH) pinMode(WATER_SWITCH_PIN, INPUT_PULLUP);
   Serial.println("Automatic monitoring starts at power-on. Keep probes submerged; this mode cannot detect air. Optional D pauses, W resumes.");
@@ -236,6 +287,8 @@ void loop() {
   // One sample per upload cycle: LCD and payload use the same snapshot until the next cycle.
   if (lastSentAt != 0 && millis() - lastSentAt < SEND_INTERVAL_MS) { delay(50); return; }
   lastSentAt = millis();
+  // Never label an already-collected sample with an assignment fetched afterward.
+  const String assignment = syncAssignment();
   int rawValue = 0;
   float voltage = readTurbidityVoltage(rawValue);
   float turbidityNtu = turbidityFromCalibratedVoltage(voltage);
@@ -261,14 +314,13 @@ void loop() {
     : "T:" + String(temperatureC, 1) + "C";
   showLine(1, phText + " " + tempText);
   int estimatedNtu = roundf(constrain((1.0f - rawValue / 4095.0f) * 250.0f, 0.0f, 250.0f));
-  showLine(2, isnan(turbidityNtu) ? "Turb: ~" + String(estimatedNtu) + " NTU est" : "Turb: " + String(turbidityNtu, 2) + " NTU");
+  const String turbidityText = isnan(turbidityNtu) ? "~" + String(estimatedNtu) : String(turbidityNtu, 2);
+  showLine(2, "Turb: " + turbidityText + (isnan(turbidityNtu) ? " NTU est" : " NTU"));
 
-  String body = makeSample(rawValue, voltage, turbidityNtu, temperatureC, phVoltage, ph, sampledAt);
-  Serial.println("Sample displayed on LCD and queued for upload: " + body);
-  if (WiFi.status() == WL_CONNECTED) {
-    sendTelemetry(body);
-  } else {
-    showLine(3, "WiFi offline");
-  }
+  if (!assignment.isEmpty()) {
+    // This sketch has no persistent queue. A failed or rejected sample is not retried with a different assignment.
+    sendTelemetry(makeSample(rawValue, voltage, turbidityNtu, temperatureC, phVoltage, ph, sampledAt, assignment));
+  } else if (WiFi.status() != WL_CONNECTED) showLine(3, "WiFi offline");
+  else if (sampledAt < 1700000000) showLine(3, "Waiting for clock");
   delay(500);
 }
