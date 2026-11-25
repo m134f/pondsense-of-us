@@ -4,6 +4,7 @@ import { apiJson } from '../lib/api';
 import { activeSpecies, speciesId } from '../data/fish';
 import { AdminBadge, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
 import { parseTurbidityThresholds, type TurbidityAlertRule } from '../lib/turbidityAlert';
+import { TurbidityCalculator } from './TurbidityCalculator';
 
 type Fish = { id: string | number; name: string; validationPending?: boolean } & Record<string, unknown>;
 const ranges = [
@@ -88,6 +89,7 @@ function TurbidityProposalEditor() {
       </fieldset>
     </form>}
     {message && <p role={message.error ? 'alert' : 'status'} className="admin-notice" data-tone={message.error ? 'warning' : 'good'}>{message.text}</p>}
+    {rule && <TurbidityCalculator lang="en" rule={rule} />}
   </section>;
 }
 

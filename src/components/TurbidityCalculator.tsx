@@ -1,29 +1,16 @@
-import { useEffect, useId, useState } from 'react';
+import { useId, useState } from 'react';
 import { Calculator } from 'lucide-react';
-import { apiJson } from '../lib/api';
-import { classifyTurbidity, parseTurbidityThresholds, proposedTurbidityRule, turbidityAlertCopy, turbidityStatusLabel, type TurbidityAlertRule } from '../lib/turbidityAlert';
+import { classifyTurbidity, turbidityAlertCopy, turbidityStatusLabel, type TurbidityAlertRule } from '../lib/turbidityAlert';
 import { estimateTurbidity, turbidityReferenceRange, turbidityValidityLabel, turbidityVoltageRange } from '../lib/turbidityEstimate';
 
-export function TurbidityCalculator({ lang }: { lang: 'en' | 'tl' }) {
+export function TurbidityCalculator({ lang, rule }: { lang: 'en' | 'tl'; rule: TurbidityAlertRule }) {
   const [input, setInput] = useState('2.50');
-  const [isOpen, setIsOpen] = useState(false);
-  const [proposal, setProposal] = useState<TurbidityAlertRule | null>(null);
-  useEffect(() => {
-    if (!isOpen) return;
-    let current = true;
-    void apiJson<{ rule: TurbidityAlertRule }>('/api/turbidity-alert-rule').then(({ data }) => {
-      const thresholds = parseTurbidityThresholds(data?.rule);
-      if (current) setProposal(thresholds ? { ...thresholds, approval: 'pending' } : null);
-    });
-    return () => { current = false; };
-  }, [isOpen]);
   const id = useId();
   const tl = lang === 'tl';
   const result = estimateTurbidity(input === '' ? null : Number(input));
-  const previewRule = proposal ?? proposedTurbidityRule;
-  const preview = classifyTurbidity(result.ntu, result.validity, previewRule, 'preview');
+  const preview = classifyTurbidity(result.ntu, result.validity, rule, 'preview');
   const { min, max, step } = turbidityVoltageRange;
-  return <details className="refine-disclosure col-span-full min-w-0" onToggle={e => setIsOpen(e.currentTarget.open)}>
+  return <details className="refine-disclosure col-span-full min-w-0">
     <summary className="font-semibold"><Calculator size={18} className="mr-2 inline" aria-hidden="true" />
       {tl ? 'Voltage-to-NTU na kalkulador' : 'Voltage-to-NTU calculator'}
     </summary>
@@ -54,7 +41,6 @@ export function TurbidityCalculator({ lang }: { lang: 'en' | 'tl' }) {
           <p className="font-semibold">{tl ? 'Paunang preview' : 'Provisional preview'}: {turbidityStatusLabel(preview, tl)}</p>
           <p>{turbidityAlertCopy[preview][lang]}</p>
           <p className="mt-1 text-xs">{tl ? 'Hinihintay ang pag-apruba. Hindi pamantayan ng DENR o LLDA.' : 'Pending approval. Not a DENR or LLDA standard.'}</p>
-          {!proposal && <p className="text-xs">{tl ? 'Default na mungkahing thresholds.' : 'Default proposed thresholds.'}</p>}
         </div>}
       </div>
     </div>

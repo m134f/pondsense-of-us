@@ -26,12 +26,12 @@ async function main() {
       const latest = ['missing', 'unassigned', 'assigned-waiting'].includes(scenario) ? null : {
         id: 44, deviceId: 14, deviceName: 'Test ESP32', sampledAt: timestamp, recordedAt: timestamp,
         receivedAt: new Date().toISOString(), rawValue: fishComparison ? 1900 : 2200,
-        voltage: scenario === 'extrapolated' ? 1.757 : scenario === 'invalid-turbidity' ? 3.3 : 2.5,
+        voltage: ['extrapolated', 'stale'].includes(scenario) ? 1.602 : scenario === 'estimate-critical' ? 0.5 : scenario === 'invalid-turbidity' ? 3.3 : 2.5,
         ph: fishComparison ? 8.28 : scenario === 'normal' ? 7.2 : 5,
         temperatureC: fishComparison ? 26.1 : scenario === 'normal' ? 27 : 35,
         // The three-sensor firmware omits DO. A separate fixture exercises guidance for measured DO.
         dissolvedOxygen: scenario === 'alerts' ? 2.4 : null,
-        turbidityNtu: scenario === 'calibrated-safe' ? 50 : scenario === 'calibrated-warning' ? 134 : ['normal', 'fish-comparison', 'extrapolated', 'invalid-turbidity'].includes(scenario) ? null : 210
+        turbidityNtu: scenario === 'calibrated-safe' ? 50 : scenario === 'calibrated-warning' ? 134 : ['normal', 'fish-comparison', 'extrapolated', 'stale', 'estimate-critical', 'custom-rule', 'invalid-turbidity'].includes(scenario) ? null : 210
       };
       if (latest && offline) {
         latest.sampledAt = latest.recordedAt = latest.receivedAt = new Date(Date.now() - 90_000).toISOString();
@@ -40,7 +40,7 @@ async function main() {
         '/api/session': { user: { id: 499, fullName: 'Test Owner', role: 'farmer', mustChangePassword: false }, fishpenAssignment: pen },
         '/api/sensors/latest': { telemetry: latest, ...(shared ? { hardwareAssigned: scenario !== 'unassigned' } : {}) },
         '/api/sensors/trend': { readings: latest ? [latest] : [] },
-        '/api/turbidity-alert-rule': { rule: { warningFrom: 25, criticalAbove: 100, approval: 'pending' } },
+        '/api/turbidity-alert-rule': { rule: { warningFrom: scenario === 'custom-rule' ? 20 : 25, criticalAbove: 100, approval: 'pending' } },
         '/api/readings': { sessions: [] },
         '/api/recommendations': { recommendations: [{ parameter: 'ph', value: 4.8, source: 'manual', recordedAt: timestamp, state: 'critical', priority: 'URGENT', range: [6.5, 8.5], rule: 'test-fixture' }], reference: 'Application reference ranges' },
         '/api/recommendations/history': { history: [] }
@@ -98,10 +98,8 @@ async function main() {
       scenario = 'fish-comparison';
       await page.goto(url);
       await turbidity.getByText('~22.50 NTU', { exact: true }).waitFor();
-      await turbidity.getByText('GPIO34: 2.500 V', { exact: true }).waitFor();
-      await turbidity.getByText(/Estimated/).waitFor();
-      await turbidity.getByText('Uncalibrated', { exact: true }).waitFor();
-      await turbidity.getByText('Water quality: Not assessed', { exact: true }).waitFor();
+      await turbidity.getByText('Provisional: Safe', { exact: true }).waitFor();
+      assert.deepEqual(await turbidity.locator(':scope > *').allTextContents(), ['Turbidity', '~22.50 NTU', 'Provisional: Safe']);
       assert.equal(await turbidity.getByText(/^(Safe|Warning|Critical)$/).count(), 0);
       assert.equal(await comparison.getByRole('heading', { level: 3 }).count(), 0);
       await analyze.focus();
@@ -112,28 +110,7 @@ async function main() {
       await comparison.getByText(/Top fish are tied/).waitFor();
       await comparison.getByText('Measurements and ranges', { exact: true }).click();
       await comparison.getByText('Uncalibrated turbidity is excluded.', { exact: true }).waitFor();
-      const toggle = page.getByText('Voltage-to-NTU calculator', { exact: true });
-      const calculator = page.locator('details').filter({ has: toggle });
-      await toggle.click();
-      const voltage = calculator.getByRole('spinbutton', { name: 'GPIO34 voltage (V)' });
-      const slider = calculator.getByRole('slider', { name: 'GPIO34 voltage slider' });
-      await voltage.fill('2.09');
-      await calculator.getByText('40.44 NTU', { exact: true }).waitFor();
-      await calculator.getByText('Extrapolated', { exact: true }).waitFor();
-      await calculator.getByText('Provisional preview: Warning', { exact: true }).waitFor();
-      await calculator.getByText('Observe fish behavior, water clarity, and dissolved oxygen.', { exact: true }).waitFor();
-      await slider.press('ArrowRight');
-      assert.equal(await voltage.inputValue(), '2.10');
-      await calculator.getByText('40.00 NTU', { exact: true }).waitFor();
-      await slider.press('Home');
-      await calculator.getByText('Provisional preview: Critical', { exact: true }).waitFor();
-      await voltage.fill('2.5');
-      await calculator.getByText('Provisional preview: Safe', { exact: true }).waitFor();
-      await slider.press('End');
-      await calculator.getByText('Invalid result', { exact: true }).waitFor();
-      await calculator.getByText('The formula returns a negative NTU.', { exact: true }).waitFor();
-      assert.equal(await calculator.getByText(/^(Safe|Warning|Critical)$/).count(), 0);
-      assert.equal(await calculator.getByText(/Provisional preview:/).count(), 0);
+      assert.equal(await page.getByText('Voltage-to-NTU calculator', { exact: true }).count(), 0);
       await noOverflow();
     }
     await page.getByRole('button', { name: 'Filipino', exact: true }).click();
@@ -141,36 +118,47 @@ async function main() {
     await translated.getByRole('button', { name: 'Suriin', exact: true }).waitFor();
     await translated.getByText(/Tabla ang mga nanguna/).waitFor();
     await page.locator('.monitor-metric').filter({ has: page.getByRole('heading', { name: 'Labo ng tubig', exact: true }) })
-      .getByText('Hindi pa calibrated', { exact: true }).waitFor();
+      .getByText('Paunang: Ligtas', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'English', exact: true }).click();
     scenario = 'extrapolated';
     await page.goto(url);
-    await turbidity.getByText('~55.01 NTU', { exact: true }).waitFor();
-    await turbidity.getByText('Extrapolated', { exact: true }).waitFor();
+    await turbidity.getByText('~61.79 NTU', { exact: true }).waitFor();
+    await turbidity.getByText('Provisional: Warning', { exact: true }).waitFor();
+    assert.equal(await turbidity.locator('strong').getAttribute('title'), 'Extrapolated · Live');
+    scenario = 'estimate-critical';
+    await page.goto(url);
+    await turbidity.getByText('Provisional: Critical', { exact: true }).waitFor();
+    assert.equal(await section.getByRole('article', { name: 'Turbidity' }).count(), 0);
+    scenario = 'custom-rule';
+    await page.goto(url);
+    await turbidity.getByText('~22.50 NTU', { exact: true }).waitFor();
+    await turbidity.getByText('Provisional: Warning', { exact: true }).waitFor();
     scenario = 'invalid-turbidity';
     await page.goto(url);
     await turbidity.getByText('Invalid result', { exact: true }).waitFor();
-    assert.equal(await turbidity.getByText(/^(Safe|Warning|Critical)$/).count(), 0);
+    assert.equal(await turbidity.getByText(/^Provisional:/).count(), 0);
     scenario = 'calibrated-safe';
     await page.goto(url);
     await turbidity.getByText('50.00 NTU', { exact: true }).waitFor();
-    await turbidity.getByText('Water quality: Not assessed', { exact: true }).waitFor();
+    await turbidity.getByText('Provisional: Warning', { exact: true }).waitFor();
     scenario = 'calibrated-warning';
     await page.goto(url);
     await turbidity.getByText('134.00 NTU', { exact: true }).waitFor();
-    await turbidity.getByText('Water quality: Not assessed', { exact: true }).waitFor();
+    await turbidity.getByText('Provisional: Critical', { exact: true }).waitFor();
     scenario = 'alerts';
     await page.goto(url);
-    await turbidity.getByText('Water quality: Not assessed', { exact: true }).waitFor();
+    await turbidity.getByText('Provisional: Critical', { exact: true }).waitFor();
     await section.getByText('Turbidity: Not assessed', { exact: true }).waitFor();
     for (scenario of ['stale', 'missing']) {
       await page.goto(url);
       await section.getByText('No live sensor recommendation is available.').waitFor();
       assert.equal(await section.getByRole('article').count(), 0);
       if (scenario === 'stale') {
+        assert.equal(await turbidity.locator('strong').getAttribute('title'), 'Extrapolated · Stale');
+        await turbidity.getByText('Provisional: Warning', { exact: true }).waitFor();
         await comparison.getByText('Waiting for fresh sensor readings.').waitFor();
         assert.equal(await analyze.isEnabled(), false);
-      }
+      } else assert.equal(await turbidity.getByText(/^Provisional:/).count(), 0);
     }
     const overview = page.getByRole('region', { name: 'Current measurements' });
     const deviceStatus = overview.locator('.monitor-summary-card').filter({ hasText: 'Device Status' });

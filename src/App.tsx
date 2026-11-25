@@ -1,8 +1,7 @@
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { sensorTurbidityValue, compareSensorSamples, sensorConnectionState } from './lib/sensorDisplay';
 import { estimateTurbidity, turbidityValidityLabel } from './lib/turbidityEstimate';
-import { turbidityStatusLabel } from './lib/turbidityAlert';
-import { TurbidityCalculator } from './components/TurbidityCalculator';
+import { classifyTurbidity, parseTurbidityThresholds, turbidityStatusLabel, type TurbidityAlertRule } from './lib/turbidityAlert';
 import { SessionLoading } from './components/SessionLoading';
 import { apiErrorMessage } from './lib/apiError';
 import { OwnerLogin, OwnerPasswordChange, OwnerPasswordForm, sessionOwner, type OwnerSession } from './components/OwnerAuthentication';
@@ -1365,7 +1364,6 @@ function AnalysisPage({
         </aside>
       ) : null}
       {showManual && manualResult && <ManualRecommendedActions key={manualResult.id} values={manualResult.values} lang={lang} />}
-      <TurbidityCalculator lang={lang} />
       {!showManual && <WaterQualityTrends readings={sensorTrend} state={trendState} now={now} lang={lang} onRetry={retryTrend}
         connection={sensorState === 'loading' ? 'checking' : sensorState === 'error' ? 'unverified' : !sensorTelemetry ? 'no-upload' : sensorConnectionState(sensorTelemetry, now)} />}
     </main>
@@ -1449,6 +1447,20 @@ function SensorFishComparison({ telemetry, live, fish, lang }: { telemetry: Sens
 }
 
 function LiveMonitoringOverview({ telemetry, requestState, hardwareAssigned, lang, now, onManual }: { telemetry: SensorTelemetry | null; requestState: RequestState; hardwareAssigned?: boolean; lang: Lang; now: number; onManual: () => void }) {
+  const [turbidityProposal, setTurbidityProposal] = useState<TurbidityAlertRule | null>(null);
+  useEffect(() => {
+    let request: AbortController | undefined;
+    const refresh = async () => {
+      request?.abort();
+      const controller = request = new AbortController();
+      const { data } = await apiJson<{ rule: TurbidityAlertRule }>('/api/turbidity-alert-rule', { signal: controller.signal });
+      const thresholds = parseTurbidityThresholds(data?.rule);
+      if (!controller.signal.aborted) setTurbidityProposal(thresholds ? { ...thresholds, approval: 'pending' } : null);
+    };
+    void refresh();
+    window.addEventListener('focus', refresh);
+    return () => { request?.abort(); window.removeEventListener('focus', refresh); };
+  }, []);
   const tl = lang === 'tl';
   const connection = sensorConnectionState(telemetry, now);
   const live = connection === 'live';
@@ -1462,11 +1474,14 @@ function LiveMonitoringOverview({ telemetry, requestState, hardwareAssigned, lan
   const assessment = live && requestState === 'ready' ? (partialSafe ? (tl ? 'Pasok ang mga nasukat' : 'Measured values in range') : statusText(measured, lang)) : (tl ? 'Walang live na pagtatasa' : 'No live assessment');
   const hasAssessment = live && requestState === 'ready' && measured !== 'partial';
   const turbidityEstimate = estimateTurbidity(telemetry?.voltage);
+  const turbidityEstimated = telemetry?.turbidityNtu == null;
+  const turbidityValue = telemetry?.turbidityNtu ?? turbidityEstimate.ntu;
+  const turbidityValidity = turbidityEstimated ? turbidityEstimate.validity : chartValue('turbidity', turbidityValue) === null ? 'invalid' : 'verified';
+  const turbidityPreview = classifyTurbidity(turbidityValue, turbidityValidity, turbidityProposal, 'preview');
   const cards = [
     { label: 'pH', key: 'ph', value: telemetry?.ph ?? null, unit: '', decimals: 2, Icon: Droplets },
     { label: tl ? 'Temperatura' : 'Temperature', key: 'temperature', value: telemetry?.temperatureC ?? null, unit: ' °C', decimals: 1, Icon: Thermometer },
     { label: 'Dissolved oxygen', key: 'dissolvedOxygen', value: telemetry?.dissolvedOxygen ?? null, unit: ' mg/L', decimals: 1, Icon: Droplets },
-    { label: tl ? 'Labo ng tubig' : 'Turbidity', key: 'turbidity', value: telemetry?.turbidityNtu ?? turbidityEstimate.ntu, unit: ' NTU', decimals: 2, Icon: Droplets, estimated: telemetry?.turbidityNtu === null && turbidityEstimate.validity !== 'missing' },
   ] as const;
   const tone = live && requestState === 'ready' && measured !== 'partial' ? measured : 'neutral';
   const ConditionIcon = tone === 'safe' ? Activity : tone === 'neutral' ? Activity : AlertTriangle;
@@ -1479,16 +1494,21 @@ function LiveMonitoringOverview({ telemetry, requestState, hardwareAssigned, lan
     <div className="monitor-measurements">
       {cards.map(card => {
         const { label, key, value, unit, decimals, Icon } = card;
-        const estimated = 'estimated' in card && card.estimated;
-        const valid = typeof value === 'number' && Number.isFinite(value) && (estimated || chartValue(key, value) !== null);
-        const status = valid && !estimated && hasAssessment ? statusFor(key, value) : null;
-        return <article className="monitor-metric" key={key}><h2><Icon size={19} aria-hidden="true" />{label}</h2><strong>{!valid ? '—' : `${estimated ? '~' : ''}${value.toFixed(decimals)}${unit}`}</strong>
-          {estimated ? <span className={measurementBadge('partial')}>{turbidityValidityLabel(turbidityEstimate.validity, tl)}</span>
-            : status && <span className={measurementBadge(status)}>{shortStatusText(status, lang)}</span>}
-          {key === 'turbidity' && turbidityEstimate.voltage !== null && <p>GPIO34: {turbidityEstimate.voltage.toFixed(3)} V</p>}
-          {key === 'turbidity' && !status && <p>{tl ? 'Kalagayan' : 'Water quality'}: {turbidityStatusLabel(null, tl)}</p>}
-          <p>{estimated ? (valid ? `${tl ? 'Tantiya' : 'Estimated'} · ${freshness}` : freshness) : value === null ? (tl ? 'Walang sukat' : 'Missing') : !valid ? (tl ? 'Hindi wastong sukat' : 'Invalid reading') : freshness}</p></article>;
+        const valid = typeof value === 'number' && chartValue(key, value) !== null;
+        const status = valid && hasAssessment ? statusFor(key, value) : null;
+        return <article className="monitor-metric" key={key}><h2><Icon size={19} aria-hidden="true" />{label}</h2><strong>{!valid ? '—' : `${value.toFixed(decimals)}${unit}`}</strong>
+          {status && <span className={measurementBadge(status)}>{shortStatusText(status, lang)}</span>}
+          <p>{value === null ? (tl ? 'Walang sukat' : 'Missing') : !valid ? (tl ? 'Hindi wastong sukat' : 'Invalid reading') : freshness}</p></article>;
       })}
+      <article className="monitor-metric">
+        <h2><Droplets size={19} aria-hidden="true" />{tl ? 'Labo ng tubig' : 'Turbidity'}</h2>
+        <strong title={turbidityValidity === 'verified' ? freshness : `${turbidityValidityLabel(turbidityValidity, tl)} · ${freshness}`}>
+          {turbidityValidity === 'invalid' || turbidityValue === null
+            ? turbidityValidityLabel(turbidityValidity === 'invalid' ? 'invalid' : 'missing', tl)
+            : `${turbidityEstimated ? '~' : ''}${turbidityValue.toFixed(2)} NTU`}
+        </strong>
+        {turbidityPreview && <span className={measurementBadge(turbidityPreview)}>{tl ? 'Paunang' : 'Provisional'}: {turbidityStatusLabel(turbidityPreview, tl)}</span>}
+      </article>
       <article className={`monitor-metric monitor-priority ${hasAssessment ? '' : 'monitor-priority-neutral'}`}><h2>{hasAssessment ? <AlertTriangle size={19} aria-hidden="true" /> : <Activity size={19} aria-hidden="true" />}{tl ? 'Susunod na Hakbang' : 'Next Step'}</h2><p>{!hasAssessment ? (tl ? 'Walang kasalukuyang sukat mula sa sensor. Itala ang manu-manong sukat kung mayroon.' : 'No current sensor assessment. Record a manual measurement when available.') : tl ? 'Tingnan ang gabay para sa mga nasukat.' : 'Review the guidance for your measured values.'}</p>{hasAssessment ? <a href="#farmer-recommended-actions">{tl ? 'Tingnan ang mga hakbang' : 'View sensor recommendations'}</a> : <button className="soft-button mt-2" onClick={onManual}>{tl ? 'Manu-manong pagsusuri' : 'Open manual test'}</button>}</article>
     </div>
     <p className="text-sm text-slate-600">{tl ? 'Ang nawawalang sukat ay hindi zero. Hindi sapat ang bahagyang sukat para masabing ligtas ang buong tubig.' : 'Missing readings are not zero. Partial readings do not confirm overall water safety.'}</p>
