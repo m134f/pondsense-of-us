@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { apiJson } from '../lib/api';
-import { showSuccessToast } from '../lib/actionAlerts';
+import { showErrorToast, showSuccessToast, showWarningToast } from '../lib/actionAlerts';
 import { farmerBrand } from '../lib/farmerBrand';
 import type { AppUser } from '../lib/storage';
 
@@ -50,11 +50,22 @@ export function OwnerPasswordForm({ onDone, lang = 'en', temporary = false }: { 
     { value: confirm, set: setConfirm, label: tl ? 'Ulitin ang bagong password' : 'Confirm new password', auto: 'new-password' },
   ];
   return <form className="mt-3 space-y-4" onSubmit={async e => {
-    e.preventDefault(); if (password !== confirm) return setError(tl ? 'Hindi magkatugma ang password.' : 'Passwords do not match.');
+    e.preventDefault();
+    if (busy) return;
+    if (password !== confirm) {
+      const text = tl ? 'Hindi magkatugma ang password.' : 'Passwords do not match.';
+      setError(text);
+      void showWarningToast(text);
+      return;
+    }
     setBusy(true); setError('');
     const result = await apiJson<{ changed: boolean }>('/api/owner/password', { method: 'POST', body: JSON.stringify({ currentPassword: current, newPassword: password }) });
     setBusy(false);
-    if (!result.data?.changed) setError(result.error || (tl ? 'Hindi napalitan ang password.' : 'Password could not be changed.'));
+    if (!result.data?.changed) {
+      const text = tl ? 'Hindi nakumpirma ang pagpapalit ng password.' : 'Password change not confirmed.';
+      setError(result.error || text);
+      void showErrorToast(text);
+    }
     else {
       setCurrent(''); setPassword(''); setConfirm('');
       if (!temporary) void showSuccessToast(tl ? 'Napalitan na ang password.' : 'Password changed.');

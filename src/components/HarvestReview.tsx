@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { CartesianGrid, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts';
 import { apiJson } from '../lib/api';
+import { showErrorToast, showSuccessToast, showWarningToast } from '../lib/actionAlerts';
 import { parameters, parameterLabels } from '../lib/recommendations';
 import { recentMortality } from '../lib/harvest';
 import { RecommendationDetails, type WaterContext } from './RecommendedActions';
@@ -19,13 +20,24 @@ export function HarvestReview({ batch, lang }: { batch: { id: number; actualHarv
   const refresh = async () => { const r = await apiJson<Review>(`/api/harvests/${batch.id}/review`); if (r.data) setReview(r.data); else { setReview(null); setMessage(tl ? 'Hindi makuha ang tala. Subukang muli.' : r.error || ''); } };
   useEffect(() => { if (!open) return; void refresh(); const timer = setInterval(refresh, 10000); return () => clearInterval(timer); }, [open, batch.id, lang]);
   const save = async (kind: 'observations' | 'water') => {
+    if (busy) return;
     setBusy(true); setMessage('');
     const r = await apiJson<{ saved: boolean; historySaved?: boolean }>(`/api/harvests/${batch.id}/${kind}`, { method: 'POST', body: JSON.stringify(kind === 'observations' ? form : manual) });
     setBusy(false);
-    setMessage(r.error ? (tl ? 'Hindi na-save. Suriin ang petsa at sukat, at subukang muli.' : r.error) : r.data?.historySaved === false
-      ? (tl ? 'Nai-save ang sukat. Hindi magamit ang history ng payo ngayon; huwag uliting isumite.' : 'Measurement saved. Advice history is temporarily unavailable; do not resubmit.')
-      : tl ? 'Nai-save ang tala.' : 'Record saved.');
-    if (!r.error) { setForm({ date: today, category: 'normal', notes: '' }); setManual({ ...manual, value: '' }); void refresh(); }
+    if (r.error || !r.data?.saved) {
+      const text = tl ? 'Hindi nakumpirma ang pag-save.' : 'Save not confirmed.';
+      setMessage(r.error && !tl ? r.error : text);
+      void showErrorToast(text);
+      return;
+    }
+    if (r.data.historySaved === false) {
+      const text = tl ? 'Nai-save ang sukat. Hindi magamit ang history ng payo ngayon; huwag uliting isumite.' : 'Measurement saved. Advice history is temporarily unavailable; do not resubmit.';
+      setMessage(text);
+      void showWarningToast(text);
+    } else {
+      void showSuccessToast(kind === 'water' ? (tl ? 'Nai-save ang sukat.' : 'Measurement saved.') : (tl ? 'Nai-save ang obserbasyon.' : 'Observation saved.'));
+    }
+    setForm({ date: today, category: 'normal', notes: '' }); setManual({ ...manual, value: '' }); void refresh();
   };
   const sampled = [...batch.samples].sort((a, b) => a.sampledAt.localeCompare(b.sampledAt) || a.id - b.id).map(s => ({ ...s, averageWeightG: Number(s.averageWeightG) }));
   const latest = sampled.at(-1);

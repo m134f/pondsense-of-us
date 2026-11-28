@@ -1,7 +1,7 @@
 import { useState, type FormEvent } from 'react';
 import { Save } from 'lucide-react';
 import { apiJson } from '../lib/api';
-import { confirmAction } from '../lib/actionAlerts';
+import { confirmAction, showErrorToast, showSuccessToast } from '../lib/actionAlerts';
 import { AdminLoad, useAdminResource } from './AdminControls';
 
 type Contact = { id: number; name: string; loginPhone: string | null; ownerAlertPhone: string | null; ownerPhone: string | null; caretakerPhone: string | null; caretakerEnabled: boolean };
@@ -39,9 +39,13 @@ function RecipientsForm({ saved, url }: { saved: Contact; url: string }) {
       setNotice(null);
       const { data, error } = await apiJson<{ fishpen: Contact }>(url, { method: 'PUT',
         body: JSON.stringify({ fishpenId: contact.id, ownerAlertPhone: ownerPhone.trim() || null, caretakerPhone: phone.trim() || null, caretakerEnabled, consentConfirmed: consent }) });
-      if (!data?.fishpen) { setNotice({ text: error || 'Unable to save SMS recipients.', error: true }); return; }
+      if (!data?.fishpen) {
+        setNotice({ text: error || 'Unable to save SMS recipients.', error: true });
+        void showErrorToast('SMS recipient save not confirmed.');
+        return;
+      }
       setContact(data.fishpen); setOwnerPhone(data.fishpen.ownerAlertPhone ?? ''); setPhone(data.fishpen.caretakerPhone ?? ''); setEnabled(data.fishpen.caretakerEnabled); setConsent(false);
-      setNotice({ text: 'SMS recipients saved. No message was sent.' });
+      void showSuccessToast('SMS recipients saved. No message was sent.');
     } finally { setBusy(false); }
   }
 

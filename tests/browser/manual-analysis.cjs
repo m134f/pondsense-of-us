@@ -68,8 +68,13 @@ async function main() {
     await page.locator('form').filter({ hasText: 'Manual water analysis' }).evaluate(form => { form.requestSubmit(); form.requestSubmit(); });
     await dismissAlert('Save not confirmed', 'Could not confirm the save. Please try again.', button('Confirm and analyze'));
     await page.getByText('Could not confirm the save. Please try again.', { exact: true }).waitFor();
+    const savedToast = page.locator('.swal2-toast.swal2-icon-success').getByText('Manual test saved to Session History.', { exact: true });
+    assert.equal(await savedToast.count(), 0);
     assert.equal(posts.length, 1);
     await button('Confirm and analyze').click();
+    await savedToast.waitFor();
+    const toastRect = await savedToast.boundingBox();
+    assert.ok(toastRect.x >= 0 && toastRect.x + toastRect.width <= page.viewportSize().width);
     await page.getByText('2 of 4 measured').waitFor();
     assert.deepEqual(posts[0], posts[1]);
     assert.equal(saved.size, 1);

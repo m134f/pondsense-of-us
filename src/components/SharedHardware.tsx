@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { KeyRound, Link2, Plus, Unlink2 } from 'lucide-react';
 import { apiJson } from '../lib/api';
-import { confirmAction } from '../lib/actionAlerts';
+import { confirmAction, showErrorToast, showSuccessToast } from '../lib/actionAlerts';
 import { AdminBadge, AdminDetails, AdminHeading, AdminLoad, AdminRefresh, AdminTable, DeviceKeyOnce, adminTime, useAdminResource } from './AdminControls';
 import { DeviceRecords } from './AdminRecords';
 
@@ -36,8 +36,16 @@ export function SharedHardware() {
       const result = await apiJson<IssuedKey>(`/api/admin/hardware/${row.id}/${action}`, {
         method: 'POST', body: JSON.stringify(unassign ? { assignmentId: row.assignmentId } : {})
       });
-      if (result.data?.deviceKey) setKey(result.data);
-      else setMessage(result.error || (unassign ? 'Hardware unassigned.' : 'Key replacement not confirmed.'));
+      if (result.error || (!unassign && !result.data?.deviceKey)) {
+        const text = unassign ? 'Hardware unassignment not confirmed.' : 'Key replacement not confirmed.';
+        setMessage(result.error || text);
+        void showErrorToast(text);
+      } else if (result.data?.deviceKey) {
+        setKey(result.data);
+        void showSuccessToast('Hardware key replaced.');
+      } else {
+        void showSuccessToast('Hardware unassigned.');
+      }
       void resource.refresh();
     } finally { setBusy(false); }
   }
@@ -67,11 +75,12 @@ export function SharedHardware() {
         ] }))} />}
     </section>
     {registering && <Registration allowAdoption={resource.data?.uploadsEnabled === true} close={() => setRegistering(false)} onSave={issued => {
-      setRegistering(false); if (issued.deviceKey) setKey(issued); else setMessage('Existing board registered. Its hardware key is unchanged.');
+      setRegistering(false); if (issued.deviceKey) setKey(issued);
+      void showSuccessToast(issued.deviceKey ? 'Hardware registered.' : 'Existing board registered. Its key is unchanged.');
       void resource.refresh();
     }} />}
     {assigning && <Assignment row={assigning} close={() => setAssigning(null)} onSave={() => {
-      setAssigning(null); setMessage(resource.data?.uploadsEnabled === false
+      setAssigning(null); void showSuccessToast(resource.data?.uploadsEnabled === false
         ? 'Assignment saved. Shared uploads are paused.' : 'Hardware assigned. Waiting for its first upload at this fishpen.'); void resource.refresh();
     }} />}
     {history && <AdminDetails title={history.name} close={() => setHistory(null)}><DeviceRecords deviceId={history.credentialDeviceId} /></AdminDetails>}
@@ -93,7 +102,11 @@ function Registration({ allowAdoption, close, onSave }: { allowAdoption: boolean
         name, chipId: chip.trim(), legacyDeviceId: legacy ? Number(legacy) : undefined, verifiedPhysicalBoard: verified
       }) });
       setBusy(false);
-      if (result.data) onSave(result.data); else setError(result.error || 'Registration not confirmed.');
+      if (result.data?.hardwareId) onSave(result.data);
+      else {
+        setError(result.error || 'Registration not confirmed.');
+        void showErrorToast('Hardware registration not confirmed.');
+      }
     }}>
       <label>Hardware name<input required maxLength={100} disabled={busy} value={name} onChange={event => setName(event.target.value)} /></label>
       <label>ESP32 Hardware ID<input required maxLength={12} pattern="[0-9A-Fa-f]{1,12}" autoComplete="off" spellCheck={false} disabled={busy} value={chip} onChange={event => setChip(event.target.value)} /></label>
@@ -122,7 +135,8 @@ function Assignment({ row, close, onSave }: { row: HardwareRow; close: () => voi
         ownerId: pen.ownerId, fishpenId: pen.fishpenId, confirmedMoved: confirmed
       }) });
       setBusy(false);
-      if (!result.error) onSave(); else setError(result.error);
+      if (!result.error) onSave();
+      else { setError(result.error); void showErrorToast('Hardware assignment not confirmed.'); }
     }}>
       <label>Farmer and fishpen<select required disabled={busy || !targets.data} value={selected} onChange={event => { setSelected(event.target.value); setConfirmed(false); }}>
         <option value="">Select fishpen</option>

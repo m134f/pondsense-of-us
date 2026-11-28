@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Save } from 'lucide-react';
 import { apiJson } from '../lib/api';
+import { showErrorToast, showSuccessToast } from '../lib/actionAlerts';
 import { AdminLoad, useAdminResource } from './AdminControls';
 
 type Data = { owners: { id: number; name: string; fishpenId: number | null }[]; fishpens: { id: number; name: string; ownerId: number; deviceId: number | null }[]; devices: { id: number; name: string; ownerId: number }[] };
@@ -24,8 +25,12 @@ export function AdminFishpenAssignments({ onSaved }: { onSaved: () => void }) {
       if (!r.error) {
         // Do not leave "create" selected after a successful save.
         setOwner(''); choosePen(''); onSaved(); await resource.refresh();
+        void showSuccessToast('Fishpen assignment saved.');
+      } else {
+        setMessage({ text: r.error, error: true });
+        void showErrorToast('Fishpen assignment not confirmed.');
       }
-      setMessage({ text: r.error || 'Fishpen assignment saved.', error: !!r.error }); setBusy(false);
+      setBusy(false);
     }}>
       <fieldset className="admin-form-grid" disabled={!data || busy || !!resource.error}>
         <label>Farmer<select aria-label="Farmer" required value={owner} onChange={e => { setOwner(e.target.value); const row = data?.owners.find(item => String(item.id) === e.target.value); choosePen(row?.fishpenId ? String(row.fishpenId) : ''); }}><option value="">Choose farmer</option>{data?.owners.map(row => <option key={row.id} value={row.id}>{row.name}{!row.fishpenId ? ' (no assignment)' : ''}</option>)}</select></label>

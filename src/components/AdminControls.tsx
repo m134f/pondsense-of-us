@@ -1,6 +1,7 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
 import { Copy, Eye, EyeOff, RefreshCw, X } from 'lucide-react';
 import { apiJson } from '../lib/api';
+import { dismissActionToast } from '../lib/actionAlerts';
 
 export function useAdminResource<T>(url: string, interval = 0) {
   const [state, setState] = useState<{ data: T | null; error: string | null; busy: boolean }>({ data: null, error: null, busy: true });
@@ -47,11 +48,14 @@ export function AdminTable({ label, headings, rows, empty }: { label: string; he
 
 export function AdminDetails({ title, close, children, locked = false }: { title: string; close: () => void; children: ReactNode; locked?: boolean }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  useEffect(() => {
+  useLayoutEffect(() => {
     const node = dialog.current;
     const opener = document.activeElement;
     node?.showModal();
-    return () => { node?.close(); if (opener instanceof HTMLElement && opener.isConnected) opener.focus(); };
+    return () => {
+      if (node) { dismissActionToast(node); node.close(); }
+      if (opener instanceof HTMLElement && opener.isConnected) opener.focus();
+    };
   }, []);
   return <dialog ref={dialog} className="admin-dialog" aria-label={title} onCancel={event => { event.preventDefault(); if (!locked) close(); }}>
     <header><h2>{title}</h2><button type="button" className="soft-button admin-icon-button" onClick={close} disabled={locked} aria-label="Close" title="Close" autoFocus><X size={17} aria-hidden="true" /></button></header>

@@ -132,6 +132,7 @@ async function main() {
     await balance('Remaining after save', '60');
     await button('Save Record').click();
     await confirm('Save this partial harvest?', 'Save harvest');
+    await page.locator('.swal2-toast.swal2-icon-success').getByText('Partial harvest saved.', { exact: true }).waitFor();
     await heading('Harvest Record Saved!').waitFor();
     assert.equal(writes.at(-1).body.confirmComplete, false);
     assert.equal(writes.at(-1).body.fishCount, 40);
@@ -151,7 +152,7 @@ async function main() {
     await balance('Remaining after save', '55');
     await button('Save Record').click();
     await confirm('Save this fish death record?', 'Save fish deaths');
-    await page.getByText('Record saved.', { exact: true }).waitFor();
+    await page.locator('.swal2-toast.swal2-icon-success').getByText('Fish death record saved.', { exact: true }).waitFor();
     await balance('Available from records', '55');
     assert.match(writes.at(-1).path, /\/mortalities$/);
     await button('Cancel').click();
@@ -170,6 +171,7 @@ async function main() {
     assert.equal(writes.length, 5);
     await button('Save Record').click();
     await confirm('Save harvest and close this fish group?', 'Save and close group');
+    await page.locator('.swal2-toast.swal2-icon-success').getByText('Harvest complete. Fish group closed.', { exact: true }).waitFor();
     await heading('Harvest Record Saved!').waitFor();
     assert.equal(writes.at(-1).body.confirmComplete, true);
     await button('View Harvest Records').click();
@@ -186,7 +188,7 @@ async function main() {
     assert.equal(writes.length, 6);
     await button('Delete fish group').click();
     await confirm(remove, 'Delete fish group');
-    await page.getByText('Record deleted.', { exact: true }).waitFor();
+    await page.locator('.swal2-toast.swal2-icon-success').getByText('Fish group deleted.', { exact: true }).waitFor();
     assert.equal(writes.length, 7);
     assert.equal(writes.at(-1).method, 'DELETE');
     await page.goto(new URL('/profile', process.env.PONDSENSE_BROWSER_URL || 'http://127.0.0.1:5177').href);

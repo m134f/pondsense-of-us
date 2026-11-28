@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Eye, KeyRound, Trash2 } from 'lucide-react';
 import { apiJson } from '../lib/api';
-import { confirmAction, showSuccessToast } from '../lib/actionAlerts';
+import { confirmAction, showErrorToast, showSuccessToast } from '../lib/actionAlerts';
 import { ProvisionOwner } from './ProvisionOwner';
 import { FarmerRecords } from './AdminRecords';
 import { AdminSmsRecipients } from './AdminSmsRecipients';
@@ -38,8 +38,13 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
       })) return;
       setMessage(null);
       const r = await apiJson(`/api/admin/users/${row.id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
-      if (!r.error) await users.refresh();
-      setMessage({ text: r.error || `Account ${suspend ? 'suspended' : 'reactivated'}.`, error: !!r.error });
+      if (r.error) {
+        setMessage({ text: r.error, error: true });
+        void showErrorToast('Account status change not confirmed.');
+      } else {
+        await users.refresh();
+        void showSuccessToast(suspend ? 'Farmer account suspended.' : 'Farmer account reactivated.');
+      }
     } finally { setBusy(false); }
   };
   const resetPassword = async (row: AdminAccount, source: HTMLElement) => {
@@ -51,8 +56,13 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
         label: 'Reset password', danger: true })) return;
       setMessage(null); setPassword(null);
       const r = await apiJson<{ temporaryPassword: string }>(`/api/admin/owners/${row.id}/reset-password`, { method: 'POST', body: '{}' });
-      if (r.data?.temporaryPassword) { setSelected(null); setPassword({ name: row.fullName, value: r.data.temporaryPassword }); }
-      else setMessage({ text: r.error || 'Could not confirm password reset.', error: true });
+      if (r.data?.temporaryPassword) {
+        setSelected(null); setPassword({ name: row.fullName, value: r.data.temporaryPassword });
+        void showSuccessToast('Farmer password reset.');
+      } else {
+        setMessage({ text: r.error || 'Could not confirm password reset.', error: true });
+        void showErrorToast('Password reset not confirmed.');
+      }
     } finally { setBusy(false); }
   };
   const deleteFarmer = async (row: AdminAccount) => {
@@ -64,7 +74,10 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
       setConfirmation(null);
       await users.refresh();
       void showSuccessToast('Farmer account deleted.');
-    } else setMessage({ text: r.error || 'Could not confirm account deletion.', error: true });
+    } else {
+      setMessage({ text: r.error || 'Could not confirm account deletion.', error: true });
+      void showErrorToast('Account deletion not confirmed.');
+    }
     setBusy(false);
   };
   const cancelDelete = () => { setConfirmation(null); setMessage(null); };

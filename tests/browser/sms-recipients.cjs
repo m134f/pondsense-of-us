@@ -84,7 +84,7 @@ async function main() {
       assert.equal(writes.length, width === 1440 ? 0 : 1);
       await save.click();
       await confirmation.getByRole('button', { name: 'Save recipients' }).click();
-      await dialog.getByText('SMS recipients saved. No message was sent.').waitFor();
+      await dialog.locator('.swal2-toast.swal2-icon-success').getByText('SMS recipients saved. No message was sent.').waitFor();
       assert.equal(await noOverflow(dialog), true);
 
       await page.goto(new URL('/profile', base).href);
@@ -104,7 +104,8 @@ async function main() {
         await page.getByLabel('Confirm new password', { exact: true }).fill('fixture-new-pass');
         await page.getByRole('button', { name: 'Save new password' }).click();
         await page.getByRole('alert').filter({ hasText: 'Current password is incorrect.' }).waitFor();
-        assert.equal(await page.locator('.swal2-toast').count(), 0);
+        await page.locator('.swal2-toast.swal2-icon-error').getByText('Password change not confirmed.').waitFor();
+        assert.equal(await page.locator('.swal2-toast.swal2-icon-success').count(), 0);
         await page.getByRole('button', { name: 'Save new password' }).click();
         await page.locator('.swal2-toast').getByText('Password changed.', { exact: true }).waitFor();
       }

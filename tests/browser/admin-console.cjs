@@ -42,6 +42,7 @@ async function main() {
     const errors = [], reads = [], writes = [];
     let overviewUnavailable = true;
     let unusedDeleted = false;
+    let failCreation = true;
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/**', async route => {
       const request = route.request();
@@ -50,6 +51,10 @@ async function main() {
       if (method === 'GET') reads.push(url.pathname);
       else writes.push([method, url.pathname, request.postDataJSON()]);
       if (url.pathname === '/api/admin/overview' && overviewUnavailable) return route.fulfill({ status: 503, json: { message: 'Overview temporarily unavailable.' } });
+      if (url.pathname === '/api/admin/owners' && method === 'POST' && failCreation) {
+        failCreation = false;
+        return route.fulfill({ status: 409, json: { message: 'A farmer account already uses this mobile number.' } });
+      }
       if (url.pathname === '/api/admin/users/2/status' && method === 'PATCH') farmer.accountStatus = request.postDataJSON().status;
       if (method === 'DELETE' && url.pathname === '/api/admin/owners/2') {
         return route.fulfill({ status: 409, json: { message: 'This account has linked history and was not deleted.' } });
@@ -93,6 +98,7 @@ async function main() {
         '/api/admin/thresholds': { fish },
         '/api/admin/security/devices': { devices: [{ id: 21, label: 'Admin laptop', last_used_at: now, revoked_at: null,
           credential_policy: 'device-bound', backup_eligible: 0, backed_up: 0 }], currentCredentialId: 21, maxCredentials: 2 },
+        '/api/admin/security/enroll/approve': { approved: true },
         '/api/admin/logout': { ok: true }
       };
       return route.fulfill({ json: responses[url.pathname] ?? {} });
@@ -101,6 +107,7 @@ async function main() {
     const go = path => page.goto(base + path, { waitUntil: 'domcontentloaded', timeout: 45_000 });
     const nav = page.getByRole('navigation', { name: 'Admin navigation' });
     const open = name => nav.getByRole('link', { name, exact: true }).click();
+    const toast = (message, icon = 'success') => page.locator(`.swal2-toast.swal2-icon-${icon}`).getByText(message, { exact: true });
     const screenshots = !process.env.PONDSENSE_BROWSER_SKIP_SCREENSHOTS;
     const save = name => screenshots && page.screenshot({ path: output + '/' + name + '.png', fullPage: true, animations: 'disabled' });
     if (screenshots) fs.mkdirSync(output, { recursive: true });
@@ -143,11 +150,17 @@ async function main() {
     await page.getByLabel('Mobile number', { exact: true }).fill('09122222222');
     await page.getByLabel('Assigned fishpen name').fill('New sample pen');
     await page.getByRole('button', { name: 'Create owner and fishpen' }).click();
+    await toast('Account creation not confirmed.', 'error').waitFor();
+    assert.equal(await page.getByText('fixture-password', { exact: true }).count(), 0);
+    assert.equal(await page.getByLabel('Farmer name', { exact: true }).inputValue(), 'New sample farmer');
+    await page.getByRole('button', { name: 'Create owner and fishpen' }).click();
+    await toast('Farmer account and fishpen created.').waitFor();
+    assert.equal(await page.locator('.swal2-toast').getByText(/fixture-password/).count(), 0);
     await page.getByText('fixture-password', { exact: true }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'Copy Key', exact: true }).count(), 0);
     await page.getByRole('button', { name: 'Hide credentials' }).click();
     await page.evaluate(() => navigator.clipboard.writeText(''));
-    assert.equal(writes.filter(([, path]) => path === '/api/admin/owners').length, 1);
+    assert.equal(writes.filter(([, path]) => path === '/api/admin/owners').length, 2);
     await page.getByText('Create farmer account', { exact: true }).click();
     await save('desktop-users');
 
@@ -179,6 +192,7 @@ async function main() {
     assert.equal(writes.filter(([, path]) => path.endsWith('/status')).length, 0);
     await farmerDetail.getByRole('button', { name: 'Suspend account' }).click();
     await suspend.getByRole('button', { name: 'Suspend account', exact: true }).click();
+    await toast('Farmer account suspended.').waitFor();
     await farmerDetail.getByRole('button', { name: 'Reactivate account' }).waitFor();
     await farmerDetail.getByRole('button', { name: 'Delete account' }).click();
     const confirmDelete = page.getByRole('dialog', { name: 'Delete farmer account' });
@@ -189,13 +203,17 @@ async function main() {
     await confirmDelete.getByLabel('Type DELETE to confirm').fill('DELETE');
     await confirmDelete.getByRole('button', { name: 'Delete permanently' }).click();
     await confirmDelete.getByRole('alert').filter({ hasText: 'linked history' }).waitFor();
+    await toast('Account deletion not confirmed.', 'error').waitFor();
     await confirmDelete.getByRole('button', { name: 'Cancel' }).click();
     await farmerDetail.getByRole('button', { name: 'Reactivate account' }).click();
     await page.getByRole('dialog', { name: 'Reactivate Sample Farmer?', exact: true }).getByRole('button', { name: 'Reactivate account' }).click();
+    await toast('Farmer account reactivated.').waitFor();
     await farmerDetail.getByRole('button', { name: 'Suspend account' }).waitFor();
     await farmerDetail.getByRole('button', { name: 'Reset password' }).click();
     await page.getByRole('dialog', { name: 'Reset the password for Sample Farmer?', exact: true }).getByRole('button', { name: 'Reset password' }).click();
     await page.getByRole('dialog', { name: 'Temporary password' }).getByText('fixture-reset').waitFor();
+    await toast('Farmer password reset.').waitFor();
+    assert.equal(await page.locator('.swal2-toast').getByText(/fixture-reset/).count(), 0);
     await page.getByRole('button', { name: 'Hide password' }).click();
     assert.equal(writes.filter(([, path]) => path.endsWith('/device-key')).length, 0);
     await page.getByRole('searchbox', { name: 'Search users' }).fill(unused.fullName);
@@ -224,6 +242,8 @@ async function main() {
     await register.getByLabel('ESP32 Hardware ID').fill('001122AABBEE');
     await register.getByRole('button', { name: 'Register', exact: true }).click();
     const keyDialog = page.getByRole('dialog', { name: 'One-time hardware key' });
+    await toast('Hardware registered.').waitFor();
+    assert.equal(await page.locator('.swal2-toast').getByText(/fixture-device-key/).count(), 0);
     await keyDialog.getByRole('button', { name: 'Copy Key' }).click();
     await keyDialog.getByText(/Key copied/).waitFor();
     assert.equal(await page.evaluate(() => navigator.clipboard.readText()), 'fixture-device-key');
@@ -235,6 +255,7 @@ async function main() {
     const unassign = page.getByRole('dialog', { name: 'Unassign Shared ESP32?', exact: true });
     await unassign.getByText(/Assigned to Sample Farmer/).waitFor();
     await unassign.getByRole('button', { name: 'Unassign hardware', exact: true }).click();
+    await toast('Hardware unassigned.').waitFor();
     await row.getByRole('button', { name: 'Assign Hardware', exact: true }).waitFor();
     assert.deepEqual(writes.find(([, path]) => path.endsWith('/hardware/1/unassign'))?.[2], { assignmentId: sampleAssignment });
     await row.getByRole('button', { name: 'Assign Hardware', exact: true }).click();
@@ -243,6 +264,7 @@ async function main() {
     assert.equal(await assignment.getByRole('button', { name: 'Activate assignment' }).isEnabled(), false);
     await assignment.getByRole('checkbox').check();
     await assignment.getByRole('button', { name: 'Activate assignment' }).click();
+    await toast('Hardware assigned. Waiting for its first upload at this fishpen.').waitFor();
     await row.getByText('Other Pen', { exact: true }).waitFor();
     assert.deepEqual(writes.find(([, path]) => path.endsWith('/hardware/1/assign'))?.[2], { ownerId: 3, fishpenId: 10, confirmedMoved: true });
     assert.ok(!writes.some(([, path]) => path.endsWith('/hardware/1/key')));
@@ -250,6 +272,7 @@ async function main() {
     const replace = page.getByRole('dialog', { name: 'Replace the key for Shared ESP32?', exact: true });
     await replace.getByText(/Assigned to Other Farmer/).waitFor();
     await replace.getByRole('button', { name: 'Replace key', exact: true }).click();
+    await toast('Hardware key replaced.').waitFor();
     await keyDialog.getByRole('button', { name: 'Copy Key' }).waitFor();
     await page.keyboard.press('Escape');
 
@@ -274,7 +297,7 @@ async function main() {
     assert.ok(!writes.some(([, path]) => path.endsWith('/thresholds/5')));
     await page.getByRole('button', { name: 'Save Thresholds' }).click();
     await thresholds.getByRole('button', { name: 'Save thresholds', exact: true }).click();
-    await page.getByText('Thresholds saved for Tilapia.').waitFor();
+    await toast('Thresholds saved for Tilapia.').waitFor();
     assert.deepEqual(writes.find(([, path]) => path.endsWith('/thresholds/5'))?.[2], { optimal_ph_max: 8.6 });
     assert.equal(await page.getByText(/Turbidity alert proposal|Voltage-to-NTU calculator|Not a DENR or LLDA standard/).count(), 0);
     assert.ok(!reads.includes('/api/admin/turbidity-alert-rule'));
@@ -292,9 +315,13 @@ async function main() {
     assert.equal(await security.getByLabel('Enrollment request').isVisible(), false);
     await security.getByText('Approve a new login device', { exact: true }).click();
     await security.getByLabel('Enrollment request').fill('fixture-enrollment-request');
-    page.once('dialog', dialog => dialog.accept());
     await security.getByRole('button', { name: 'Approve device enrollment' }).click();
-    await security.getByText('Saved.', { exact: true }).waitFor();
+    const approval = page.getByRole('dialog', { name: 'Authorize this device-bound passkey?' });
+    await approval.getByRole('button', { name: 'Cancel', exact: true }).click();
+    assert.ok(!writes.some(([, path]) => path.endsWith('/security/enroll/approve')));
+    await security.getByRole('button', { name: 'Approve device enrollment' }).click();
+    await approval.getByRole('button', { name: 'Approve enrollment', exact: true }).click();
+    await toast('Passkey enrollment approved.').waitFor();
     assert.ok(writes.some(([method, path, body]) => method === 'POST' && path.endsWith('/security/enroll/approve') && body.policy === 'device-bound'));
     await security.getByText('Recover access', { exact: true }).click();
     await security.getByText(/system operator/).waitFor();

@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import { Activity, LoaderCircle } from "lucide-react";
 import type { FishSpecies, WaterParams } from "../types";
 import { isManualDecimalDraft, manualParameters, manualWarnings, validateManual } from '../lib/manualValidation';
+import { showSuccessToast } from '../lib/actionAlerts';
 
 const fields = {
   ph: { en: 'pH', tl: 'pH', unit: '' },
@@ -86,6 +87,7 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
       await onAnalyze(values, pending.current.time);
       pending.current = null;
       setEdited(false); setSaved(true); setReview(false); setConfirmed(false);
+      void showSuccessToast(lang === 'tl' ? 'Nai-save ang manual test sa Session History.' : 'Manual test saved to Session History.');
     } catch (failure) {
       const conflict = failure instanceof Error && failure.cause === 409;
       if (conflict) {

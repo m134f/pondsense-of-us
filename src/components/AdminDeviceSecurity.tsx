@@ -2,6 +2,7 @@ import { useEffect, useId, useState } from 'react';
 import { browserSupportsWebAuthn, startAuthentication, startRegistration } from '@simplewebauthn/browser';
 import type { PublicKeyCredentialRequestOptionsJSON, PublicKeyCredentialCreationOptionsJSON } from '@simplewebauthn/browser';
 import { apiJson } from '../lib/api';
+import { confirmAction, showErrorToast, showSuccessToast } from '../lib/actionAlerts';
 
 async function promptForAdminPasskey<T>(rpID: string | undefined, operation: 'sign-in' | 'device-bound' | 'sync-eligible', prompt: () => Promise<T>) {
   if (!window.isSecureContext || window.self !== window.top || !browserSupportsWebAuthn()) {
@@ -109,11 +110,16 @@ export function AdminDeviceSettings({ onTerminated }: { onTerminated: () => void
   useEffect(() => { void load(); }, []);
   const activeCount = devices.filter(device => !device.revoked_at).length;
   const currentIsDeviceBound = devices.some(device => device.id === current && !device.revoked_at && device.credential_policy === 'device-bound');
-  const action = async (url: string, body: object) => {
+  const action = async (url: string, body: object, expected: 'approved' | 'revoked', success: string) => {
     setBusy(true); setMessage('');
-    const result = await apiJson(url, { method: 'POST', body: JSON.stringify(body) });
-    setMessage(result.error || 'Saved.');
-    if (!result.error) { setRequest(''); await load(); }
+    const result = await apiJson<{ approved?: boolean; revoked?: boolean }>(url, { method: 'POST', body: JSON.stringify(body) });
+    if (!result.data?.[expected]) {
+      setMessage(result.error || 'Passkey change not confirmed.');
+      void showErrorToast('Passkey change not confirmed.');
+    } else {
+      setRequest(''); await load();
+      void showSuccessToast(success);
+    }
     setBusy(false);
   };
   return <section className="space-y-4">
@@ -125,8 +131,10 @@ export function AdminDeviceSettings({ onTerminated }: { onTerminated: () => void
         <p className="text-sm text-slate-600">{device.credential_policy === 'sync-eligible' ? 'Sync-eligible passkey' : 'Device-bound passkey'} · {device.revoked_at ? 'Revoked' : 'Authorized'}</p>
         <p className="text-sm text-slate-600">Backup state: {device.backed_up == null ? 'Not recorded' : device.backed_up ? 'Backed up' : 'Not backed up'} · Last verification: {device.last_used_at ? new Date(device.last_used_at).toLocaleString() : 'Enrollment'}</p>
       </div>
-      {!device.revoked_at && <button className="soft-button" disabled={busy || !current || (device.credential_policy === 'device-bound' && !currentIsDeviceBound)} onClick={() => {
-        if (window.confirm(`Revoke ${device.label}? Its sessions and any synced copies will be blocked.`)) void action(`/api/admin/security/devices/${device.id}/revoke`, {});
+      {!device.revoked_at && <button className="soft-button" disabled={busy || !current || (device.credential_policy === 'device-bound' && !currentIsDeviceBound)} onClick={async event => {
+        if (await confirmAction({ source: event.currentTarget, title: `Revoke ${device.label}?`, text: 'Its sessions and any synced copies will be blocked.', label: 'Revoke passkey', danger: true })) {
+          await action(`/api/admin/security/devices/${device.id}/revoke`, {}, 'revoked', 'Passkey revoked.');
+        }
       }}>Revoke</button>}
     </li>)}</ul>
     {currentIsDeviceBound && (maxCredentials == null || activeCount < maxCredentials) && <details className="admin-detail-section">
@@ -135,19 +143,28 @@ export function AdminDeviceSettings({ onTerminated }: { onTerminated: () => void
       <label className="block text-sm font-semibold">Enrollment request<input value={request} onChange={e => setRequest(e.target.value)} autoComplete="off" /></label>
       <CredentialTypeField label="Credential type to approve" value={approvalPolicy} onChange={setApprovalPolicy} disabled={busy} />
       {approvalPolicy === 'sync-eligible' && <p className="text-sm text-amber-800">{syncNotice}</p>}
-      <button className="soft-button" disabled={busy || !request.trim()} onClick={() => {
-        const confirmation = approvalPolicy === 'sync-eligible'
-          ? `Authorize a sync-eligible passkey? ${syncNotice}`
-          : 'Authorize this device-bound passkey? Verify the request with its operator first.';
-        if (window.confirm(confirmation)) void action('/api/admin/security/enroll/approve', { token: request.trim(), policy: approvalPolicy });
+      <button className="soft-button" disabled={busy || !request.trim()} onClick={async event => {
+        const label = approvalPolicy === 'sync-eligible' ? 'sync-eligible' : 'device-bound';
+        if (await confirmAction({
+          source: event.currentTarget, title: `Authorize this ${label} passkey?`,
+          text: approvalPolicy === 'sync-eligible' ? syncNotice : 'Verify the request with its operator first.', label: 'Approve enrollment'
+        })) await action('/api/admin/security/enroll/approve', { token: request.trim(), policy: approvalPolicy }, 'approved', 'Passkey enrollment approved.');
       }}>Approve device enrollment</button>
     </details>}
-    {current != null && <button type="button" className="soft-button" disabled={busy} onClick={async () => {
-      if (!window.confirm('End all administrator sessions, including this one?')) return;
+    {current != null && <button type="button" className="soft-button" disabled={busy} onClick={async event => {
+      if (!await confirmAction({
+        source: event.currentTarget, title: 'End all administrator sessions?', text: 'This signs out every administrator session, including this one.', label: 'End sessions', danger: true
+      })) return;
       setBusy(true); setMessage('');
       const result = await apiJson<{ terminated: boolean }>('/api/admin/security/sessions/terminate', { method: 'POST', body: '{}' });
-      if (result.data?.terminated) onTerminated();
-      else { setMessage(result.error || 'Could not end sessions.'); setBusy(false); }
+      if (result.data?.terminated) {
+        onTerminated();
+        void showSuccessToast('Administrator sessions ended.');
+      } else {
+        setMessage(result.error || 'Could not end sessions.');
+        void showErrorToast('Session termination not confirmed.');
+        setBusy(false);
+      }
     }}>End all admin sessions</button>}
     <details className="admin-detail-section">
       <summary>Recover access</summary>

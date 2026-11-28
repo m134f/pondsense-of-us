@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import { Save } from 'lucide-react';
 import { apiJson } from '../lib/api';
-import { confirmAction } from '../lib/actionAlerts';
+import { confirmAction, showErrorToast, showSuccessToast, showWarningToast } from '../lib/actionAlerts';
 import { activeSpecies, speciesId } from '../data/fish';
 import { AdminBadge, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
 
@@ -32,7 +32,12 @@ function ThresholdEditor({ fish, onSaved }: { fish: Fish; onSaved: () => Promise
       if (busy || !changed.length) return;
       const invalid = ranges.find(({ min, max }) => (changed.includes(min) || changed.includes(max)) &&
         (!Number.isFinite(number(min)) || !Number.isFinite(number(max)) || number(min) < 0 || number(min) >= number(max)));
-      if (invalid) { setMessage({ error: true, text: `${invalid.label}: enter a nonnegative minimum and a higher maximum.` }); return; }
+      if (invalid) {
+        const text = `${invalid.label}: enter a nonnegative minimum and a higher maximum.`;
+        setMessage({ error: true, text });
+        void showWarningToast(text);
+        return;
+      }
       const labels = Object.fromEntries(ranges.flatMap(({ label, min, max }) => [[min, `${label} minimum`], [max, `${label} maximum`]]));
       const summary = changed.map(key => `${labels[key]}: ${fish[key] ?? 'Not set'} to ${number(key)}`);
       const source = (e.nativeEvent as SubmitEvent).submitter ?? e.currentTarget;
@@ -41,8 +46,13 @@ function ThresholdEditor({ fish, onSaved }: { fish: Fish; onSaved: () => Promise
         if (!await confirmAction({ source, title: `Save thresholds for ${fish.name}?`, text: summary.join('\n'), label: 'Save thresholds' })) return;
         setMessage(null);
         const r = await apiJson(`/api/admin/thresholds/${fish.id}`, { method: 'PATCH', body: JSON.stringify(Object.fromEntries(changed.map(key => [key, number(key)]))) });
-        if (!r.error) { await onSaved(); setDraft({}); }
-        setMessage({ error: !!r.error, text: r.error || `Thresholds saved for ${fish.name}.` });
+        if (r.error) {
+          setMessage({ error: true, text: r.error });
+          void showErrorToast('Threshold save not confirmed.');
+        } else {
+          await onSaved(); setDraft({});
+          void showSuccessToast(`Thresholds saved for ${fish.name}.`);
+        }
       } finally { setBusy(false); }
     }}>
       <fieldset disabled={busy} className="admin-threshold-fields">

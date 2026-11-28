@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { UserPlus } from 'lucide-react';
 import { apiJson } from '../lib/api';
+import { showErrorToast, showSuccessToast } from '../lib/actionAlerts';
 
 export function ProvisionOwner({ onSaved, initiallyOpen = false }: { onSaved: () => void; initiallyOpen?: boolean }) {
   const [name, setName] = useState(''); const [phone, setPhone] = useState(''); const [fishpen, setFishpen] = useState('');
@@ -16,9 +17,14 @@ export function ProvisionOwner({ onSaved, initiallyOpen = false }: { onSaved: ()
         method: 'POST', body: JSON.stringify({ fullName: name, phone: number, fishpenName: fishpen })
       });
       setBusy(false);
-      if (r.error || !r.data) { setError(r.error || 'Could not confirm account creation. Check the account list before retrying.'); return; }
+      if (r.error || !r.data?.temporaryPassword) {
+        setError(r.error || 'Could not confirm account creation. Check the account list before retrying.');
+        void showErrorToast('Account creation not confirmed.');
+        return;
+      }
       setSecret(r.data.temporaryPassword);
       setName(''); setPhone(''); setFishpen(''); onSaved();
+      void showSuccessToast('Farmer account and fishpen created.');
     }}>
       <fieldset className="admin-form-grid" disabled={busy || !!secret}>
         <label>Farmer name<input required maxLength={100} value={name} onChange={e => setName(e.target.value)} /></label>

@@ -1,5 +1,5 @@
 import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { confirmAction } from './lib/actionAlerts';
+import { confirmAction, showErrorToast, showSuccessToast, showWarningToast } from './lib/actionAlerts';
 import { historyRecordDay, historyTimestamp, manilaDay, resolveHistoryRange, type HistoryPeriod } from './lib/historyDates';
 import { sensorTurbidityValue, compareSensorSamples, sensorConnectionState } from './lib/sensorDisplay';
 import { estimateTurbidity, turbidityValidityLabel } from './lib/turbidityEstimate';
@@ -2537,27 +2537,15 @@ function HarvestPage({ currentUser, lang, fishDb, navigate, leaveGuard }: { curr
   };
   useEffect(() => { setRecords([]); if (currentUser) { void refresh(); void apiJson<{ devices: Array<{ id: number; deviceName: string }> }>("/api/sensors/devices").then(r => setDevices(r.data?.devices || [])); } }, [currentUser?.id]);
   const confirmWrite = async <T,>(
-    confirmation: { title: string; text: string; label: string; danger?: boolean; successToast?: string },
+    confirmation: { title: string; text: string; label: string; danger?: boolean; successToast: string },
     request: () => ReturnType<typeof apiJson<T>>,
     onSuccess: (data: T | null) => void | Promise<void>
   ) => {
     if (writePending.current) return;
     writePending.current = true;
     try {
-      const { default: Swal } = await import('sweetalert2');
       if (!mounted.current) return;
-      const { isConfirmed } = await Swal.fire({
-        titleText: confirmation.title,
-        text: confirmation.text,
-        icon: confirmation.danger ? 'warning' : 'question',
-        confirmButtonText: confirmation.label,
-        cancelButtonText: t('Cancel', 'Kanselahin'),
-        confirmButtonColor: confirmation.danger ? '#b91c1c' : '#087e74',
-        showCancelButton: true,
-        focusCancel: true,
-        reverseButtons: true,
-        heightAuto: false
-      });
+      const isConfirmed = await confirmAction({ ...confirmation, cancelLabel: t('Cancel', 'Kanselahin') });
       if (!isConfirmed || !mounted.current) return;
       setBusy(true);
       setMessage(null);
@@ -2568,6 +2556,8 @@ function HarvestPage({ currentUser, lang, fishDb, navigate, leaveGuard }: { curr
           ? t('Check your Harvest records before trying again. The server did not confirm the change.', 'Tingnan muna ang mga tala ng ani bago subukang muli. Hindi nakumpirma ng server ang pagbabago.')
           : result.error;
         setMessage({ text: error, error: true });
+        const { default: Swal } = await import('sweetalert2');
+        if (!mounted.current) return;
         await Swal.fire({
           titleText: confirmation.danger ? t('Deletion not confirmed', 'Hindi nakumpirma ang pagbura') : t('Save not confirmed', 'Hindi nakumpirma ang pag-save'),
           text: error,
@@ -2578,17 +2568,13 @@ function HarvestPage({ currentUser, lang, fishDb, navigate, leaveGuard }: { curr
         return;
       }
       await onSuccess(result.data);
-      if (confirmation.successToast) void Swal.fire({
-        toast: true,
-        position: 'top-end',
-        icon: 'success',
-        titleText: confirmation.successToast,
-        showConfirmButton: false,
-        timer: 3000,
-        returnFocus: false
-      });
+      if (mounted.current) void showSuccessToast(confirmation.successToast);
     } catch {
-      if (mounted.current) setMessage({ error: true, text: t('Could not complete the action. Please try again.', 'Hindi natuloy ang aksyon. Subukan muli.') });
+      if (mounted.current) {
+        const text = t('Could not confirm the change. Check your records before retrying.', 'Hindi nakumpirma ang pagbabago. Tingnan muna ang mga tala bago subukan muli.');
+        setMessage({ error: true, text });
+        void showErrorToast(text);
+      }
     } finally {
       writePending.current = false;
       if (mounted.current) setBusy(false);
@@ -2632,9 +2618,9 @@ function HarvestPage({ currentUser, lang, fishDb, navigate, leaveGuard }: { curr
       title: t('Delete this fish group?', 'Burahin ang grupong ito?'),
       text: `${group.species} #${id}. ${t('All measurements, fish deaths, observations, and harvests for this group will be deleted. This cannot be undone.', 'Mabubura ang lahat ng timbang, tala ng namatay na isda, obserbasyon, at ani ng grupong ito. Hindi ito maibabalik.')}`,
       label: t('Delete fish group', 'Burahin ang grupo'),
+      successToast: t('Fish group deleted.', 'Nabura ang grupo ng isda.'),
       danger: true
     }, () => apiJson(`/api/harvests/${id}`, { method: "DELETE" }), () => {
-      setMessage({ text: t('Record deleted.', 'Nabura ang tala.') });
       void refresh();
     });
   };
@@ -2662,7 +2648,9 @@ function HarvestPage({ currentUser, lang, fishDb, navigate, leaveGuard }: { curr
     const balance = stockFor(selected);
     const available = balance.remaining;
     if (count !== null && (!Number.isSafeInteger(count) || count < 1 || count > available)) {
-      setMessage({ error: true, text: t('Enter a whole fish count within the available stock.', 'Maglagay ng buong bilang na hindi lalampas sa natitirang isda.') });
+      const text = t('Enter a whole fish count within the available stock.', 'Maglagay ng buong bilang na hindi lalampas sa natitirang isda.');
+      setMessage({ error: true, text });
+      void showWarningToast(text);
       return;
     }
     const afterSave = count === null ? '' : t(`${count} fish. Remaining after save: ${balance.uncounted ? 'up to ' : ''}${available - count}.`,
@@ -2671,11 +2659,14 @@ function HarvestPage({ currentUser, lang, fishDb, navigate, leaveGuard }: { curr
     const confirmation = action === 'harvest' ? {
       title: confirmComplete ? t('Save harvest and close this fish group?', 'I-save ang ani at tapusin ang grupong ito?') : t('Save this partial harvest?', 'I-save ang bahagyang ani?'),
       text: `${eventForm.weightKg} kg. ${confirmComplete ? completeNote : afterSave}`,
-      label: confirmComplete ? t('Save and close group', 'I-save at tapusin ang grupo') : t('Save harvest', 'I-save ang ani')
+      label: confirmComplete ? t('Save and close group', 'I-save at tapusin ang grupo') : t('Save harvest', 'I-save ang ani'),
+      successToast: confirmComplete ? t('Harvest complete. Fish group closed.', 'Tapos na ang ani. Sarado na ang grupo ng isda.')
+        : t('Partial harvest saved.', 'Nai-save ang bahagyang ani.')
     } : {
       title: t('Save this fish death record?', 'I-save ang tala ng namatay na isda?'),
       text: afterSave,
-      label: t('Save fish deaths', 'I-save ang tala')
+      label: t('Save fish deaths', 'I-save ang tala'),
+      successToast: t('Fish death record saved.', 'Nai-save ang tala ng namatay na isda.')
     };
     const endpoint = action === "harvest" ? "events" : "mortalities";
     const payload = action === "harvest" ? { ...eventForm, fishCount: count, confirmComplete } : mortalityForm;
@@ -2688,8 +2679,6 @@ function HarvestPage({ currentUser, lang, fishDb, navigate, leaveGuard }: { curr
           kg: Number(eventForm.weightKg), complete: confirmComplete, count,
           remaining: refreshed ? stockFor(refreshed).remaining : data.remainingStock ?? null });
         setShowForm(false);
-      } else {
-        setMessage({ text: t('Record saved.', 'Nai-save ang tala.') });
       }
       resetActionForms(action, selectedId);
     });
