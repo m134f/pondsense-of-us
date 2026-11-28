@@ -102,6 +102,65 @@ export function ownerAccountsRouter(db: Pool | null, legacyManagement = false) {
     } catch { await c.rollback(); res.status(503).json({ message: 'Unable to reset password.' }); }
     finally { c.release(); }
   });
+  router.delete('/admin/owners/:id', requireAdmin, async (req: AuthRequest, res) => {
+    const id = Number(req.params.id);
+    if (!Number.isSafeInteger(id) || id <= 0 || req.body?.confirm !== 'DELETE') {
+      return res.status(400).json({ message: 'Confirm the farmer account deletion.' });
+    }
+    if (!req.auth?.credentialId || !req.auth.verifiedAt || Date.now() / 1000 - req.auth.verifiedAt > 300) {
+      return res.status(403).json({ message: 'Log in again with your admin passkey before deleting an account.' });
+    }
+    const c = await db!.getConnection();
+    try {
+      await c.beginTransaction();
+      const [[farmer]] = await c.execute<RowDataPacket[]>(`SELECT account_status FROM users
+        WHERE id = ? AND role = 'farmer' AND phone <> '+639000000000' FOR UPDATE`, [id]);
+      if (!farmer || farmer.account_status !== 'SUSPENDED') {
+        await c.rollback();
+        return res.status(farmer ? 409 : 404).json({ message: farmer ? 'Suspend this farmer account before deleting it.' : 'Farmer account not found.' });
+      }
+      // Serialize account/fishpen changes and check historical references that lack foreign keys.
+      const [pens] = await c.execute<RowDataPacket[]>(`SELECT id, device_id, owner_enabled, owner_alert_phone, caretaker_phone, caretaker_enabled
+        FROM sms_fishpens WHERE owner_user_id = ? FOR UPDATE`, [id]);
+      const [[links]] = await c.execute<RowDataPacket[]>(`WITH target AS (SELECT ? AS id),
+        pens AS (SELECT id FROM sms_fishpens WHERE owner_user_id = (SELECT id FROM target))
+        SELECT (
+          EXISTS (SELECT 1 FROM water_readings WHERE user_id = target.id) OR
+          EXISTS (SELECT 1 FROM alerts WHERE user_id = target.id) OR
+          EXISTS (SELECT 1 FROM corrective_action_log WHERE user_id = target.id) OR
+          EXISTS (SELECT 1 FROM recommendation_history WHERE owner_user_id = target.id) OR
+          EXISTS (SELECT 1 FROM harvest_batches WHERE owner_user_id = target.id OR fishpen_id IN (SELECT id FROM pens)) OR
+          EXISTS (SELECT 1 FROM sensor_devices WHERE owner_user_id = target.id) OR
+          EXISTS (SELECT 1 FROM sensor_telemetry WHERE owner_user_id = target.id OR fishpen_id IN (SELECT id FROM pens)) OR
+          EXISTS (SELECT 1 FROM hardware_assignments WHERE owner_user_id = target.id OR fishpen_id IN (SELECT id FROM pens)) OR
+          EXISTS (SELECT 1 FROM planning_sms_log WHERE owner_user_id = target.id) OR
+          EXISTS (SELECT 1 FROM sms_water_state WHERE fishpen_id IN (SELECT id FROM pens)) OR
+          EXISTS (SELECT 1 FROM sms_water_attempts WHERE owner_user_id = target.id OR fishpen_id IN (SELECT id FROM pens)) OR
+          EXISTS (SELECT 1 FROM sms_critical_incidents WHERE owner_user_id = target.id OR fishpen_id IN (SELECT id FROM pens)) OR
+          EXISTS (SELECT 1 FROM sms_critical_state WHERE owner_user_id = target.id OR fishpen_id IN (SELECT id FROM pens)) OR
+          EXISTS (SELECT 1 FROM sms_critical_notifications WHERE owner_user_id = target.id OR fishpen_id IN (SELECT id FROM pens)) OR
+          EXISTS (SELECT 1 FROM admin_audit_logs WHERE admin_id = target.id) OR
+          EXISTS (SELECT 1 FROM owner_fishpen_assignments
+            WHERE updated_by = target.id OR (owner_user_id = target.id AND fishpen_id NOT IN (SELECT id FROM pens))
+            OR (owner_user_id <> target.id AND fishpen_id IN (SELECT id FROM pens)))
+        ) AS inUse FROM target`, [id]);
+      if (links.inUse || pens.some(pen => pen.device_id != null || pen.owner_alert_phone != null || pen.caretaker_phone != null || !pen.owner_enabled || pen.caretaker_enabled)) {
+        await c.rollback();
+        return res.status(409).json({ message: 'This account has linked history, monitoring, or SMS settings. Keep it suspended to preserve those records.' });
+      }
+      await c.execute('DELETE FROM owner_fishpen_assignments WHERE owner_user_id = ?', [id]);
+      await c.execute('DELETE FROM sms_fishpens WHERE owner_user_id = ?', [id]);
+      const [result] = await c.execute<ResultSetHeader>("DELETE FROM users WHERE id = ? AND role = 'farmer' AND account_status = 'SUSPENDED'", [id]);
+      if (result.affectedRows !== 1) throw new Error('Farmer account changed during deletion.');
+      await c.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [req.auth.sub, 'farmer_deleted', JSON.stringify({ ownerId: id })]);
+      await c.commit();
+      res.json({ deleted: true });
+    } catch (error) {
+      await c.rollback();
+      const linked = (error as { code?: string }).code === 'ER_ROW_IS_REFERENCED_2';
+      res.status(linked ? 409 : 503).json({ message: linked ? 'This account still has linked records and was not deleted.' : 'Unable to delete the farmer account.' });
+    } finally { c.release(); }
+  });
   router.post('/owner/password', async (req, res) => {
     const auth = verifyAuthToken(req);
     if (!auth || auth.role !== 'farmer') return res.status(401).json({ message: 'Owner login required.' });

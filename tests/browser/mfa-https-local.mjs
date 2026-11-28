@@ -210,14 +210,14 @@ try {
         isUserVerified: true, automaticPresenceSimulation: true, ...backupFlags
       } }));
     }
-    const call = (path, body) => page.evaluate(async ({ path, body }) => {
+    const call = (path, body, method = 'POST') => page.evaluate(async ({ path, body, method }) => {
       const res = await fetch(`/api${path}`, body === undefined ? {} : {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
+        method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body)
       });
       return { status: res.status, data: await res.json() };
-    }, { path, body });
-    async function step(path, body, status = 200) {
-      const result = await call(path, body);
+    }, { path, body, method });
+    async function step(path, body, status = 200, method = 'POST') {
+      const result = await call(path, body, method);
       assert.equal(result.status, status, path);
       return result.data;
     }
@@ -455,6 +455,31 @@ try {
   await legacyBrowser.context.addCookies([legacyCookie]);
   await legacyBrowser.step('/session', undefined, 401);
   console.log('PASS: a valid pre-release farmer session survives the upgrade and its logout is revocable.');
+
+  const unused = await backup.step('/admin/owners', { fullName: 'Disposable farmer', phone: '+639100000013', fishpenName: 'Empty pen' });
+  const linked = await backup.step('/admin/owners', { fullName: 'Farmer with history', phone: '+639100000014', fishpenName: 'Pen with history' });
+  await db.execute("INSERT INTO water_readings (user_id, input_mode, ph) VALUES (?, 'manual', 7)", [linked.id]);
+  const unusedPath = `/admin/owners/${unused.id}`;
+  const deletion = { confirm: 'DELETE' };
+  await legacyBrowser.step(unusedPath, deletion, 401, 'DELETE');
+  await farmerBrowser.step(unusedPath, deletion, 403, 'DELETE');
+  await backup.step(unusedPath, { confirm: '' }, 400, 'DELETE');
+  await backup.step(unusedPath, deletion, 409, 'DELETE');
+  for (const id of [unused.id, linked.id]) await backup.step(`/admin/users/${id}/status`, { status: 'SUSPENDED' }, 200, 'PATCH');
+  await backup.step(`/admin/owners/${linked.id}`, deletion, 409, 'DELETE');
+  const [[preserved]] = await db.execute('SELECT COUNT(*) AS count FROM water_readings WHERE user_id = ?', [linked.id]);
+  assert.equal(preserved.count, 1);
+  assert.deepEqual(await backup.step(unusedPath, deletion, 200, 'DELETE'), { deleted: true });
+  const [[remaining]] = await db.execute(`SELECT
+    (SELECT COUNT(*) FROM users WHERE id = ?) AS users,
+    (SELECT COUNT(*) FROM sms_fishpens WHERE owner_user_id = ?) AS pens,
+    (SELECT COUNT(*) FROM owner_fishpen_assignments WHERE owner_user_id = ?) AS assignments`, [unused.id, unused.id, unused.id]);
+  assert.deepEqual(remaining, { users: 0, pens: 0, assignments: 0 });
+  const [[audit]] = await db.query("SELECT details FROM admin_audit_logs WHERE action = 'farmer_deleted' ORDER BY id DESC LIMIT 1");
+  assert.deepEqual(JSON.parse(audit.details), { ownerId: unused.id });
+  await backup.step(unusedPath, deletion, 404, 'DELETE');
+  assert.equal((await farmerBrowser.step('/session')).user.id, farmer.id);
+  console.log('PASS: only a verified admin can delete a confirmed unused suspended farmer; linked history and other farmers are preserved.');
 
   // Rehearse the operator-only recovery runbook on this synthetic database, not a public API.
   const superseded = await probe.signIn();

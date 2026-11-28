@@ -1,6 +1,7 @@
 import { Router } from 'express';
 import type { Pool, RowDataPacket } from 'mysql2/promise';
 import { requireRole } from '../auth';
+import { farmerWaterQualityReport } from '../services/FarmerWaterQualityReport';
 
 export function adminFreshnessSeconds(value = process.env.ADMIN_DEVICE_FRESHNESS_SECONDS) {
   const seconds = Number(value);
@@ -51,6 +52,14 @@ async function listDevices(db: Pool, cutoff: number) {
 export function adminReportingRouter(db: Pool | null, shared = false) {
   const router = Router();
   const admin = requireRole('admin', db);
+  router.get('/admin/farmer-water-quality', admin, async (_req, res) => {
+    if (!db) return res.status(503).json({ message: 'Database is required.' });
+    try {
+      res.set('Cache-Control', 'no-store').json(await farmerWaterQualityReport(db));
+    } catch {
+      res.status(503).json({ message: 'Could not load farmer water quality records.' });
+    }
+  });
   router.get('/admin/devices', admin, async (_req, res) => {
     if (!db) return res.status(503).json({ message: 'Database is required.' });
     const freshnessSeconds = adminFreshnessSeconds();
