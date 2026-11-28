@@ -26,7 +26,8 @@ test('admin reports are role restricted, read-only, and do not expose secrets or
   let unavailable = false;
   let queryCount = 0;
   const query = async (sql: string) => {
-    if (sql.includes('FROM admin_security')) return [[{ admin_id: 1, enforced: false }]];
+    if (sql.includes('FROM admin_security')) return [[{ admin_id: 1, enforced: true }]];
+    if (sql.includes('FROM admin_credentials')) return [[{ id: 7 }]];
     if (sql.startsWith('SELECT id FROM users')) return [[{ id: 1 }]];
     queryCount++;
     assert.doesNotMatch(sql, /api_key_hash|password_hash|\b(?:INSERT|UPDATE|DELETE|ALTER|DROP)\b/i);
@@ -52,7 +53,11 @@ test('admin reports are role restricted, read-only, and do not expose secrets or
   };
   const pool = { query, execute: query } as unknown as Pool;
   const app = express();
-  app.get('/fixture/:role', (req, res) => { createAuthSession(res, 1, req.params.role === 'admin' ? 'admin' : 'farmer'); res.sendStatus(200); });
+  app.get('/fixture/:role', (req, res) => {
+    const admin = req.params.role !== 'farmer';
+    createAuthSession(res, 1, admin ? 'admin' : 'farmer', 0, req.params.role === 'admin' ? 7 : undefined);
+    res.sendStatus(200);
+  });
   app.use('/api', adminReportingRouter(pool));
   const server = app.listen(0, '127.0.0.1');
   await new Promise<void>(resolve => server.once('listening', resolve));
@@ -65,6 +70,7 @@ test('admin reports are role restricted, read-only, and do not expose secrets or
       assert.equal((await get(path)).status, 401);
       assert.equal((await get(path, farmer)).status, 403);
     }
+    assert.equal((await get('overview', await cookie('unverified'))).status, 403);
     assert.equal(queryCount, 0);
     const admin = await cookie('admin');
     const response = await get('overview', admin);

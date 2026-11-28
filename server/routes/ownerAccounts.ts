@@ -4,7 +4,7 @@ import { Router } from 'express';
 import type { Pool } from 'mysql2/promise';
 import type { RowDataPacket, ResultSetHeader } from 'mysql2';
 import { requireRole, verifyAuthToken, createAuthSession, type AuthRequest } from '../auth';
-import { allowAdminAttempt } from './adminWebauthn';
+import { allowAttempt } from '../loginRate';
 import { isTrustedJsonRequest } from '../trustedOrigin';
 
 export const validOwnerPassword = (value: unknown): value is string => typeof value === 'string' && value.length >= 12 && Buffer.byteLength(value, 'utf8') <= 72;
@@ -106,7 +106,7 @@ export function ownerAccountsRouter(db: Pool | null, legacyManagement = false) {
     const auth = verifyAuthToken(req);
     if (!auth || auth.role !== 'farmer') return res.status(401).json({ message: 'Owner login required.' });
     if (!validOwnerPassword(req.body?.newPassword)) return res.status(400).json({ message: 'Use at least 12 characters, up to 72 UTF-8 bytes.' });
-    if (!await allowAdminAttempt(db!, `password-change-${auth.sub}`, 10)) return res.status(429).json({ message: 'Too many attempts. Try again in five minutes.' });
+    if (!await allowAttempt(db!, 'password-change:account', String(auth.sub), 10)) return res.status(429).set('Retry-After', '300').json({ message: 'Too many attempts. Try again in five minutes.' });
     const c = await db!.getConnection();
     try {
       await c.beginTransaction();

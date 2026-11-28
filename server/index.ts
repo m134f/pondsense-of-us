@@ -2,7 +2,8 @@ import { loadFishCatalog } from "./services/FishCatalog";
 import { verifyStartupSchema } from './startupSchema';
 import { sensorAuthenticator } from './services/SensorAuthentication';
 import { ownerAccess } from './ownerAccess';
-import { isTrustedJsonRequest, trustedOrigins } from './trustedOrigin';
+import { isTrustedJsonRequest, needsBrowserOrigin, trustedOrigins } from './trustedOrigin';
+import { allowAttempt, allowSource, trustedProxy } from './loginRate';
 import { parseTurbidityThresholds } from '../src/lib/turbidityAlert';
 import { loadTurbidityProposal, saveTurbidityProposal } from './services/TurbidityAlertRule';
 import { ownerAccountsRouter } from './routes/ownerAccounts';
@@ -10,7 +11,7 @@ import { adminReportingRouter } from './routes/adminReporting';
 import { assignedFishpen } from './services/OwnerFishpen';
 import { harvestAssignmentGuard } from './harvestAssignmentGuard';
 import { ownerFishpenRouter } from './routes/ownerFishpen';
-import { adminWebauthnRouter, passwordVerifiedFlow, allowAdminAttempt } from './routes/adminWebauthn';
+import { adminWebauthnRouter, passwordVerifiedFlow, prepareAdminPasskeyLogin } from './routes/adminWebauthn';
 import { publicMonitoringRouter } from './routes/publicMonitoring';
 import { validateManual } from '../src/lib/manualValidation';
 import { parseManualSaveTime, saveManualReading } from './services/ManualReadings';
@@ -22,7 +23,7 @@ import bcrypt from "bcryptjs";
 import type { ResultSetHeader, RowDataPacket } from "mysql2";
 import { hasDbConfig, pool } from "./db";
 import { isSmsConfigured, sendSms } from "./sms";
-import { authorizedAdminDevice, clearAuthSession, createAuthSession, requireAdmin, verifyAuthToken, type AuthRequest } from "./auth";
+import { allowFixtureAdmin, authorizedAdminDevice, clearAuthSession, createAuthSession, requireAdmin, revokeSession, verifyAuthToken, type AuthRequest } from "./auth";
 import { DecisionSupportService, type AlertResult } from "./services/DecisionSupportService";
 import { planningRouter } from './routes/planning';
 import { archiveRecommendations, planningContext } from './services/PlanningService';
@@ -33,6 +34,7 @@ import { drainIncidentSms, queueIncidentSms } from './services/IncidentSms';
 import { legacySensorFixture, sharedHardwareRouter } from './routes/sharedHardware';
 
 const app = express();
+app.set('trust proxy', trustedProxy(process.env));
 const port = Number(process.env.PORT || 5000);
 const guestPhone = "+639000000000";
 const decisionSupport = new DecisionSupportService();
@@ -69,25 +71,28 @@ const allowedOrigins = trustedOrigins();
 
 app.use(cors({
   credentials: true,
-  origin(origin, callback) {
-    if (!origin || process.env.NODE_ENV !== "production" || allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    }
-    return callback(new Error(`Origin not allowed by CORS: ${origin}`));
-  }
+  origin(origin, callback) { callback(null, !!origin && allowedOrigins.includes(origin)); }
 }));
-app.use(express.json());
-// Check current database status on every authenticated request, including legacy cookies.
+app.use('/api', (req, res, next) => {
+  res.set('Cache-Control', 'no-store');
+  if (needsBrowserOrigin(req) && !isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request origin or content type.' });
+  next();
+});
+app.use(express.json({ inflate: false, limit: '64kb' }));
+// Check current database session status before dispatching authenticated routes.
 app.use('/api', async (req, res, next) => {
   if (['/login', '/register', '/logout', '/admin/login'].includes(req.path)) return next();
   const auth = verifyAuthToken(req);
   if (!auth) return next();
   if (!pool) return res.status(503).json({ message: 'Authentication unavailable.' });
   try {
-    const [rows] = await pool.execute<RowDataPacket[]>('SELECT role, account_status, auth_version FROM users WHERE id = ?', [auth.sub]);
-    if (!rows[0] || rows[0].role !== auth.role || (auth.role === 'farmer' && (rows[0].account_status !== 'ACTIVE' || Number(rows[0].auth_version) !== (auth.version ?? 0)))) {
+    const [rows] = await pool.execute<RowDataPacket[]>(`SELECT role, account_status, auth_version,
+      EXISTS(SELECT 1 FROM auth_session_revocations WHERE session_id = ?) AS revoked FROM users WHERE id = ?`, [auth.jti, auth.sub]);
+    if (rows[0]?.revoked) { clearAuthSession(res); return res.status(401).json({ message: 'Session ended. Please log in again.' }); }
+    if (!rows[0] || rows[0].role !== auth.role || Number(rows[0].auth_version) !== (auth.version ?? 0) ||
+      (auth.role === 'farmer' && rows[0].account_status !== 'ACTIVE')) {
       clearAuthSession(res);
-      return res.status(403).json({ message: 'Your account is not active. Contact the administrator.' });
+      return res.status(403).json({ message: 'This session is no longer active. Please log in again.' });
     }
     if (auth.role === 'admin' && !req.path.startsWith('/admin/security/') && !await authorizedAdminDevice(auth)) return res.status(403).json({ message: 'Administrator device verification required.' });
     next();
@@ -330,7 +335,7 @@ app.all('/api/register', (_req, res) => res.status(410).json({ message: 'Public 
 app.post("/api/login", async (req, res) => {
   if (!isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request origin.' });
   const { phone, password } = req.body ?? {};
-  if (!/^(\+639)\d{9}$/.test(phone) || !password) {
+  if (typeof phone !== 'string' || !/^(\+639)\d{9}$/.test(phone) || typeof password !== 'string' || !password || password.length > 1024) {
     return res.status(400).json({ message: "Use Philippine phone format +639XXXXXXXXX and enter your password." });
   }
 
@@ -339,11 +344,13 @@ app.post("/api/login", async (req, res) => {
   }
 
   try {
+    if (!await allowSource(pool, req, 'farmer-login', 60) || !await allowAttempt(pool, 'farmer-login:account', phone, 12)) {
+      return res.status(429).set('Retry-After', '300').json({ message: 'Too many sign-in attempts. Try again in five minutes.' });
+    }
     const [rows] = await pool.execute<RowDataPacket[]>(
       "SELECT id, full_name, phone, password_hash, role, account_status, auth_version, must_change_password, temporary_password_expires_at, created_at FROM users WHERE phone = ? AND role = 'farmer' LIMIT 1",
       [phone]
     );
-    if (!await allowAdminAttempt(pool, 'owner-login', 60)) return res.status(429).json({ message: 'Too many owner login attempts. Try again in five minutes.' });
     const user = rows[0];
     if (!user) {
       return res.status(401).json({ message: 'Unable to sign in. Check your credentials or contact the administrator.' });
@@ -365,9 +372,9 @@ app.post("/api/login", async (req, res) => {
       mustChangePassword: Boolean(user.must_change_password),
       createdAt: user.created_at
     });
-  } catch (error) {
-    console.error("Login database error:", error);
-    res.status(503).json({ message: "Database is not ready. Check XAMPP MySQL and schema import." });
+  } catch {
+    console.error('Farmer sign-in unavailable.');
+    res.status(503).json({ message: 'Login is temporarily unavailable. Please try again later.' });
   }
 });
 
@@ -420,10 +427,7 @@ app.get("/api/readings", async (req, res) => {
   });
 });
 
-app.post("/api/logout", (_req, res) => {
-  clearAuthSession(res);
-  res.json({ ok: true });
-});
+app.post("/api/logout", (req, res) => revokeSession(req, res));
 
 app.post("/api/readings", async (req, res) => {
   const auth = verifyAuthToken(req);
@@ -1084,54 +1088,58 @@ app.post("/api/sms/test", async (req, res) => {
 
 app.post("/api/admin/login", async (req, res) => {
   if (!isTrustedJsonRequest(req)) return res.status(403).json({ message: 'Untrusted request origin.' });
-  const { identifier, password, pin } = req.body ?? {};
-  if (!identifier || !password || !pin) {
+  const { identifier, password, pin, preparePasskey } = req.body ?? {};
+  if (typeof identifier !== 'string' || !identifier.trim() || identifier.length > 200 ||
+      typeof password !== 'string' || !password || password.length > 1024 || typeof pin !== 'string' || !pin || pin.length > 100) {
     return res.status(400).json({ message: "Username/email, password, and admin PIN are required." });
   }
   if (!pool) return res.status(503).json({ message: "Database is required for admin login." });
 
   try {
-    if (!await allowAdminAttempt(pool, 'admin-login', 30)) return res.status(429).json({ message: 'Too many admin login attempts. Wait five minutes.' });
-    const [settings] = await pool.execute<RowDataPacket[]>(
-      "SELECT setting_val FROM admin_settings WHERE setting_key = 'admin_pin' LIMIT 1"
-    );
-    const savedPin = String(settings[0]?.setting_val || process.env.ADMIN_PIN || "");
-    if (!savedPin) return res.status(503).json({ message: 'Administrator PIN is not configured. Contact the system operator.' });
-    if (String(pin) !== savedPin) return res.status(401).json({ message: "Incorrect admin PIN." });
+    const limited = () => res.status(429).set('Retry-After', '300').json({ message: 'Too many admin sign-in attempts. Wait five minutes.' });
+    const denied = () => res.status(401).json({ message: 'Unable to sign in. Check your credentials.' });
+    if (!await allowSource(pool, req, 'admin-login', 30)) return limited();
 
     const loginId = String(identifier).trim();
     const [rows] = await pool.execute<RowDataPacket[]>(
-      `SELECT id, full_name, username, email, phone, password_hash, role, created_at
-       FROM users
-       WHERE role = 'admin'
-         AND (username = ? OR email = ? OR phone = ?)
+      `SELECT u.id, u.full_name, u.username, u.email, u.phone, u.password_hash, u.role, u.created_at, u.auth_version, s.enforced
+       FROM users u JOIN admin_security s ON s.admin_id = u.id AND s.id = 1
+       WHERE u.role = 'admin' AND (u.username = ? OR u.email = ? OR u.phone = ?)
        LIMIT 1`,
       [loginId, loginId, loginId]
     );
     const admin = rows[0];
-    if (!admin) return res.status(401).json({ message: "No admin account found." });
+    if (!admin) return denied();
+    if (!await allowAttempt(pool, 'admin-login:account', String(admin.id), 12)) return limited();
 
-    const valid = await bcrypt.compare(String(password), String(admin.password_hash));
-    if (!valid) return res.status(401).json({ message: "Incorrect admin password." });
+    const [settings] = await pool.execute<RowDataPacket[]>("SELECT setting_val FROM admin_settings WHERE setting_key = 'admin_pin' LIMIT 1");
+    const savedPin = String(settings[0]?.setting_val || process.env.ADMIN_PIN || '');
+    if (!savedPin) return res.status(503).json({ message: 'Administrator PIN is not configured. Contact the system operator.' });
+    const pinDigest = (value: string) => crypto.createHash('sha256').update(value).digest();
+    const validPin = crypto.timingSafeEqual(pinDigest(pin), pinDigest(savedPin));
+    const validPassword = await bcrypt.compare(password, String(admin.password_hash));
+    if (!validPin || !validPassword) return denied();
 
-    const [security] = await pool.query<RowDataPacket[]>('SELECT admin_id, enforced FROM admin_security WHERE id = 1');
-    if (Number(security[0]?.admin_id) !== Number(admin.id)) return res.status(403).json({ message: 'This is not the designated administrator account.' });
+    if (admin.enforced && preparePasskey === true) {
+      const verification = await prepareAdminPasskeyLogin(pool, Number(admin.id), req.headers.origin);
+      if (!verification) return res.status(403).json({ message: 'No authorized passkey is available. Open the registered Admin Login address or use admin recovery.' });
+      return res.json({ webauthnRequired: true, ...verification });
+    }
     const token = await passwordVerifiedFlow(pool, Number(admin.id));
-    if (security[0].enforced) return res.json({ webauthnRequired: true, token });
+    if (admin.enforced) return res.json({ webauthnRequired: true, token });
 
-    await pool.execute('INSERT INTO admin_audit_logs (admin_id, action, details) VALUES (?, ?, ?)', [admin.id, 'admin_login', 'Password and configured PIN verified']);
-    createAuthSession(res, Number(admin.id), "admin");
-    res.json({ admin: adminPublicUser(admin), bootstrapRequired: true, token });
-  } catch (error) {
-    console.error("Admin login error:", error);
+    if (allowFixtureAdmin()) {
+      createAuthSession(res, Number(admin.id), 'admin', Number(admin.auth_version));
+      return res.json({ fixtureSession: true });
+    }
+    res.json({ bootstrapRequired: true, token });
+  } catch {
+    console.error('Admin sign-in unavailable.');
     res.status(503).json({ message: "Admin login failed. Check MySQL and admin schema." });
   }
 });
 
-app.post("/api/admin/logout", requireAdmin, (_req, res) => {
-  clearAuthSession(res);
-  res.json({ ok: true });
-});
+app.post("/api/admin/logout", requireAdmin, (req, res) => revokeSession(req, res));
 
 app.get("/api/admin/session", requireAdmin, async (req: AuthRequest, res) => {
   if (!pool || !req.auth) return res.status(503).json({ message: "Database is required for admin session." });
@@ -1276,19 +1284,7 @@ app.patch("/api/admin/thresholds/:id", requireAdmin, async (req: AuthRequest, re
   res.json({ saved: true });
 });
 
-app.post("/api/admin/settings/pin", requireAdmin, async (req: AuthRequest, res) => {
-  const { pin } = req.body ?? {};
-  if (!pin || String(pin).length < 4) return res.status(400).json({ message: "PIN must be at least 4 characters." });
-  if (!pool) return res.status(503).json({ message: "Database is required." });
-  await pool.execute(
-    `INSERT INTO admin_settings (setting_key, setting_val)
-     VALUES ('admin_pin', ?)
-     ON DUPLICATE KEY UPDATE setting_val = VALUES(setting_val)`,
-    [String(pin)]
-  );
-  await logAdminAction(req, "admin_pin_update", "Changed admin PIN");
-  res.json({ saved: true });
-});
+app.post('/api/admin/settings/pin', requireAdmin, (_req, res) => res.status(410).json({ message: 'Use the authorized operator recovery procedure.' }));
 app.delete(['/api/admin/logs', '/api/admin/factory-reset'], requireAdmin,
   (_req, res) => res.status(410).json({ message: 'This destructive operation has been retired.' }));
 

@@ -2,6 +2,7 @@ import type { Pool } from 'mysql2/promise';
 import type { RowDataPacket } from 'mysql2';
 
 export async function migrateAdminWebauthn(db: Pool) {
+  await migrateAdminSessionPolicy(db);
   await db.query(`CREATE TABLE IF NOT EXISTS admin_auth_rate (
     bucket VARCHAR(40) PRIMARY KEY, attempts INT NOT NULL, resets_at DATETIME NOT NULL)`);
   await db.query(`CREATE TABLE IF NOT EXISTS admin_security (
@@ -15,6 +16,7 @@ export async function migrateAdminWebauthn(db: Pool) {
     label VARCHAR(100) NOT NULL, created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     last_used_at DATETIME NULL, revoked_at DATETIME NULL,
     FOREIGN KEY (admin_id) REFERENCES users(id))`);
+  await migrateAdminCredentialPolicy(db);
   await db.query(`CREATE TABLE IF NOT EXISTS admin_auth_flows (
     token_hash CHAR(64) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
     admin_id INT NOT NULL, kind VARCHAR(20) NOT NULL, challenge TEXT NULL,
@@ -26,5 +28,25 @@ export async function migrateAdminWebauthn(db: Pool) {
     const selected = process.env.ADMIN_ACCOUNT_ID ? admins.find(row => Number(row.id) === Number(process.env.ADMIN_ACCOUNT_ID)) : admins.length === 1 ? admins[0] : null;
     if (!selected) throw new Error('Choose the existing administrator with ADMIN_ACCOUNT_ID before Phase 2 startup. No accounts were deleted.');
     await db.execute('INSERT IGNORE INTO admin_security (id, admin_id) VALUES (1, ?)', [selected.id]);
+  }
+}
+
+export async function migrateAdminSessionPolicy(db: Pool) {
+  await db.query(`CREATE TABLE IF NOT EXISTS auth_session_revocations (
+    session_id CHAR(48) CHARACTER SET ascii COLLATE ascii_bin PRIMARY KEY,
+    expires_at DATETIME NOT NULL,
+    INDEX auth_session_expiration (expires_at))`);
+}
+
+export async function migrateAdminCredentialPolicy(db: Pool) {
+  const policyColumns = [
+    ['credential_policy', "ENUM('device-bound','sync-eligible') NOT NULL DEFAULT 'device-bound'"],
+    ['backup_eligible', 'BOOLEAN NULL'],
+    ['backed_up', 'BOOLEAN NULL']
+  ];
+  const [columns] = await db.query<RowDataPacket[]>("SELECT COLUMN_NAME AS name FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'admin_credentials'");
+  const missing = policyColumns.filter(([name]) => !columns.some(column => column.name === name));
+  if (missing.length) {
+    await db.query(`ALTER TABLE admin_credentials ${missing.map(([name, type]) => `ADD COLUMN ${name} ${type}`).join(', ')}`);
   }
 }
