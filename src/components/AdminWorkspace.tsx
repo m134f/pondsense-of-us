@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Gauge, LayoutDashboard, LogOut, Radio, RadioTower, ShieldCheck, UserPlus, Users, Wifi } from 'lucide-react';
+import { Gauge, LayoutDashboard, LogOut, Radio, RadioTower, Settings, UserPlus, Users, Wifi } from 'lucide-react';
 import { apiJson } from '../lib/api';
 import { farmerBrand } from '../lib/farmerBrand';
 import { AdminDetails, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
@@ -35,14 +35,14 @@ export type AdminAccount = {
 
 export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigate: (path: string) => void }) {
   const [signingOut, setSigningOut] = useState(false);
-  const [security, setSecurity] = useState(false);
+  const [passkeysOpen, setPasskeysOpen] = useState(false);
   const [createFarmer, setCreateFarmer] = useState(false);
   const [error, setError] = useState('');
   const active = menu.find(item => item.path === path) ?? menu[0];
   const logout = async () => {
     setSigningOut(true); setError('');
     const response = await apiJson('/api/admin/logout', { method: 'POST', body: '{}' });
-    if (!response.error || response.status === 401) navigate('/admin/login');
+    if (!response.error || response.status === 401 || response.status === 403) navigate('/admin/login');
     else setError(response.error);
     setSigningOut(false);
   };
@@ -58,11 +58,13 @@ export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigat
       </nav>
       <footer className="admin-sidebar-footer">
         <button type="button" className="admin-logout" disabled={signingOut} onClick={() => void logout()}><LogOut size={17} aria-hidden="true" /> {signingOut ? 'Logging out...' : 'Logout'}</button>
+        <button type="button" className="admin-settings" aria-label="Passkey settings" title="Passkey settings" aria-haspopup="dialog" onClick={() => setPasskeysOpen(true)}>
+          <Settings size={18} aria-hidden="true" />
+        </button>
       </footer>
     </aside>
     <header className="admin-topbar">
       <span className="admin-top-title">Admin Console</span>
-      <button type="button" className="soft-button" onClick={() => setSecurity(true)}><ShieldCheck size={17} aria-hidden="true" /> Login security</button>
     </header>
     <main className="admin-main">
       {error && <p className="admin-notice" data-tone="warning" role="alert">{error}</p>}
@@ -71,7 +73,7 @@ export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigat
       {active.path === '/admin/devices' && <SharedHardware />}
       {active.path === '/admin/thresholds' && <AdminThresholds />}
     </main>
-    {security && <AdminDetails title="Login security" close={() => setSecurity(false)}><AdminDeviceSettings /></AdminDetails>}
+    {passkeysOpen && <AdminDetails title="Passkeys" close={() => setPasskeysOpen(false)}><AdminDeviceSettings onTerminated={() => navigate('/admin/login')} /></AdminDetails>}
   </div>;
 }
 

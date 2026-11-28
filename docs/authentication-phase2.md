@@ -2,7 +2,7 @@
 
 ## Deployment status
 
-Implemented locally. Do not claim the device restriction is active before enrollment. The first successful device registration atomically enables enforcement; all prior admin cookies without a credential identifier then stop working. No farmer, device telemetry, harvest or SMS records are removed.
+Implemented locally. Password and PIN can start a short-lived WebAuthn flow but never grant normal admin access, even before first enrollment or during recovery. The first successful registration activates the authenticator and creates the first privileged session. Existing compatible authenticator registrations on the same origin can continue to be used; existing cookies require a fresh login. No farmer, device telemetry, harvest or SMS records are removed.
 
 ## Environment and rollout
 
@@ -13,37 +13,45 @@ For production set:
 - WEBAUTHN_ORIGIN=https://pondsense-of-us.vercel.app
 - WEBAUTHN_RP_ID=pondsense-of-us.vercel.app
 - FRONTEND_URL=https://pondsense-of-us.vercel.app
-- ADMIN_WEBAUTHN_BOOTSTRAP_SECRET: independent random secret, minimum 32 characters, generated and stored by the operator. Never use a VITE variable. Never commit or send it in chat.
+- ADMIN_WEBAUTHN_BOOTSTRAP_SECRET: independent random secret, minimum 32 characters, generated and stored by the operator for initial enrollment or supervised recovery only. Never use a VITE variable. Never commit or send it in chat.
+- AUTH_TRUSTED_PROXY_CIDRS: optional. Configure only verified ingress peers for both the Vercel rewrite and direct Render path. Without it, Render ignores forwarded addresses and uses shared login budgets with per-account limits. Do not use Render outbound ranges or trust all proxies by default.
 - ADMIN_ACCOUNT_ID only if multiple historical administrator rows exist. Startup requires an unambiguous choice; it does not delete or demote historical accounts. Only the designated account can authenticate as admin.
 
 Do not switch domain/RP ID after enrollment without a migration plan. HTTPS is required except on localhost. A credential registered on localhost cannot authenticate on the production domain. Test locally first; enroll production credentials separately.
 
-Additive startup migrations create admin_security, admin_credentials, admin_auth_flows and admin_auth_rate. Existing credentials/password hashes and PIN remain intact. MySQL transactions lock the singleton security row for credential-slot operations, preventing concurrent fourth enrollments. Challenges and password-verification tokens are stored in MySQL, so Render restarts do not lose security state. Tokens expire and are hashed at rest. Remove expired flow rows periodically under an audited retention policy; no automatic history purge runs here.
+Run only reviewed additive migrations separately after approval. Normal startup validates the schema without DDL. Existing admin tables, credential records, password hashes and PIN remain intact. The shared-release migration adds the session revocation table. MySQL serializes enrollment and administrative session termination on the singleton security row. Challenges and password-verification tokens are stored in MySQL; flow tokens expire and are hashed at rest. Remove expired flow rows periodically under an audited retention policy; no automatic history purge runs here.
 
 ## First device
 
 1. Log in with the existing designated administrator password and PIN.
-2. Before enforcement, the existing console remains accessible and explicitly reports that device protection is inactive.
+2. With no active credentials, the login page offers first-device enrollment instead of opening the console.
 3. The operator enters the bootstrap secret in the setup form. Complete the local Windows Hello/device PIN or biometric prompt yourself.
-4. Synced/backup-eligible credentials are rejected. Use a compatible platform authenticator. No password-only fallback is enabled after activation.
-5. Successful verification enables enforcement and creates an authenticated session tied to the credential. Remove the bootstrap secret from Render afterwards. Merely keeping it configured does not permit another bootstrap while enforcement is enabled.
+4. First-device enrollment rejects synced/backup-eligible credentials. Use a compatible device-bound platform authenticator. An independent recovery backup must be separately enrolled as device-bound, not a cloud-synced copy of an approved mobile passkey.
+5. Successful verification enables enforcement and creates an authenticated session tied to the credential. Enroll and verify the backup immediately; remove the bootstrap secret from Render afterwards. Merely keeping it configured does not permit another bootstrap while enforcement is enabled.
 
 ## Second and third devices
 
-On the candidate laptop, enter the correct password/PIN and choose Request enrollment. Share its short-lived request only with the authorized operator. On an enrolled laptop, freshly log in with WebAuthn and open Login security in the Admin Console, then use Approve a new login device to approve that exact request. Approval is bound to the candidate password-verification flow and an active approving credential. Return to the candidate, continue enrollment, and complete its platform authenticator prompt. Approval and registration expire after five minutes. A pending request expires after ten minutes. This is a security-sensitive approval: confirm the candidate laptop/operator out of band.
+On the candidate device, enter the correct password/PIN, choose Request enrollment, and select the credential type. Share its short-lived request only with the authorized operator. On an enrolled device, freshly log in with a device-bound passkey and use the settings gear beside Logout to open Passkeys, then approve the exact request and its credential type. Approval is bound to the candidate password-verification flow and an active device-bound approver. Return to the candidate, continue enrollment, and complete its platform authenticator prompt. Approval and registration expire after five minutes. A pending request expires after ten minutes. Confirm the candidate and operator out of band. See [mobile passkey enrollment](admin-mobile-webauthn.md).
 
 ## Revocation and recovery
 
-Fresh WebAuthn login (within five minutes) is required for approval and revocation. Revocation is recorded, not deleted, and blocks subsequent requests using that credential's cookies. A currently in-flight authorized request may finish. Enroll a replacement before revoking the last credential. Administrator login, approvals, registration and revocation are audited. Verification failures are audited where an authenticated flow identifies the administrator.
+Fresh WebAuthn login (within five minutes) is required for approval and revocation. Only a device-bound session can revoke a device-bound credential, and it cannot revoke the last one. Revocation is recorded, not deleted, and blocks subsequent requests using that credential's cookies, including any synced copies. A currently in-flight authorized request may finish. Administrator login, approvals, registration and revocation are audited.
 
-If all devices are lost, there is deliberately no public reset endpoint. A database/deployment operator must verify identity out of band, back up the database, revoke all admin credentials and outstanding flows, reset admin_security.enforced to FALSE, record the recovery in admin_audit_logs, configure a new bootstrap secret, and supervise first enrollment. Never use this process as routine password-only recovery. Removing a browser credential is not server revocation.
+Use **End all admin sessions** after fresh WebAuthn authentication if a session is lost or suspected copied. It invalidates outstanding sign-in flows and current sessions without removing enrolled authenticators. Ordinary logout invalidates only the current cookie.
+
+If all devices are lost, there is deliberately no public reset endpoint. Use an authorized database/deployment operator with independent access to the hosting and database accounts:
+
+1. Verify the administrator's identity out of band and confirm a current restorable backup. Rehearse this on isolated staging first.
+2. In one audited transaction, lock the designated admin security row, mark its old credentials revoked and outstanding flows consumed, increment the designated admin's session version, and set `admin_security.enforced` to `FALSE`. Do not delete credential or audit records or change any farmer record.
+3. Set a new independent bootstrap secret through the approved server configuration path. Supervise first-device enrollment with the correct password, PIN, bootstrap secret and a successful WebAuthn verification. No privileged session exists in the interim.
+4. Verify both a newly enrolled primary and a separately enrolled backup, and remove the temporary bootstrap secret. Confirm old credentials and sessions remain denied.
 
 ## Limitations and required acceptance tests
 
-The cap is three active device-bound credentials, not a cryptographic guarantee of three physical laptops. The authenticatorAttachment field is client-reported; platform selection is not hardware attestation. Synced credentials are rejected using signed backup flags. No enterprise attestation or managed-laptop certificates are implemented. Some Mac/browser credential providers may offer only synced passkeys and will be rejected. Validate the actual Windows/Chrome/Edge hardware in use; browser WebAuthn support alone does not guarantee an eligible credential.
+The cap is two active credentials, not two physical devices. The authenticatorAttachment field is client-reported; platform selection is not hardware attestation. Signed backup flags enforce the policy of each credential: device-bound is the default, and sync-eligible credentials require separate approval. No enterprise attestation or managed-device certificates are implemented. Validate actual Windows Hello and mobile browsers on staging; generic WebAuthn support does not guarantee eligibility.
 
-Sessions remain HttpOnly bearer cookies. Credential checks provide immediate server revocation, not per-request cryptographic proof of the laptop holding a copied session cookie. Device-bound session credentials or an mTLS access gateway are needed for that stronger guarantee. Password/PIN storage and separate admin-cookie/session redesign remain follow-up work.
+Sessions remain HttpOnly, Secure in production, host-only, SameSite Lax bearer cookies and expire after one hour for admin and eight hours for farmers. Logout/termination provide server-side revocation, not per-request cryptographic proof of which laptop holds an otherwise valid cookie. A request already in flight may still finish. Legacy PIN storage and separate cookie names remain follow-up work. Do not use a shared, disclosed, or demo password in production.
 
-Bounded shared database rate buckets limit admin password attempts and WebAuthn mutations across restarts/instances. These can temporarily throttle all admin users under attack; they are abuse controls, not identity checks.
+Individual account and verified-source limits use shared MySQL counters across restarts/instances. Users on the same genuine source IP can still share the higher IP cap (for example, a busy campus network), but one farmer reaching their account cap does not exhaust other accounts' quotas.
 
-Automated tests cover policy, capacity, token hashing and basic HTTP denial paths. Real platform enrollment, signatures, origin mismatch assertions, concurrent MySQL slot tests, recovery, revocation with copied cookies, and production Vercel proxy behavior still require acceptance testing. Do not represent mock tests as real-device certification. No real SMS is sent by these tests.
+Before enabling this release in production, on the actual HTTPS staging domain with an isolated database and SMS disabled: enroll the primary with Windows Hello; deny an unsigned assertion and password/PIN-only access; separately approve and enroll the backup; verify independent sign-in on both; test logout, session termination and device revocation; rehearse recovery with neither test authenticator available; and verify the correct ingress IP is applied through both paths. Never use production credentials or keys for this test.

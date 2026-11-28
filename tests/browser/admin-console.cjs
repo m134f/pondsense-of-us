@@ -44,7 +44,7 @@ async function main() {
       if (url.pathname.endsWith('/hardware/1/assign')) Object.assign(monitor, { assignmentId: 'b', farmer: other.fullName, fishpen: other.fishpenName, status: 'Offline' });
       const responses = {
         '/api/admin/session': { admin: { id: 1, role: 'admin', fullName: 'Sample Administrator' } },
-        '/api/admin/login': { token: 'fixture-device-verification', bootstrapRequired: true },
+        '/api/admin/login': { fixtureSession: true },
         '/api/admin/overview': { counts: { farmers: 2, sensorReadings: 142, criticalToday: 7, smsToday: 3 },
           devices: { online: 1, offline: 1, never: 1, inactive: 1, assigned: 1 },
           activity: [{ id: 1, kind: 'upload', happened_at: now, label: 'Hidden fixture activity', device_id: 14 }] },
@@ -66,7 +66,8 @@ async function main() {
         '/api/admin/alerts': { alerts: [{ id: 6, user_id: 2, full_name: farmer.fullName, sms_status: 'skipped' }] },
         '/api/admin/planning-sms': { logs: [{ id: 7, owner_user_id: 2, full_name: farmer.fullName, status: 'sent' }] },
         '/api/admin/thresholds': { fish },
-        '/api/admin/security/devices': { devices: [{ id: 21, label: 'Admin laptop', last_used_at: now, revoked_at: null }], currentCredentialId: 21 },
+        '/api/admin/security/devices': { devices: [{ id: 21, label: 'Admin laptop', last_used_at: now, revoked_at: null,
+          credential_policy: 'device-bound', backup_eligible: 0, backed_up: 0 }], currentCredentialId: 21, maxCredentials: 2 },
         '/api/admin/logout': { ok: true }
       };
       return route.fulfill({ json: responses[url.pathname] ?? {} });
@@ -85,7 +86,6 @@ async function main() {
     await page.getByLabel('Admin password').fill('fixture-only');
     await page.getByLabel('Admin PIN').fill('0000');
     await page.getByRole('button', { name: 'Login to Admin' }).click();
-    await page.getByRole('button', { name: 'Continue existing admin access until setup' }).click();
     await page.getByRole('alert').getByText('Overview temporarily unavailable.').waitFor();
     overviewUnavailable = false;
     await page.getByRole('button', { name: 'Try again' }).click();
@@ -208,8 +208,11 @@ async function main() {
     tilapia.optimal_ph_max = '8.5';
 
     assert.ok(!reads.includes('/api/admin/security/devices'));
-    await page.getByRole('button', { name: 'Login security' }).click();
-    const security = page.getByRole('dialog', { name: 'Login security' });
+    assert.equal(await page.locator('.admin-topbar').getByRole('button').count(), 0);
+    assert.equal(await page.getByRole('button', { name: 'Login security' }).count(), 0);
+    const settings = page.locator('.admin-sidebar-footer').getByRole('button', { name: 'Passkey settings' });
+    await settings.click();
+    const security = page.getByRole('dialog', { name: 'Passkeys' });
     await security.getByText(/Admin laptop/).waitFor();
     assert.equal(await security.getByLabel('Enrollment request').isVisible(), false);
     await security.getByText('Approve a new login device', { exact: true }).click();
@@ -217,11 +220,11 @@ async function main() {
     page.once('dialog', dialog => dialog.accept());
     await security.getByRole('button', { name: 'Approve device enrollment' }).click();
     await security.getByText('Saved.', { exact: true }).waitFor();
-    assert.ok(writes.some(([method, path]) => method === 'POST' && path.endsWith('/security/enroll/approve')));
+    assert.ok(writes.some(([method, path, body]) => method === 'POST' && path.endsWith('/security/enroll/approve') && body.policy === 'device-bound'));
     await security.getByText('Recover access', { exact: true }).click();
     await security.getByText(/system operator/).waitFor();
     await page.keyboard.press('Escape');
-    await page.getByRole('button', { name: 'Login security' }).waitFor();
+    await settings.waitFor();
 
     for (const retired of ['/admin/logs', '/admin/settings']) {
       await go(retired);
@@ -243,6 +246,14 @@ async function main() {
           if (target === 'Dashboard') await page.locator('.admin-metric dd li').filter({ hasText: 'Shared ESP32: Offline' }).waitFor();
           await save('mobile-' + slug);
         }
+      }
+      if (width === 320 || width === 390) {
+        await settings.click();
+        await security.getByText('Authorized login devices', { exact: true }).waitFor();
+        const dialogBox = await security.boundingBox();
+        assert.ok(dialogBox && dialogBox.x >= 0 && dialogBox.x + dialogBox.width <= width + 1);
+        await page.keyboard.press('Escape');
+        await security.waitFor({ state: 'hidden' });
       }
     }
     await page.getByRole('button', { name: 'Logout' }).click();
