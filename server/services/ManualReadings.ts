@@ -1,5 +1,6 @@
 import type { Pool, PoolConnection, ResultSetHeader, RowDataPacket } from 'mysql2/promise';
 import type { SessionRecord, WaterParams } from '../../src/types';
+import { historyTimestamp } from '../../src/lib/historyDates';
 
 export function parseManualSaveTime(value: unknown) {
   if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.000Z$/.test(value)) return null;
@@ -12,7 +13,8 @@ export async function saveManualReading(db: Pool, owner: number, reading: Partia
   const selection = 'SELECT id, recorded_at, ph, temperature, dissolved_oxygen, turbidity FROM water_readings';
   const toSession = (row: RowDataPacket): SessionRecord => ({
     id: String(row.id), inputMode: 'manual', turbidityEstimated: false,
-    timestamp: new Date(row.recorded_at).toLocaleString('en-PH'),
+    timestamp: historyTimestamp(new Date(row.recorded_at)),
+    recordedAt: new Date(row.recorded_at).toISOString(),
     ph: row.ph === null ? null : Number(row.ph), temperature: row.temperature === null ? null : Number(row.temperature),
     dissolvedOxygen: row.dissolved_oxygen === null ? null : Number(row.dissolved_oxygen),
     turbidity: row.turbidity === null ? null : Number(row.turbidity),

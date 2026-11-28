@@ -15,6 +15,7 @@ import { adminWebauthnRouter, passwordVerifiedFlow, prepareAdminPasskeyLogin } f
 import { publicMonitoringRouter } from './routes/publicMonitoring';
 import { validateManual } from '../src/lib/manualValidation';
 import { parseManualSaveTime, saveManualReading } from './services/ManualReadings';
+import { loadReadingHistory, readingHistoryBounds } from './services/ReadingHistory';
 import "dotenv/config";
 import crypto from "node:crypto";
 import express from "express";
@@ -392,39 +393,9 @@ app.get("/api/session", async (req, res) => {
 app.get("/api/readings", async (req, res) => {
   const auth = verifyAuthToken(req);
   if (!auth || !pool) return res.status(401).json({ message: "Login required." });
-
-  const [rows] = await pool.execute<RowDataPacket[]>(
-    `SELECT * FROM (
-       (SELECT CAST(id AS CHAR) AS id, input_mode, recorded_at, ph, temperature,
-        dissolved_oxygen, turbidity, ammonia, best_fish, best_score, 0 AS turbidity_estimated, NULL AS fishpen_id, NULL AS fishpen_name
-        FROM water_readings WHERE user_id = ? ORDER BY recorded_at DESC, id DESC LIMIT 50)
-       UNION ALL
-       (SELECT CONCAT('sensor-', t.id) AS id, 'sensor' AS input_mode, COALESCE(sampled_at, recorded_at) AS recorded_at, ph,
-        temperature_c AS temperature, dissolved_oxygen, turbidity_ntu AS turbidity,
-        NULL AS ammonia, NULL AS best_fish, NULL AS best_score, 0 AS turbidity_estimated, t.fishpen_id, a.fishpen_name
-        FROM sensor_telemetry t LEFT JOIN hardware_assignments a ON a.id = t.assignment_id
-        WHERE t.owner_user_id = ? AND t.water_contact_confirmed = TRUE
-        ORDER BY COALESCE(sampled_at, recorded_at) DESC, t.id DESC LIMIT 50)
-     ) AS history ORDER BY recorded_at DESC, id DESC LIMIT 100`,
-    [auth.sub, auth.sub]
-  );
-
-  res.json({
-    sessions: rows.map((row) => ({
-      id: String(row.id),
-      timestamp: row.recorded_at ? new Date(row.recorded_at).toLocaleString("en-PH") : "",
-      inputMode: row.input_mode,
-      turbidityEstimated: Boolean(row.turbidity_estimated),
-      ph: row.ph === null ? null : Number(row.ph),
-      ...(row.fishpen_id == null ? {} : { fishpenId: Number(row.fishpen_id), fishpenName: row.fishpen_name }),
-      temperature: row.temperature === null ? null : Number(row.temperature),
-      dissolvedOxygen: row.dissolved_oxygen === null ? null : Number(row.dissolved_oxygen),
-      turbidity: row.turbidity === null ? null : Number(row.turbidity),
-      ammonia: row.ammonia === null ? null : Number(row.ammonia),
-      bestFish: String(row.best_fish || ""),
-      score: row.best_score === null ? null : Number(row.best_score)
-    }))
-  });
+  const bounds = readingHistoryBounds(req.query.from, req.query.to);
+  if (bounds === null) return res.status(400).json({ message: 'Choose a valid start and end date.' });
+  res.json({ sessions: await loadReadingHistory(pool, auth.sub, bounds) });
 });
 
 app.post("/api/logout", (req, res) => revokeSession(req, res));
@@ -944,7 +915,7 @@ app.post("/api/harvests/:id/mortalities", async (req, res) => {
       "INSERT INTO harvest_mortalities (batch_id, mortality_date, dead_count, notes) VALUES (?, ?, ?, ?)",
       [batchId, mortalityDate, Number(deadCount), notes || null]);
     await connection.commit();
-    res.status(201).json({ id: result.insertId });
+    res.status(201).json({ id: result.insertId, remainingStock: remaining - Number(deadCount) });
   } catch (error) {
     await connection.rollback();
     console.error("Mortality record error:", error);
@@ -960,7 +931,9 @@ app.post("/api/harvests/:id/events", async (req, res) => {
   const { harvestType, harvestDate, fishCount, weightKg, pricePerKg } = req.body || {};
   if (harvestType === 'complete' && req.body.confirmComplete !== true) return res.status(400).json({ message: 'Confirm complete harvest before closing this batch.' });
   if (harvestDate > new Date().toLocaleDateString('en-CA', { timeZone: 'Asia/Manila' })) return res.status(400).json({ message: 'Actual harvest cannot be in the future.' });
-  const count = fishCount === "" || fishCount === null || fishCount === undefined ? null : Number(fishCount);
+  const count = fishCount === "" || fishCount === null || fishCount === undefined ? null
+    : typeof fishCount === 'number' || typeof fishCount === 'string' ? Number(fishCount) : NaN;
+  if (harvestType === 'partial' && count === null) return res.status(400).json({ message: 'Enter the number of fish harvested for a partial harvest.' });
   const price = pricePerKg === "" || pricePerKg === null || pricePerKg === undefined ? null : Number(pricePerKg);
   if (!Number.isSafeInteger(batchId) || !["partial", "complete"].includes(harvestType) || !validHarvestDate(harvestDate) ||
       (count !== null && !validPositiveInteger(count)) || !Number.isFinite(Number(weightKg)) || Number(weightKg) <= 0 ||
@@ -997,7 +970,7 @@ app.post("/api/harvests/:id/events", async (req, res) => {
     if (harvestType === "complete") await connection.execute(
       "UPDATE harvest_batches SET actual_harvest_date = ? WHERE id = ?", [harvestDate, batchId]);
     await connection.commit();
-    res.status(201).json({ id: result.insertId });
+    res.status(201).json({ id: result.insertId, remainingStock: harvestType === 'complete' ? 0 : remaining - (count ?? 0) });
   } catch (error) {
     await connection.rollback();
     console.error("Harvest event error:", error);

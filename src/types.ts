@@ -45,6 +45,7 @@ export type SessionRecord = { [K in keyof WaterParams]: number | null } & {
   turbidityEstimated?: boolean;
   id: string;
   timestamp: string;
+  recordedAt?: string;
   bestFish: string;
   score: number | null;
 };
