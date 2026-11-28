@@ -19,7 +19,7 @@ async function promptForAdminPasskey<T>(rpID: string | undefined, operation: 'si
     }
     if (name === 'NotAllowedError' || name === 'AbortError' || name === 'NotSupportedError') {
       const next = operation === 'sign-in'
-        ? 'Use an enrolled passkey, or request approval to enroll a new one.'
+        ? 'Use an enrolled passkey for this site.'
         : operation === 'device-bound'
           ? 'This request requires a device-bound passkey. A synced passkey needs separate approval.'
           : 'Check that your phone has a passkey provider and a screen lock, then start a new request.';
@@ -72,7 +72,7 @@ export function AdminDeviceEnrollment({ token, bootstrap, onDone }: { token: str
   return <div className="space-y-3 border-t border-slate-200 pt-4">
     <h2 className="font-bold">{bootstrap ? 'Register the first administrator device' : 'Register this administrator device'}</h2>
     {bootstrap ? <label className="block text-sm">Operator bootstrap secret<input type="password" autoComplete="off" className="auth-input mt-1 w-full border p-3" value={secret} onChange={e => setSecret(e.target.value)} /></label> : <>
-      <p className="text-sm text-slate-600">Approve the request in Passkey settings after signing in with an enrolled device-bound passkey.</p>
+      <p className="text-sm text-slate-600">Approve the request at <code>/admin/passkeys</code> after signing in with an enrolled device-bound passkey.</p>
       <CredentialTypeField label="Credential type" value={policy} onChange={setPolicy} disabled={busy || requested} />
       {policy === 'sync-eligible' && <p className="text-sm text-amber-800">{syncNotice}</p>}
       {!requested ? <button disabled={busy} className="soft-button" onClick={async () => {

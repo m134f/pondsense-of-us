@@ -9,7 +9,7 @@ those defaults. The web origin is not the Render API hostname.
 ## Identify the failing step
 
 On the enrolled Windows laptop, verify that fresh admin sign-in succeeds and
-open the settings gear beside **Logout** and check **Passkeys > Authorized login devices**. A label alone does not
+open `/admin/passkeys` directly and check **Authorized login devices**. A label alone does not
 prove a credential is on the phone; a successful sign-in and a matching
 last-verification timestamp do. Do not revoke the working credential.
 
@@ -48,8 +48,8 @@ policy and both flags without logging the assertion or tokens.
 
 1. First rehearse on isolated HTTPS staging, with disposable accounts and a
    credential enrolled on that RP ID. Keep production credentials untouched.
-2. On the phone, fill the admin login fields, open **Set up or recover a
-   passkey**, select **Request enrollment of a new device**, then choose
+2. On the phone, open `/admin/passkeys/enroll` directly, fill the admin login
+   fields, and select **Continue to passkey setup**. Then choose
    **Sync-eligible mobile passkey** and select
    **Request device approval**. Confirm the request in person or over an
    authenticated channel with the approving administrator.

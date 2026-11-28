@@ -130,11 +130,11 @@ try {
     const sessionStatus = () => page.evaluate(async () => (await fetch('/api/admin/session')).status);
     const platformAvailable = await page.evaluate(() => PublicKeyCredential.isUserVerifyingPlatformAuthenticatorAvailable());
     console.log(`Windows platform authenticator advertised: ${platformAvailable ? 'yes' : 'no'}.`);
-    async function passwordStep() {
+    async function passwordStep(button = 'Login to Admin') {
       await page.getByLabel('Username or email').fill(login.identifier);
       await page.getByLabel('Admin password').fill(login.password);
       await page.getByLabel('Admin PIN').fill(login.pin);
-      await page.getByRole('button', { name: 'Login to Admin' }).click();
+      await page.getByRole('button', { name: button }).click();
     }
     function waitForDashboard() {
       return Promise.race([
@@ -172,7 +172,8 @@ try {
       await page.waitForEvent('close', { timeout: 120_000 }).catch(() => undefined);
       return;
     }
-    await passwordStep();
+    await page.goto(`${origin}/admin/passkeys/enroll`);
+    await passwordStep('Continue to passkey setup');
     await page.getByRole('heading', { name: 'Register the first administrator device' }).waitFor();
     assert.equal(await sessionStatus(), 401);
     await page.getByLabel('Operator bootstrap secret').fill(initialBootstrap);
@@ -289,6 +290,8 @@ try {
   await probe.context.addCookies(primaryCookie);
   await probe.step('/admin/session', undefined, 401);
   await primary.verifyInUi(primaryId);
+  assert.equal(await primary.page.getByRole('button', { name: /Login security|Passkey settings/ }).count(), 0);
+  assert.equal(await primary.page.locator('a[href="/admin/passkeys"]').count(), 0);
   console.log('PASS: primary enrollment, additive migration twice preserving the existing credential, signed login, challenge replay rejection, HTTPS cookie and logout revocation.');
 
   const mobilePrompt = await actor(false, {}, true);
@@ -327,11 +330,11 @@ try {
   const apple = await actor(true, { defaultBackupEligibility: true, defaultBackupState: false }, true);
   const android = await actor(true, { defaultBackupEligibility: true, defaultBackupState: true }, true);
   const syncedCopy = await actor(true, { defaultBackupEligibility: true, defaultBackupState: true });
+  await apple.page.goto(`${origin}/admin/passkeys/enroll`);
   await apple.page.getByLabel('Username or email').fill(login.identifier);
   await apple.page.getByLabel('Admin password').fill(login.password);
   await apple.page.getByLabel('Admin PIN').fill(login.pin);
-  await apple.page.getByText('Set up or recover a passkey', { exact: true }).click();
-  await apple.page.getByRole('button', { name: 'Request enrollment of a new device' }).click();
+  await apple.page.getByRole('button', { name: 'Continue to passkey setup' }).click();
   await apple.page.getByLabel('Credential type', { exact: true }).selectOption(sync);
   await apple.page.getByText(/may be available on other devices/).waitFor();
   await apple.step('/admin/session', undefined, 401);
@@ -340,8 +343,8 @@ try {
   await apple.step('/admin/security/enroll/options', { token: appleToken }, 400);
   await primary.step('/admin/security/enroll/approve', { token: appleToken }, 400);
   await apple.step('/admin/security/enroll/approve', { token: appleToken, policy: sync }, 401);
-  await primary.page.goto(`${origin}/admin/dashboard`);
-  await primary.page.getByRole('button', { name: 'Passkey settings' }).click();
+  await primary.page.goto(`${origin}/admin/passkeys`);
+  await primary.page.getByRole('heading', { name: 'Passkeys', exact: true }).waitFor();
   await primary.page.getByText('Approve a new login device', { exact: true }).click();
   await primary.page.getByLabel('Enrollment request').fill(appleToken);
   await primary.page.getByLabel('Credential type to approve').selectOption(sync);
@@ -384,7 +387,6 @@ try {
   const [[auditEntry]] = await db.query("SELECT details FROM admin_audit_logs WHERE action = 'admin_device_login' ORDER BY id DESC LIMIT 1");
   assert.deepEqual(JSON.parse(auditEntry.details), { credentialId: appleId, policy: sync, backupEligible: true, backedUp: true });
   await primary.page.reload();
-  await primary.page.getByRole('button', { name: 'Passkey settings' }).click();
   await primary.page.getByText('2 of 2 credentials enrolled.', { exact: false }).waitFor();
   assert.equal(await primary.page.getByText('Approve a new login device', { exact: true }).count(), 0);
   const appleItem = primary.page.getByRole('listitem').filter({ hasText: 'Virtual iPhone passkey' });
@@ -440,6 +442,8 @@ try {
   const farmerSession = await farmerBrowser.step('/session');
   assert.equal(farmerSession.user.id, farmer.id);
   await farmerBrowser.step('/admin/session', undefined, 403);
+  await farmerBrowser.page.goto(`${origin}/admin/passkeys`);
+  await farmerBrowser.page.waitForURL(`${origin}/admin/login`);
   const [[row]] = await db.query('SELECT id, password_hash, auth_version FROM users WHERE id = ?', [farmer.id]);
   const legacyBrowser = await actor(false);
   const encode = value => Buffer.from(JSON.stringify(value)).toString('base64url');

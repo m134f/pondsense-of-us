@@ -29,18 +29,17 @@ Enter only the credentials in the private staging note on the workstation.
 The browser-access prompt and the PondSense form have different credentials.
 Do not send passwords, PINs, bootstrap secrets, approval codes, passkey
 details, or unredacted Network logs in chat.
-Open **Passkeys** using the settings gear beside **Logout**. Older staging
-builds show the same controls under **Login security** in the header.
+After signing in, open `/admin/passkeys` directly. It is not linked from the
+Admin Console navigation or the Farmer Dashboard.
 
-1. **Windows Hello.** Open `/admin/login` in Edge or Chrome. Enter the
+1. **Windows Hello.** Open `/admin/passkeys/enroll` in Edge or Chrome. Enter the
    staging admin username, password and PIN. For first-device enrollment,
    enter the staging bootstrap secret and click **Set up Windows Hello /
    device verification**. Choose Windows Hello, not a cloud-synced passkey.
    Confirm **Device-bound passkey** in **Passkeys**. Log out and
    repeat sign-in with **Login to Admin**, which opens the native passkey prompt.
-2. **iPhone enrollment.** In Safari open the same staging Admin Login.
-   After filling the login fields, select **Set up or recover a passkey >
-   Request enrollment of a new device >
+2. **iPhone enrollment.** In Safari open `/admin/passkeys/enroll`.
+   After filling the login fields, select **Continue to passkey setup >
    Sync-eligible mobile passkey > Request device approval**.
 3. **Approve the iPhone.** Within five minutes of Windows Hello
    verification, open **Passkeys > Approve a new login device** on

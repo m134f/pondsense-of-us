@@ -23,7 +23,7 @@ Run only reviewed additive migrations separately after approval. Normal startup 
 
 ## First device
 
-1. Log in with the existing designated administrator password and PIN.
+1. Open `/admin/passkeys/enroll` and enter the designated administrator password and PIN.
 2. With no active credentials, the login page offers first-device enrollment instead of opening the console.
 3. The operator enters the bootstrap secret in the setup form. Complete the local Windows Hello/device PIN or biometric prompt yourself.
 4. First-device enrollment rejects synced/backup-eligible credentials. Use a compatible device-bound platform authenticator. An independent recovery backup must be separately enrolled as device-bound, not a cloud-synced copy of an approved mobile passkey.
@@ -31,7 +31,7 @@ Run only reviewed additive migrations separately after approval. Normal startup 
 
 ## Second and third devices
 
-On the candidate device, enter the correct password/PIN, choose Request enrollment, and select the credential type. Share its short-lived request only with the authorized operator. On an enrolled device, freshly log in with a device-bound passkey and use the settings gear beside Logout to open Passkeys, then approve the exact request and its credential type. Approval is bound to the candidate password-verification flow and an active device-bound approver. Return to the candidate, continue enrollment, and complete its platform authenticator prompt. Approval and registration expire after five minutes. A pending request expires after ten minutes. Confirm the candidate and operator out of band. See [mobile passkey enrollment](admin-mobile-webauthn.md).
+On the candidate device, open `/admin/passkeys/enroll`, enter the correct password/PIN, and select the credential type. Share its short-lived request only with the authorized operator. On an enrolled device, freshly log in with a device-bound passkey, open `/admin/passkeys` directly, and approve the exact request and its credential type. Approval is bound to the candidate password-verification flow and an active device-bound approver. Return to the candidate, continue enrollment, and complete its platform authenticator prompt. Approval and registration expire after five minutes. A pending request expires after ten minutes. Confirm the candidate and operator out of band. See [mobile passkey enrollment](admin-mobile-webauthn.md).
 
 ## Revocation and recovery
 

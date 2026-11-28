@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import { Gauge, LayoutDashboard, LogOut, Radio, RadioTower, Settings, UserPlus, Users, Wifi } from 'lucide-react';
+import { Gauge, LayoutDashboard, LogOut, Radio, RadioTower, UserPlus, Users, Wifi } from 'lucide-react';
 import { apiJson } from '../lib/api';
 import { farmerBrand } from '../lib/farmerBrand';
-import { AdminDetails, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
+import { AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
 import { AdminDeviceSettings } from './AdminDeviceSecurity';
 import { AdminUsers } from './AdminPeople';
 import { SharedHardware, type HardwareRow } from './SharedHardware';
@@ -16,9 +16,11 @@ const menu = [
   { path: '/admin/thresholds', label: 'Thresholds', Icon: Gauge }
 ] as const;
 
-export type AdminSection = typeof menu[number]['path'];
+const passkeysPath = '/admin/passkeys';
+
+export type AdminSection = typeof menu[number]['path'] | typeof passkeysPath;
 export function isAdminSection(path: string): path is AdminSection {
-  return menu.some(item => item.path === path);
+  return path === passkeysPath || menu.some(item => item.path === path);
 }
 export type AdminAccount = {
   id: number;
@@ -35,10 +37,8 @@ export type AdminAccount = {
 
 export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigate: (path: string) => void }) {
   const [signingOut, setSigningOut] = useState(false);
-  const [passkeysOpen, setPasskeysOpen] = useState(false);
   const [createFarmer, setCreateFarmer] = useState(false);
   const [error, setError] = useState('');
-  const active = menu.find(item => item.path === path) ?? menu[0];
   const logout = async () => {
     setSigningOut(true); setError('');
     const response = await apiJson('/api/admin/logout', { method: 'POST', body: '{}' });
@@ -50,7 +50,7 @@ export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigat
     <aside className="admin-sidebar">
       <a href="/admin/dashboard" className="admin-brand"><img alt="" src={farmerBrand.logo} width="30" height="30" /><span>{farmerBrand.name}</span></a>
       <nav aria-label="Admin navigation">
-        {menu.map(({ path: href, label, Icon }) => <a key={href} href={href} aria-current={active.path === href ? 'page' : undefined} onClick={e => {
+        {menu.map(({ path: href, label, Icon }) => <a key={href} href={href} aria-current={path === href ? 'page' : undefined} onClick={e => {
           if (e.button || e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) return;
           e.preventDefault();
           if (href !== path) { setCreateFarmer(false); navigate(href); }
@@ -58,9 +58,6 @@ export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigat
       </nav>
       <footer className="admin-sidebar-footer">
         <button type="button" className="admin-logout" disabled={signingOut} onClick={() => void logout()}><LogOut size={17} aria-hidden="true" /> {signingOut ? 'Logging out...' : 'Logout'}</button>
-        <button type="button" className="admin-settings" aria-label="Passkey settings" title="Passkey settings" aria-haspopup="dialog" onClick={() => setPasskeysOpen(true)}>
-          <Settings size={18} aria-hidden="true" />
-        </button>
       </footer>
     </aside>
     <header className="admin-topbar">
@@ -68,12 +65,15 @@ export function AdminWorkspace({ path, navigate }: { path: AdminSection; navigat
     </header>
     <main className="admin-main">
       {error && <p className="admin-notice" data-tone="warning" role="alert">{error}</p>}
-      {active.path === '/admin/dashboard' && <AdminOverview navigate={navigate} onCreate={() => { setCreateFarmer(true); navigate('/admin/users'); }} />}
-      {active.path === '/admin/users' && <AdminUsers openCreate={createFarmer} />}
-      {active.path === '/admin/devices' && <SharedHardware />}
-      {active.path === '/admin/thresholds' && <AdminThresholds />}
+      {path === '/admin/dashboard' && <AdminOverview navigate={navigate} onCreate={() => { setCreateFarmer(true); navigate('/admin/users'); }} />}
+      {path === '/admin/users' && <AdminUsers openCreate={createFarmer} />}
+      {path === '/admin/devices' && <SharedHardware />}
+      {path === '/admin/thresholds' && <AdminThresholds />}
+      {path === passkeysPath && <>
+        <AdminHeading title="Passkeys" />
+        <div className="admin-panel"><AdminDeviceSettings onTerminated={() => navigate('/admin/login')} /></div>
+      </>}
     </main>
-    {passkeysOpen && <AdminDetails title="Passkeys" close={() => setPasskeysOpen(false)}><AdminDeviceSettings onTerminated={() => navigate('/admin/login')} /></AdminDetails>}
   </div>;
 }
 

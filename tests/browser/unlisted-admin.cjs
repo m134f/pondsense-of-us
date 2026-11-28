@@ -74,16 +74,21 @@ async function check(channel, viewport, mobile = false) {
     await page.getByRole('button', { name: 'Login to Admin' }).click();
     await page.getByRole('alert').filter({ hasText: 'Use an enrolled passkey' }).waitFor();
     assert.equal(await page.getByRole('button', { name: 'Verify this authorized device' }).count(), 0);
+    assert.equal(await page.getByText('Set up or recover a passkey', { exact: true }).count(), 0);
+    assert.equal(await page.getByRole('button', { name: /passkey setup|request enrollment/i }).count(), 0);
+    await go('/admin/passkeys/enroll');
+    await page.getByRole('heading', { name: 'Set up an admin passkey' }).waitFor();
+    assert.equal(await noIndex.getAttribute('content'), robots);
     await fillAdminLogin();
-    await page.getByText('Set up or recover a passkey', { exact: true }).click();
-    await page.getByRole('button', { name: 'Request enrollment of a new device' }).click();
+    await page.getByRole('button', { name: 'Continue to passkey setup' }).click();
     await page.getByRole('button', { name: 'Request device approval' }).click();
     await page.getByRole('button', { name: 'Continue after approval' }).click();
     await page.getByRole('alert').filter({ hasText: 'A synced passkey needs separate approval' }).waitFor();
     assert.equal(optionsRequests, 1);
     assert.equal(verifyRequests, 0);
-    assert.equal(new URL(page.url()).pathname, '/admin/login');
+    assert.equal(new URL(page.url()).pathname, '/admin/passkeys/enroll');
 
+    await page.getByRole('button', { name: 'Back to admin login' }).click();
     await page.getByRole('button', { name: 'Farmer Login' }).click();
     await page.getByRole('heading', { name: 'Login', exact: true }).waitFor();
     await noAdminOnFarmer();
@@ -93,7 +98,7 @@ async function check(channel, viewport, mobile = false) {
     assert.equal(await noIndex.getAttribute('content'), robots);
 
     if (!mobile) {
-      for (const path of ['/admin', '/admin/dashboard', '/admin/users', '/admin/devices', '/admin/thresholds']) {
+      for (const path of ['/admin', '/admin/dashboard', '/admin/users', '/admin/devices', '/admin/thresholds', '/admin/passkeys']) {
         await go(path);
         await adminLogin.waitFor();
         assert.equal(new URL(page.url()).pathname, '/admin/login');
@@ -111,7 +116,7 @@ async function check(channel, viewport, mobile = false) {
       await page.getByRole('heading', { name: 'Water Monitoring' }).waitFor();
       await noAdminOnFarmer();
       rejectedStatus = 403;
-      await go('/admin/users');
+      await go('/admin/passkeys');
       await adminLogin.waitFor();
       assert.equal(new URL(page.url()).pathname, '/admin/login');
     }

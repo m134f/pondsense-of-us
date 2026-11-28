@@ -209,10 +209,11 @@ async function main() {
 
     assert.ok(!reads.includes('/api/admin/security/devices'));
     assert.equal(await page.locator('.admin-topbar').getByRole('button').count(), 0);
-    assert.equal(await page.getByRole('button', { name: 'Login security' }).count(), 0);
-    const settings = page.locator('.admin-sidebar-footer').getByRole('button', { name: 'Passkey settings' });
-    await settings.click();
-    const security = page.getByRole('dialog', { name: 'Passkeys' });
+    assert.equal(await page.getByRole('button', { name: /Login security|Passkey settings/ }).count(), 0);
+    assert.equal(await page.locator('a[href="/admin/passkeys"]').count(), 0);
+    await go('/admin/passkeys');
+    const security = page.locator('.admin-main');
+    await security.getByRole('heading', { name: 'Passkeys', exact: true }).waitFor();
     await security.getByText(/Admin laptop/).waitFor();
     assert.equal(await security.getByLabel('Enrollment request').isVisible(), false);
     await security.getByText('Approve a new login device', { exact: true }).click();
@@ -223,8 +224,6 @@ async function main() {
     assert.ok(writes.some(([method, path, body]) => method === 'POST' && path.endsWith('/security/enroll/approve') && body.policy === 'device-bound'));
     await security.getByText('Recover access', { exact: true }).click();
     await security.getByText(/system operator/).waitFor();
-    await page.keyboard.press('Escape');
-    await settings.waitFor();
 
     for (const retired of ['/admin/logs', '/admin/settings']) {
       await go(retired);
@@ -248,12 +247,10 @@ async function main() {
         }
       }
       if (width === 320 || width === 390) {
-        await settings.click();
+        await go('/admin/passkeys');
         await security.getByText('Authorized login devices', { exact: true }).waitFor();
-        const dialogBox = await security.boundingBox();
-        assert.ok(dialogBox && dialogBox.x >= 0 && dialogBox.x + dialogBox.width <= width + 1);
-        await page.keyboard.press('Escape');
-        await security.waitFor({ state: 'hidden' });
+        assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), 'Passkeys clips at ' + width);
+        await save('mobile-passkeys-' + width);
       }
     }
     await page.getByRole('button', { name: 'Logout' }).click();

@@ -2521,7 +2521,8 @@ function AdminRouter({ path, navigate }: { path: string; navigate: (path: string
   const [admin, setAdmin] = useState<AdminUser | null>(null);
   const [error, setError] = useState('');
   const [attempt, setAttempt] = useState(0);
-  const loginPage = path === '/admin/login';
+  const enrollmentPage = path === '/admin/passkeys/enroll';
+  const accessPage = path === '/admin/login' || enrollmentPage;
 
   useEffect(() => {
     const robots = document.createElement('meta');
@@ -2533,7 +2534,7 @@ function AdminRouter({ path, navigate }: { path: string; navigate: (path: string
 
   useEffect(() => {
     setError('');
-    if (loginPage) { setAdmin(null); return; }
+    if (accessPage) { setAdmin(null); return; }
     let active = true;
     apiJson<{ admin: AdminUser | null }>("/api/admin/session").then((result) => {
       if (!active) return;
@@ -2551,10 +2552,10 @@ function AdminRouter({ path, navigate }: { path: string; navigate: (path: string
     return () => {
       active = false;
     };
-  }, [path, loginPage, navigate, attempt]);
+  }, [path, accessPage, navigate, attempt]);
 
-  if (path === "/admin/login") {
-    return <AdminLoginPage navigate={navigate} />;
+  if (accessPage) {
+    return <AdminLoginPage key={path} navigate={navigate} enrolling={enrollmentPage} />;
   }
 
   if (!admin) {
@@ -2570,7 +2571,7 @@ function AdminRouter({ path, navigate }: { path: string; navigate: (path: string
   return <AdminWorkspace path={isAdminSection(path) ? path : '/admin/dashboard'} navigate={navigate} />;
 }
 
-function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
+function AdminLoginPage({ navigate, enrolling }: { navigate: (path: string) => void; enrolling: boolean }) {
   const [deviceFlow, setDeviceFlow] = useState<{ token: string; bootstrap: boolean } | null>(null);
   const [identifier, setIdentifier] = useState("admin");
   const [password, setPassword] = useState("");
@@ -2578,13 +2579,13 @@ function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
   const [error, setError] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
-  const login = async (enroll: boolean) => {
+  const login = async () => {
     if (submitting) return;
     setError("");
     setSubmitting(true);
     try {
       const result = await postJson<{ fixtureSession?: boolean; token?: string; bootstrapRequired?: boolean; options?: Parameters<typeof verifyAdminDevice>[1] }>(
-        "/api/admin/login", { identifier, password, pin, preparePasskey: !enroll }
+        "/api/admin/login", { identifier, password, pin, preparePasskey: !enrolling }
       );
       if (result.error) throw new Error(result.error);
       if (result.data?.fixtureSession) { navigate('/admin/dashboard'); return; }
@@ -2592,10 +2593,11 @@ function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
       if (!token) throw new Error('Passkey verification could not start. Please try again.');
       setPassword('');
       setPin('');
-      if (bootstrapRequired || enroll) {
+      if (enrolling) {
         setDeviceFlow({ token, bootstrap: Boolean(bootstrapRequired) });
         return;
       }
+      if (bootstrapRequired) throw new Error('No authorized passkey is registered. Contact the system operator.');
       if (!options) throw new Error('Passkey verification could not start. Please try again.');
       await verifyAdminDevice(token, options);
       navigate('/admin/dashboard');
@@ -2608,30 +2610,22 @@ function AdminLoginPage({ navigate }: { navigate: (path: string) => void }) {
 
   return <div className="admin-access-screen">
     <section className="admin-access-card">
-      <header><img src={farmerBrand.logo} alt="" width="40" height="40" /><div><p>{farmerBrand.name}</p><h1>Admin Login</h1></div></header>
+      <header><img src={farmerBrand.logo} alt="" width="40" height="40" /><div><p>{farmerBrand.name}</p><h1>{enrolling ? 'Set up an admin passkey' : 'Admin Login'}</h1></div></header>
       <div className="admin-access-body">
-        {!deviceFlow && <form onSubmit={event => {
-          event.preventDefault();
-          const submitter = (event.nativeEvent as SubmitEvent).submitter;
-          void login(submitter instanceof HTMLButtonElement && submitter.value === 'enroll');
-        }}>
+        {!deviceFlow && <form onSubmit={event => { event.preventDefault(); void login(); }}>
           <label>Username or email<input required autoComplete="username" value={identifier} onChange={event => setIdentifier(event.target.value)} /></label>
           <label>Admin password<input required type="password" autoComplete="current-password" value={password} onChange={event => setPassword(event.target.value)} /></label>
           <label>Admin PIN<input required type="password" autoComplete="off" value={pin} onChange={event => setPin(event.target.value)} /></label>
-          <button className="primary-button w-full" disabled={submitting}>{submitting ? 'Logging in...' : 'Login to Admin'}</button>
-          <details className="admin-detail-section">
-            <summary>Set up or recover a passkey</summary>
-            <button type="submit" value="enroll" className="soft-button" disabled={submitting}>Request enrollment of a new device</button>
-            <p className="admin-muted">An authorized device must approve enrollment. If none are available, contact the system operator for verified recovery.</p>
-          </details>
+          <button className="primary-button w-full" disabled={submitting}>{submitting ? 'Verifying...' : enrolling ? 'Continue to passkey setup' : 'Login to Admin'}</button>
         </form>}
         {error && <p role="alert" className="admin-notice" data-tone="warning">{error}</p>}
         {deviceFlow && <div className="space-y-3">
           <AdminDeviceEnrollment token={deviceFlow.token} bootstrap={deviceFlow.bootstrap} onDone={() => navigate('/admin/dashboard')} />
-          <button className="soft-button w-full" onClick={() => { setDeviceFlow(null); setError(''); }}>Back to admin login</button>
         </div>}
         <div className="admin-actions">
-          <button className="soft-button" onClick={() => navigate('/login')}>Farmer Login</button>
+          {enrolling
+            ? <button className="soft-button" onClick={() => navigate('/admin/login')}>Back to admin login</button>
+            : <button className="soft-button" onClick={() => navigate('/login')}>Farmer Login</button>}
         </div>
       </div>
     </section>
