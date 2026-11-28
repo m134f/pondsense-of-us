@@ -80,8 +80,8 @@ async function main() {
     await page.goto(url);
     await section.getByRole('article', { name: 'pH', exact: true }).waitFor();
     assert.equal(await section.getByRole('article', { name: 'Dissolved Oxygen (DO)' }).count(), 0);
-    await page.locator('.monitor-metric').filter({ has: page.getByRole('heading', { name: 'Dissolved oxygen', exact: true }) })
-      .getByText('Missing', { exact: true }).waitFor();
+    await page.getByRole('article', { name: 'Dissolved Oxygen', exact: true })
+      .getByText('No valid reading', { exact: true }).waitFor();
     scenario = 'normal';
     await page.goto(url);
     await section.getByRole('heading', { name: 'Readings within the guidance range' }).waitFor();
@@ -90,9 +90,9 @@ async function main() {
     await section.getByText('Previous manual assessment', { exact: true }).click();
     await section.getByText('Based on a saved manual test, not the live sensor.').waitFor();
 
-    const comparison = page.getByRole('complementary', { name: 'Preliminary fish comparison' });
+    const comparison = page.getByRole('region', { name: 'Analyze Fish Suitability' });
     const analyze = comparison.getByRole('button', { name: 'Analyze', exact: true });
-    const turbidity = page.locator('.monitor-metric').filter({ has: page.getByRole('heading', { name: 'Turbidity', exact: true }) });
+    const turbidity = page.getByRole('article', { name: 'Turbidity', exact: true });
     for (const width of [390, 1440]) {
       await page.setViewportSize({ width, height: 920 });
       scenario = 'fish-comparison';
@@ -104,20 +104,18 @@ async function main() {
       assert.equal(await comparison.getByRole('heading', { level: 3 }).count(), 0);
       await analyze.focus();
       await page.keyboard.press('Enter');
-      await comparison.getByRole('heading', { name: 'Bangus (Milkfish)', exact: true }).waitFor();
-      assert.equal(await comparison.getByRole('heading', { level: 3 }).count(), 1);
-      await comparison.getByText('2 of 2 measured values in range', { exact: true }).waitFor();
-      await comparison.getByText(/Top fish are tied/).waitFor();
-      await comparison.getByText('Measurements and ranges', { exact: true }).click();
-      await comparison.getByText('Uncalibrated turbidity is excluded.', { exact: true }).waitFor();
+      await comparison.getByText('Preliminary match', { exact: true }).waitFor();
+      await comparison.getByRole('progressbar', { name: 'Bangus (Milkfish): 100% in-range match' }).waitFor();
+      await comparison.getByText(/Missing: Dissolved Oxygen, Turbidity/).waitFor();
+      await comparison.getByText(/Tied top matches/).waitFor();
       assert.equal(await page.getByText('Voltage-to-NTU calculator', { exact: true }).count(), 0);
       await noOverflow();
     }
     await page.getByRole('button', { name: 'Filipino', exact: true }).click();
-    const translated = page.getByRole('complementary', { name: 'Paunang paghahambing ng isda' });
+    const translated = page.getByRole('region', { name: 'Suriin ang Tugma ng Isda' });
     await translated.getByRole('button', { name: 'Suriin', exact: true }).waitFor();
-    await translated.getByText(/Tabla ang mga nanguna/).waitFor();
-    await page.locator('.monitor-metric').filter({ has: page.getByRole('heading', { name: 'Labo ng tubig', exact: true }) })
+    await translated.getByText(/Tabla ang nanguna/).waitFor();
+    await page.getByRole('article', { name: 'Labo ng Tubig', exact: true })
       .getByText('Paunang: Ligtas', { exact: true }).waitFor();
     await page.getByRole('button', { name: 'English', exact: true }).click();
     scenario = 'extrapolated';
@@ -161,22 +159,21 @@ async function main() {
       } else assert.equal(await turbidity.getByText(/^Provisional:/).count(), 0);
     }
     const overview = page.getByRole('region', { name: 'Current measurements' });
-    const deviceStatus = overview.locator('.monitor-summary-card').filter({ hasText: 'Device Status' });
+    const deviceStatus = overview.locator('.dashboard-device-line');
     scenario = 'unassigned';
-    await deviceStatus.getByText('Unassigned', { exact: true }).waitFor({ timeout: 12_000 });
+    await deviceStatus.getByText('No monitoring device is currently assigned to your fishpen.', { exact: true }).waitFor({ timeout: 12_000 });
     scenario = 'assigned-waiting';
     await deviceStatus.getByText('No upload yet', { exact: true }).waitFor({ timeout: 12_000 });
     scenario = 'assigned-live';
     await deviceStatus.getByText(/Test ESP32.*Online/).waitFor({ timeout: 12_000 });
-    await overview.locator('.monitor-metric').filter({ has: page.getByRole('heading', { name: 'Dissolved oxygen', exact: true }) })
-      .getByText('Missing', { exact: true }).waitFor();
+    await overview.getByRole('article', { name: 'Dissolved Oxygen', exact: true }).getByText('No valid reading', { exact: true }).waitFor();
     scenario = 'assigned-offline';
     await deviceStatus.getByText(/Test ESP32.*Offline/).waitFor({ timeout: 12_000 });
     scenario = 'unassigned';
-    await deviceStatus.getByText('Unassigned', { exact: true }).waitFor({ timeout: 12_000 });
+    await deviceStatus.getByText('No monitoring device is currently assigned to your fishpen.', { exact: true }).waitFor({ timeout: 12_000 });
     assert.equal(await overview.getByText(/Test ESP32/).count(), 0);
     assert.deepEqual(writes, []);
-    console.log('Passed 5 viewport widths, single fish analysis, turbidity badges, recommendation states, missing DO, and the shared hardware lifecycle without page reloads. No API writes.');
+    console.log('Passed 5 viewport widths, ranked fish analysis, turbidity badges, recommendation states, missing DO, and the shared hardware lifecycle without page reloads. No API writes.');
   } finally {
     await browser.close();
   }

@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Save } from 'lucide-react';
 import { apiJson } from '../lib/api';
+import { confirmAction } from '../lib/actionAlerts';
 import { activeSpecies, speciesId } from '../data/fish';
 import { AdminBadge, AdminHeading, AdminLoad, AdminRefresh, useAdminResource } from './AdminControls';
 
@@ -32,19 +33,22 @@ function ThresholdEditor({ fish, onSaved }: { fish: Fish; onSaved: () => Promise
       const invalid = ranges.find(({ min, max }) => (changed.includes(min) || changed.includes(max)) &&
         (!Number.isFinite(number(min)) || !Number.isFinite(number(max)) || number(min) < 0 || number(min) >= number(max)));
       if (invalid) { setMessage({ error: true, text: `${invalid.label}: enter a nonnegative minimum and a higher maximum.` }); return; }
-      if (changed.includes('max_ammonia') && (!Number.isFinite(number('max_ammonia')) || number('max_ammonia') <= 0)) {
-        setMessage({ error: true, text: 'Enter a positive maximum ammonia value.' }); return;
-      }
-      setBusy(true); setMessage(null);
-      const r = await apiJson(`/api/admin/thresholds/${fish.id}`, { method: 'PATCH', body: JSON.stringify(Object.fromEntries(changed.map(key => [key, number(key)]))) });
-      if (!r.error) { await onSaved(); setDraft({}); }
-      setMessage({ error: !!r.error, text: r.error || `Thresholds saved for ${fish.name}.` }); setBusy(false);
+      const labels = Object.fromEntries(ranges.flatMap(({ label, min, max }) => [[min, `${label} minimum`], [max, `${label} maximum`]]));
+      const summary = changed.map(key => `${labels[key]}: ${fish[key] ?? 'Not set'} to ${number(key)}`);
+      const source = (e.nativeEvent as SubmitEvent).submitter ?? e.currentTarget;
+      setBusy(true);
+      try {
+        if (!await confirmAction({ source, title: `Save thresholds for ${fish.name}?`, text: summary.join('\n'), label: 'Save thresholds' })) return;
+        setMessage(null);
+        const r = await apiJson(`/api/admin/thresholds/${fish.id}`, { method: 'PATCH', body: JSON.stringify(Object.fromEntries(changed.map(key => [key, number(key)]))) });
+        if (!r.error) { await onSaved(); setDraft({}); }
+        setMessage({ error: !!r.error, text: r.error || `Thresholds saved for ${fish.name}.` });
+      } finally { setBusy(false); }
     }}>
       <fieldset disabled={busy} className="admin-threshold-fields">
         <div className="admin-threshold-grid">{ranges.map(range => <fieldset key={range.label} className="admin-range-pair">
           <legend>{range.label}</legend>{field(range.min, 'Minimum')}{field(range.max, 'Maximum')}
         </fieldset>)}</div>
-        <details className="admin-advanced"><summary>Advanced</summary><div>{field('max_ammonia', 'Maximum ammonia (mg/L)', '0.0001')}</div></details>
         <button type="submit" className="primary-button" disabled={!changed.length || busy}><Save size={16} aria-hidden="true" /> {busy ? 'Saving...' : 'Save Thresholds'}</button>
       </fieldset>
       {message && <p role={message.error ? 'alert' : 'status'} className="admin-notice" data-tone={message.error ? 'warning' : 'good'}>{message.text}</p>}

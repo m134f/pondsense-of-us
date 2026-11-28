@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { KeyRound, Link2, Plus, Unlink2 } from 'lucide-react';
 import { apiJson } from '../lib/api';
+import { confirmAction } from '../lib/actionAlerts';
 import { AdminBadge, AdminDetails, AdminHeading, AdminLoad, AdminRefresh, AdminTable, DeviceKeyOnce, adminTime, useAdminResource } from './AdminControls';
 import { DeviceRecords } from './AdminRecords';
 
@@ -20,17 +21,25 @@ export function SharedHardware() {
   const [key, setKey] = useState<IssuedKey | null>(null);
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState('');
-  async function change(row: HardwareRow, action: 'unassign' | 'key') {
-    if (busy || !window.confirm(action === 'unassign'
-      ? `End the assignment for ${row.name}? Uploads stop until the board is installed and assigned at the next fishpen.`
-      : `Replace the key for ${row.name}? The current key stops working and the board must be updated.`)) return;
-    setBusy(true); setMessage('');
-    const result = await apiJson<IssuedKey>(`/api/admin/hardware/${row.id}/${action}`, {
-      method: 'POST', body: JSON.stringify(action === 'unassign' ? { assignmentId: row.assignmentId } : {})
-    });
-    if (result.data?.deviceKey) setKey(result.data);
-    else setMessage(result.error || 'Hardware unassigned.');
-    setBusy(false); void resource.refresh();
+  async function change(row: HardwareRow, action: 'unassign' | 'key', source: HTMLElement) {
+    if (busy) return;
+    const unassign = action === 'unassign';
+    const assignment = row.farmer ? `Assigned to ${row.farmer}${row.fishpen ? ` / ${row.fishpen}` : ''}.` : 'No farmer assigned.';
+    setBusy(true);
+    try {
+      if (!await confirmAction({
+        source, title: unassign ? `Unassign ${row.name}?` : `Replace the key for ${row.name}?`,
+        text: `${assignment}\n${unassign ? 'Uploads stop until the board is assigned again.' : 'The current key stops working. Update the ESP32 with the new key to resume uploads.'}`,
+        label: unassign ? 'Unassign hardware' : 'Replace key', danger: true
+      })) return;
+      setMessage('');
+      const result = await apiJson<IssuedKey>(`/api/admin/hardware/${row.id}/${action}`, {
+        method: 'POST', body: JSON.stringify(unassign ? { assignmentId: row.assignmentId } : {})
+      });
+      if (result.data?.deviceKey) setKey(result.data);
+      else setMessage(result.error || (unassign ? 'Hardware unassigned.' : 'Key replacement not confirmed.'));
+      void resource.refresh();
+    } finally { setBusy(false); }
   }
   return <>
     <AdminHeading title="ESP32 Devices">
@@ -51,9 +60,9 @@ export function SharedHardware() {
           adminTime(row.lastUpload) ?? 'None for current assignment',
           <div className="admin-actions">
             {row.assignmentId
-              ? <button type="button" className="soft-button" disabled={busy || !!resource.error} onClick={() => void change(row, 'unassign')}><Unlink2 size={15} aria-hidden="true" /> Unassign Hardware</button>
+              ? <button type="button" className="soft-button" disabled={busy || !!resource.error} onClick={event => void change(row, 'unassign', event.currentTarget)}><Unlink2 size={15} aria-hidden="true" /> Unassign Hardware</button>
               : <button type="button" className="soft-button" disabled={busy || !!resource.error || !row.active} onClick={() => setAssigning(row)}><Link2 size={15} aria-hidden="true" /> Assign Hardware</button>}
-            <button type="button" className="soft-button" disabled={busy || !!resource.error} onClick={() => void change(row, 'key')}><KeyRound size={15} aria-hidden="true" /> Replace Key</button>
+            <button type="button" className="soft-button" disabled={busy || !!resource.error} onClick={event => void change(row, 'key', event.currentTarget)}><KeyRound size={15} aria-hidden="true" /> Replace Key</button>
           </div>
         ] }))} />}
     </section>

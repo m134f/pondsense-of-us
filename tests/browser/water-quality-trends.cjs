@@ -1,145 +1,115 @@
-// Run against local Vite with PONDSENSE_PLAYWRIGHT pointing to Playwright.
+// Local-only fixture browser check. No synthetic readings are used in screenshots.
 const { chromium } = require(process.env.PONDSENSE_PLAYWRIGHT || 'playwright');
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
+const base = new URL(process.env.PONDSENSE_BROWSER_URL || 'http://127.0.0.1:5181');
+assert.ok(['127.0.0.1', 'localhost'].includes(base.hostname));
 
 async function main() {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
   try {
-    const output = 'outputs/turbidity-research';
-    fs.mkdirSync(output, { recursive: true });
-    const page = await browser.newPage({ serviceWorkers: 'block' });
-    page.setDefaultTimeout(8_000);
+    const page = await browser.newPage({ serviceWorkers: 'block', hasTouch: true });
+    page.setDefaultTimeout(10000);
     const errors = [];
-    page.on('pageerror', error => errors.push(error.message));
-    const trend = page.locator('.water-quality-trends');
-    const card = key => trend.locator(`section[aria-labelledby="water-trend-${key}"]`);
-    const day = 86_400_000;
+    page.on('pageerror', e => errors.push(e.message));
     const now = Date.now();
-    const iso = age => new Date(now - age).toISOString();
-    // Isolated API fixtures used only for assertions, never for screenshot output or database writes.
-    const sample = (id, age, ph, temperatureC, turbidityNtu) => ({
-      id, deviceId: 14, deviceName: 'ESP32', sampledAt: iso(age), receivedAt: iso(age),
-      recordedAt: iso(age), ph, temperatureC, turbidityNtu, rawValue: 2000
-    });
-    const rows = [
-      sample(1, 12 * day, 7.2, 27, 60), sample(2, 3 * day, 7.3, 27, 65),
-      sample(3, 245_000, 7.1, 27.4, 80), sample(4, 235_000, 7.3, 27.7, 88),
-      sample(5, 225_000, null, 28.4, null), sample(6, 215_000, 7.8, 29, 100),
-      sample(7, 205_000, 7.6, 32, 120), { ...sample(8, 1000, 13, 45, 600), sampledAt: null }
+    await page.clock.setFixedTime(new Date(now));
+    const day = 86_400_000;
+    const sample = (id, age, fields = {}) => {
+      const time = new Date(now - age).toISOString();
+      return { id, deviceId: 14, deviceName: 'Fixture ESP32', assignmentId: 'fixture-14', recordedAt: time, receivedAt: time, sampledAt: time,
+        ph: 7.2, temperatureC: 27.4, dissolvedOxygen: 6.2, turbidityNtu: 30, rawValue: 2000, ...fields };
+    };
+    const records = [
+      sample(1, 12 * day), sample(2, 3 * day),
+      sample(3, 245000), sample(4, 235000, { ph: 7.4, temperatureC: 27.6, turbidityNtu: 36 }),
+      sample(5, 225000, { ph: null, dissolvedOxygen: null, turbidityNtu: null }),
+      sample(6, 215000), sample(7, 205000, { ph: 7.6 }),
+      sample(8, 1100, { sampledAt: null, ph: 13 })
     ];
     let fixture = 'empty';
-    const requests = [];
-    await page.route('**/api/**', async route => {
+    await page.route('**/api/**', route => {
       const request = route.request(), path = new URL(request.url()).pathname;
-      requests.push(request.method());
       assert.equal(request.method(), 'GET');
-      if (path === '/api/sensors/trend') {
-        if (fixture === 'loading') await new Promise(resolve => setTimeout(resolve, 350));
-        if (fixture === 'error') return route.fulfill({ status: 503, json: {} });
-        const readings = fixture === 'records' || fixture === 'stale' ? rows :
-          fixture === 'raw' ? [sample(10, 160_000, null, null, null)] : [];
-        return route.fulfill({ json: { readings } });
-      }
-      const staleTime = new Date(Date.now() - 20_000).toISOString();
-      const stale = { ...sample(9, 0, null, null, null), sampledAt: staleTime, receivedAt: staleTime, recordedAt: staleTime };
-      const response = {
+      if (path === '/api/sensors/trend' && fixture === 'error') return route.fulfill({ status: 503, json: {} });
+      const latest = fixture === 'partial' ? sample(9, 1000, { dissolvedOxygen: null, turbidityNtu: null, voltage: 0.5 })
+        : fixture === 'critical' ? sample(10, 1000, { dissolvedOxygen: 2 })
+          : fixture === 'full' ? sample(11, 1000) : fixture === 'records' ? records[6] : null;
+      const responses = {
         '/api/session': { user: { id: 499, fullName: 'Test Owner', role: 'farmer', mustChangePassword: false }, fishpenAssignment: { id: 42, name: 'Test Fishpen', deviceId: 14 } },
-        '/api/sensors/latest': { telemetry: fixture === 'records' ? rows[6] : fixture === 'stale' ? stale : null },
+        '/api/sensors/latest': { telemetry: latest },
+        '/api/sensors/trend': { readings: fixture === 'records' ? records : [] },
+        '/api/turbidity-alert-rule': { rule: { warningFrom: 25, criticalAbove: 100, approval: 'pending' } },
         '/api/readings': { sessions: [] }
       };
-      return route.fulfill({ json: response[path] ?? {} });
+      return route.fulfill({ json: responses[path] ?? {} });
     });
-    const go = () => page.goto('http://localhost:5175/dashboard', { waitUntil: 'domcontentloaded', timeout: 30_000 });
+    const go = () => page.goto(new URL('/dashboard', base).href);
+    const trend = page.getByRole('region', { name: 'Water Quality Trends' });
+    const fish = page.getByRole('region', { name: 'Analyze Fish Suitability' });
+    const analyze = fish.getByRole('button', { name: 'Analyze', exact: true });
+    const noOverflow = () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1);
+    const text = (root, value) => root.getByText(value, { exact: true }).waitFor();
     for (const width of [320, 390, 768, 1024, 1440]) {
       await page.setViewportSize({ width, height: 900 });
       await go();
-      await trend.getByText('No historical readings yet').first().waitFor();
-      assert.equal(await trend.getByRole('heading', { level: 3 }).count(), 4);
-      await card('dissolvedOxygen').getByText('Min 5', { exact: true }).waitFor();
-      await card('turbidity').getByText('25 NTU', { exact: true }).waitFor();
-      await card('turbidity').getByText('100 NTU', { exact: true }).waitFor();
-      await card('turbidity').getByText('Aquaculture Research Reference', { exact: true }).waitFor();
-      assert.equal(await card('turbidity').locator('.recharts-line-dot').count(), 0);
-      const phBox = await card('ph').boundingBox(), doBox = await card('dissolvedOxygen').boundingBox();
-      assert.equal(phBox.y === doBox.y, width >= 720);
-      assert.ok(await trend.evaluate(el => el.scrollWidth <= el.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth));
-      if (width === 390 || width === 1440) {
-        await trend.scrollIntoViewIfNeeded();
-        await card('temperature').getByText('Max 31', { exact: true }).waitFor();
-        const clip = await trend.evaluate(el => {
-          const { x, y, width, height } = el.getBoundingClientRect();
-          return { x: x + scrollX, y: y + scrollY, width, height };
-        });
-        await page.screenshot({
-          path: `${output}/${width === 390 ? 'mobile' : 'desktop'}.png`,
-          fullPage: true, clip,
-          style: '.farmer-topbar, .farmer-bottom-nav { visibility: hidden; }'
-        });
-      }
+      await text(trend, 'No historical readings yet');
+      assert.equal(await page.locator('.dashboard-monitor-grid article').count(), 4);
+      assert.ok(await analyze.isDisabled());
+      assert.ok(await noOverflow());
     }
-    fixture = 'raw';
-    await go();
-    await card('turbidity').getByText('No calibrated reading', { exact: true }).waitFor();
-    await card('turbidity').getByText('Estimates are not plotted.', { exact: true }).waitFor();
-    assert.equal(await card('turbidity').locator('.recharts-line-dot').count(), 0);
-    fixture = 'loading';
-    await go();
-    await trend.getByRole('status').getByText('Loading historical readings...').or(trend.getByRole('status').filter({ hasText: 'Loading historical readings...' })).first().waitFor();
-    await trend.getByText('No historical readings yet').first().waitFor();
     fixture = 'error';
     await go();
-    await trend.getByText('Could not load historical readings.').waitFor();
+    await text(trend, 'Historical readings unavailable.');
     fixture = 'records';
     await trend.getByRole('button', { name: 'Try again' }).click();
-    await trend.getByText('5 samples in this period.', { exact: false }).waitFor();
-    await go();
-    await trend.getByText('Device offline. Showing recorded history.').waitFor();
-    await trend.getByText('1 sample omitted', { exact: false }).waitFor();
-    await card('ph').getByText('Within reference range', { exact: true }).waitFor();
-    await card('temperature').getByText('Above reference range', { exact: true }).waitFor();
-    await card('turbidity').locator('.water-trend-status').getByText('Severe limitation', { exact: true }).waitFor();
-    assert.equal(await card('turbidity').locator('.recharts-reference-line').count(), 2);
-    assert.equal(await card('turbidity').locator('.recharts-line-dot').count(), 4);
-    await card('turbidity').getByText('Favorable (slight limitation): <25 NTU', { exact: true }).waitFor();
-    await card('turbidity').getByText('Moderate limitation: 25–100 NTU', { exact: true }).waitFor();
-    await card('turbidity').getByText('Severe limitation: >100 NTU', { exact: true }).waitFor();
-    const researchSource = trend.getByRole('link', { name: /Hajek & Boyd/ });
-    assert.match(await researchSource.getAttribute('href'), /0718-560X-lajar-51-02-0160\.pdf$/);
-    assert.equal(await card('dissolvedOxygen').locator('.recharts-line-dot').count(), 0);
-    assert.equal(await card('ph').locator('path.recharts-line-curve').count(), 2);
-    const phChart = card('ph').locator('svg.recharts-surface[tabindex="0"]');
-    await phChart.focus();
+    await text(trend, '5 samples · PHT · Independent scales');
+    await trend.getByText('1 untimed samples omitted').waitFor();
+    const chart = trend.locator('svg.recharts-surface[tabindex="0"]');
+    await chart.waitFor();
+    assert.equal(await chart.count(), 1);
+    assert.ok(await chart.locator('.recharts-line-curve').count() >= 4);
+    await chart.focus();
     await page.keyboard.press('ArrowRight');
-    await card('ph').locator('.water-trend-tooltip').getByText(/pH: 7\.1|pH: 7\.3/).waitFor();
-    await card('ph').getByText('View readings', { exact: true }).press('Enter');
-    await card('ph').getByText('Missing or invalid', { exact: true }).waitFor();
+    await trend.locator('.dashboard-trend-tooltip').getByText(/27\.[46] °C/).waitFor();
+    const plot = await chart.boundingBox();
+    await page.touchscreen.tap(plot.x + plot.width / 2, plot.y + plot.height / 2);
+    await trend.locator('.dashboard-trend-picked').getByText(/°C/).waitFor();
+    await trend.getByText('View readings', { exact: true }).click();
+    await trend.getByText('Uncalibrated', { exact: true }).first().waitFor();
+    const ph = trend.getByRole('button', { name: 'pH', exact: true });
+    await ph.click();
+    assert.equal(await ph.getAttribute('aria-pressed'), 'false');
+    await ph.click();
+    assert.equal(await ph.getAttribute('aria-pressed'), 'true');
+    await trend.getByRole('button', { name: '7 Days' }).click();
+    await text(trend, '6 samples · PHT · Independent scales');
+    await trend.getByRole('button', { name: '30 Days' }).click();
+    await text(trend, '7 samples · PHT · Independent scales');
     await page.setViewportSize({ width: 390, height: 900 });
-    await card('ph').locator('path.recharts-line-curve').first().waitFor();
-    assert.ok(await trend.evaluate(el => el.scrollWidth <= el.clientWidth + 1 && document.documentElement.scrollWidth <= innerWidth));
-    await page.setViewportSize({ width: 1440, height: 900 });
-    await trend.getByRole('button', { name: 'Temperature', exact: true }).click();
-    assert.equal(await trend.getByRole('heading', { level: 3 }).count(), 1);
-    const range = trend.getByRole('combobox', { name: 'Time range' });
-    await range.selectOption('7');
-    await trend.getByText('6 samples in this period.', { exact: false }).waitFor();
-    await range.selectOption('30');
-    await trend.getByText('7 samples in this period.', { exact: false }).waitFor();
-    await page.getByRole('button', { name: 'Filipino', exact: true }).click();
-    await trend.getByRole('combobox', { name: 'Saklaw ng petsa' }).waitFor();
-    await trend.getByText('7 tala sa panahong ito.', { exact: false }).waitFor();
-    await trend.getByRole('button', { name: 'Labo ng Tubig', exact: true }).click();
-    await card('turbidity').getByText('Sanggunian sa Pananaliksik sa Aquaculture', { exact: true }).waitFor();
-    await page.getByRole('button', { name: 'English', exact: true }).click();
-    fixture = 'stale';
+    assert.ok(await noOverflow());
+    fixture = 'partial';
     await go();
-    await trend.getByText(/The latest sample is stale/).waitFor();
+    await page.getByText('Provisional: Critical', { exact: true }).waitFor();
+    await analyze.click();
+    await text(fish, 'Preliminary match');
+    await fish.getByText(/Missing: Dissolved Oxygen, Turbidity/).waitFor();
+    assert.ok(await fish.getByRole('progressbar').count() >= 2);
+    await page.waitForFunction(() => [...document.querySelectorAll('.dashboard-fish-list img')].every(img => img.complete && img.naturalWidth > 0));
+    assert.ok(await noOverflow());
+    fixture = 'full';
+    await go();
+    await analyze.click();
+    await text(fish, 'Tied best match');
+    await fish.getByText(/4\/4 parameters measured/).waitFor();
+    fixture = 'critical';
+    await go();
+    await text(fish, 'No recommendation');
+    await text(fish, 'Confirmed critical: Dissolved Oxygen');
+    await analyze.click();
+    assert.equal(await fish.getByRole('progressbar').count(), 0);
     assert.deepEqual(errors, []);
-    assert.ok(requests.length > 0);
-    console.log('Passed five viewports, empty-state captures, missing calibration, research bands, DENR references, loading/error/retry, offline/stale, filters, gaps, and keyboard tooltips. No API writes.');
-  } finally {
-    await browser.close();
-  }
+    console.log('Combined chart, time filters, keyboard values and units, gaps, responsive layout, incomplete ranking, ties and critical blocking passed. No writes.');
+  } finally { await browser.close(); }
 }
 
 main().catch(error => { console.error(error); process.exitCode = 1; });

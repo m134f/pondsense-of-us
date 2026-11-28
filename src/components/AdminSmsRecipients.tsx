@@ -1,10 +1,12 @@
 import { useState, type FormEvent } from 'react';
 import { Save } from 'lucide-react';
 import { apiJson } from '../lib/api';
+import { confirmAction } from '../lib/actionAlerts';
 import { AdminLoad, useAdminResource } from './AdminControls';
 
 type Contact = { id: number; name: string; loginPhone: string | null; ownerAlertPhone: string | null; ownerPhone: string | null; caretakerPhone: string | null; caretakerEnabled: boolean };
 const normalize = (phone: string) => phone.trim().replace(/[\s()-]/g, '').replace(/^0(?=9)/, '+63').replace(/^63/, '+63');
+const masked = (phone: string | null) => phone ? `ending in ${phone.slice(-4)}` : 'not set';
 
 function RecipientsForm({ saved, url }: { saved: Contact; url: string }) {
   const [contact, setContact] = useState(saved);
@@ -17,14 +19,26 @@ function RecipientsForm({ saved, url }: { saved: Contact; url: string }) {
   const normalizedCaretaker = normalize(phone);
   const duplicate = !!normalizedCaretaker && normalizedCaretaker === (ownerPhone.trim() ? normalize(ownerPhone) : contact.loginPhone);
   const needsConsent = enabled && !duplicate && (!contact.caretakerEnabled || normalizedCaretaker !== contact.caretakerPhone);
+  const caretakerEnabled = enabled && !duplicate;
+  const ownerOverride = normalize(ownerPhone);
+  const ownerChanged = ownerOverride !== normalize(contact.ownerAlertPhone ?? '');
+  const caretakerChanged = normalizedCaretaker !== normalize(contact.caretakerPhone ?? '') || caretakerEnabled !== contact.caretakerEnabled;
   const updatePhone = (value: string) => { setPhone(value); setConsent(false); setNotice(null); };
-  async function save(event: FormEvent) {
+  async function save(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (busy || (needsConsent && !consent)) return;
-    setBusy(true); setNotice(null);
+    if (busy || (!ownerChanged && !caretakerChanged) || (needsConsent && !consent)) return;
+    const summary = [
+      ownerChanged && `Owner: ${masked(contact.ownerPhone)} to ${masked(ownerOverride || contact.loginPhone)}${ownerOverride ? '' : ' (login number)'}.`,
+      caretakerChanged && `Caretaker: ${masked(normalizedCaretaker)}, alerts ${caretakerEnabled ? 'on' : 'off'}.`,
+      'Saving does not send an SMS.'
+    ].filter(Boolean).join('\n');
+    const source = (event.nativeEvent as SubmitEvent).submitter ?? event.currentTarget;
+    setBusy(true);
     try {
+      if (!await confirmAction({ source, title: `Save SMS recipients for ${contact.name}?`, text: summary, label: 'Save recipients' })) return;
+      setNotice(null);
       const { data, error } = await apiJson<{ fishpen: Contact }>(url, { method: 'PUT',
-        body: JSON.stringify({ fishpenId: contact.id, ownerAlertPhone: ownerPhone.trim() || null, caretakerPhone: phone.trim() || null, caretakerEnabled: enabled && !duplicate, consentConfirmed: consent }) });
+        body: JSON.stringify({ fishpenId: contact.id, ownerAlertPhone: ownerPhone.trim() || null, caretakerPhone: phone.trim() || null, caretakerEnabled, consentConfirmed: consent }) });
       if (!data?.fishpen) { setNotice({ text: error || 'Unable to save SMS recipients.', error: true }); return; }
       setContact(data.fishpen); setOwnerPhone(data.fishpen.ownerAlertPhone ?? ''); setPhone(data.fishpen.caretakerPhone ?? ''); setEnabled(data.fishpen.caretakerEnabled); setConsent(false);
       setNotice({ text: 'SMS recipients saved. No message was sent.' });
@@ -47,7 +61,7 @@ function RecipientsForm({ saved, url }: { saved: Contact; url: string }) {
       <label className="admin-recipient-check flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={enabled && !duplicate} disabled={duplicate} onChange={e => { setEnabled(e.target.checked); setConsent(false); setNotice(null); }} />Send confirmed critical water alerts to caretaker</label>
       {duplicate && <p className="admin-muted">This is the owner&apos;s number. No separate caretaker alert will be sent.</p>}
       {needsConsent && <label className="admin-recipient-check flex min-h-10 items-center gap-2 text-sm"><input type="checkbox" checked={consent} required onChange={e => setConsent(e.target.checked)} />The caretaker agreed to receive these text messages.</label>}
-      <button type="submit" className="primary-button" disabled={busy || (needsConsent && !consent)}><Save size={16} aria-hidden="true" />{busy ? 'Saving...' : 'Save SMS recipients'}</button>
+      <button type="submit" className="primary-button" disabled={busy || (!ownerChanged && !caretakerChanged) || (needsConsent && !consent)}><Save size={16} aria-hidden="true" />{busy ? 'Saving...' : 'Save SMS recipients'}</button>
     </fieldset>
     {notice && <p role={notice.error ? 'alert' : 'status'} className="admin-notice" data-tone={notice.error ? 'warning' : 'good'}>{notice.text}</p>}
   </form>;

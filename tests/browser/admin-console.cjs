@@ -172,8 +172,13 @@ async function main() {
     const sms = farmerDetail.getByRole('table', { name: 'Fishpen water SMS' });
     await sms.getByText('Provider accepted (delivery unconfirmed)').waitFor();
     assert.equal(await sms.getByText('Other Pen').count(), 0);
-    page.once('dialog', dialog => dialog.accept());
     await farmerDetail.getByRole('button', { name: 'Suspend account' }).click();
+    const suspend = page.getByRole('dialog', { name: 'Suspend Sample Farmer?', exact: true });
+    await suspend.getByRole('button', { name: 'Cancel', exact: true }).click();
+    await suspend.waitFor({ state: 'hidden' });
+    assert.equal(writes.filter(([, path]) => path.endsWith('/status')).length, 0);
+    await farmerDetail.getByRole('button', { name: 'Suspend account' }).click();
+    await suspend.getByRole('button', { name: 'Suspend account', exact: true }).click();
     await farmerDetail.getByRole('button', { name: 'Reactivate account' }).waitFor();
     await farmerDetail.getByRole('button', { name: 'Delete account' }).click();
     const confirmDelete = page.getByRole('dialog', { name: 'Delete farmer account' });
@@ -185,11 +190,11 @@ async function main() {
     await confirmDelete.getByRole('button', { name: 'Delete permanently' }).click();
     await confirmDelete.getByRole('alert').filter({ hasText: 'linked history' }).waitFor();
     await confirmDelete.getByRole('button', { name: 'Cancel' }).click();
-    page.once('dialog', dialog => dialog.accept());
     await farmerDetail.getByRole('button', { name: 'Reactivate account' }).click();
+    await page.getByRole('dialog', { name: 'Reactivate Sample Farmer?', exact: true }).getByRole('button', { name: 'Reactivate account' }).click();
     await farmerDetail.getByRole('button', { name: 'Suspend account' }).waitFor();
-    page.once('dialog', dialog => dialog.accept());
     await farmerDetail.getByRole('button', { name: 'Reset password' }).click();
+    await page.getByRole('dialog', { name: 'Reset the password for Sample Farmer?', exact: true }).getByRole('button', { name: 'Reset password' }).click();
     await page.getByRole('dialog', { name: 'Temporary password' }).getByText('fixture-reset').waitFor();
     await page.getByRole('button', { name: 'Hide password' }).click();
     assert.equal(writes.filter(([, path]) => path.endsWith('/device-key')).length, 0);
@@ -198,7 +203,7 @@ async function main() {
     await page.getByRole('dialog', { name: unused.fullName }).getByRole('button', { name: 'Delete account' }).click();
     await confirmDelete.getByLabel('Type DELETE to confirm').fill('DELETE');
     await confirmDelete.getByRole('button', { name: 'Delete permanently' }).click();
-    await page.getByRole('status').filter({ hasText: 'Farmer account deleted.' }).waitFor();
+    await page.locator('.swal2-toast').getByText('Farmer account deleted.').waitFor();
     await page.getByText('No farmer accounts match.').waitFor();
 
     await open('Devices');
@@ -226,8 +231,11 @@ async function main() {
     await page.evaluate(() => navigator.clipboard.writeText(''));
 
     const row = deviceTable.getByRole('row').filter({ hasText: '001122AABBCC' });
-    page.once('dialog', dialog => dialog.accept());
     await row.getByRole('button', { name: 'Unassign Hardware' }).click();
+    const unassign = page.getByRole('dialog', { name: 'Unassign Shared ESP32?', exact: true });
+    await unassign.getByText(/Assigned to Sample Farmer/).waitFor();
+    await unassign.getByRole('button', { name: 'Unassign hardware', exact: true }).click();
+    await row.getByRole('button', { name: 'Assign Hardware', exact: true }).waitFor();
     assert.deepEqual(writes.find(([, path]) => path.endsWith('/hardware/1/unassign'))?.[2], { assignmentId: sampleAssignment });
     await row.getByRole('button', { name: 'Assign Hardware', exact: true }).click();
     const assignment = page.getByRole('dialog', { name: 'Assign Shared ESP32' });
@@ -238,8 +246,10 @@ async function main() {
     await row.getByText('Other Pen', { exact: true }).waitFor();
     assert.deepEqual(writes.find(([, path]) => path.endsWith('/hardware/1/assign'))?.[2], { ownerId: 3, fishpenId: 10, confirmedMoved: true });
     assert.ok(!writes.some(([, path]) => path.endsWith('/hardware/1/key')));
-    page.once('dialog', dialog => dialog.accept());
     await row.getByRole('button', { name: 'Replace Key' }).click();
+    const replace = page.getByRole('dialog', { name: 'Replace the key for Shared ESP32?', exact: true });
+    await replace.getByText(/Assigned to Other Farmer/).waitFor();
+    await replace.getByRole('button', { name: 'Replace key', exact: true }).click();
     await keyDialog.getByRole('button', { name: 'Copy Key' }).waitFor();
     await page.keyboard.press('Escape');
 
@@ -254,10 +264,16 @@ async function main() {
     await page.getByRole('heading', { name: 'Bangus (Milkfish)' }).waitFor();
     await species.selectOption('tilapia');
     await save('desktop-thresholds');
-    await page.getByText('Advanced', { exact: true }).click();
-    await page.getByLabel('Maximum ammonia (mg/L)', { exact: true }).waitFor();
+    assert.equal(await page.getByText('Advanced', { exact: true }).count(), 0);
+    assert.equal(await page.getByLabel('Maximum ammonia (mg/L)', { exact: true }).count(), 0);
     await page.getByRole('group', { name: 'pH', exact: true }).getByLabel('Maximum').fill('8.6');
     await page.getByRole('button', { name: 'Save Thresholds' }).click();
+    const thresholds = page.getByRole('dialog', { name: 'Save thresholds for Tilapia?', exact: true });
+    await thresholds.getByText('pH maximum: 8.5 to 8.6').waitFor();
+    await thresholds.getByRole('button', { name: 'Cancel', exact: true }).click();
+    assert.ok(!writes.some(([, path]) => path.endsWith('/thresholds/5')));
+    await page.getByRole('button', { name: 'Save Thresholds' }).click();
+    await thresholds.getByRole('button', { name: 'Save thresholds', exact: true }).click();
     await page.getByText('Thresholds saved for Tilapia.').waitFor();
     assert.deepEqual(writes.find(([, path]) => path.endsWith('/thresholds/5'))?.[2], { optimal_ph_max: 8.6 });
     assert.equal(await page.getByText(/Turbidity alert proposal|Voltage-to-NTU calculator|Not a DENR or LLDA standard/).count(), 0);

@@ -1,14 +1,19 @@
 export type HarvestCountRecord = { deadCount: number };
 export type HarvestFishRecord = { fishCount: number | null };
 
-export function estimatedRemainingStock(
+export function harvestStock(
   stockedCount: number,
   mortalities: HarvestCountRecord[],
   harvests: HarvestFishRecord[]
 ) {
   const dead = mortalities.reduce((sum, record) => sum + Number(record.deadCount), 0);
   const harvested = harvests.reduce((sum, record) => sum + Number(record.fishCount || 0), 0);
-  return Math.max(0, Number(stockedCount) - dead - harvested);
+  const stocked = Number(stockedCount);
+  return { stocked, dead, harvested, remaining: Math.max(0, stocked - dead - harvested), uncounted: harvests.filter(record => record.fishCount == null).length };
+}
+
+export function estimatedRemainingStock(stockedCount: number, mortalities: HarvestCountRecord[], harvests: HarvestFishRecord[]) {
+  return harvestStock(stockedCount, mortalities, harvests).remaining;
 }
 
 export function daysUntilHarvest(targetDate: string, today: string) {

@@ -19,7 +19,8 @@ export function FishpenSmsSettings({ ownerId, lang, defaultOpen }: { ownerId: st
     return () => { cancelled = true; };
   }, [ownerId]);
   const current = result?.ownerId === ownerId ? result : null;
-  const data = current?.data;
+  const settings = current?.data;
+  const data = Array.isArray(settings?.fishpens) && typeof settings?.policy?.reviewed === 'boolean' ? settings : null;
   const pen = data?.fishpens[0];
   const status = (phone: string | null, enabled: boolean) => phone
     ? `${maskedPhone(phone)} (${enabled ? t('Enabled', 'Naka-on') : t('Off', 'Naka-off')})`

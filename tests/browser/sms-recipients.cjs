@@ -11,6 +11,7 @@ async function main() {
     page.setDefaultTimeout(10000);
     const errors = [];
     const writes = [];
+    let passwordAttempts = 0;
     const unexpected = [];
     page.on('pageerror', error => errors.push(error.stack));
     const owner = { id: 2, role: 'farmer', fullName: 'Fixture Farmer', phone: '+639111111111', accountStatus: 'ACTIVE', fishpenName: 'Fixture Pen' };
@@ -27,6 +28,12 @@ async function main() {
         writes.push([path, request.postDataJSON()]);
         fishpen = { ...fishpen, ownerAlertPhone: '+639144444444', ownerPhone: '+639144444444', caretakerPhone: '+639987654321', caretakerEnabled: true };
         return route.fulfill({ json: { fishpen } });
+      }
+      if (method === 'POST' && path === '/api/owner/password') {
+        passwordAttempts++;
+        return passwordAttempts === 1
+          ? route.fulfill({ status: 400, json: { message: 'Current password is incorrect.' } })
+          : route.fulfill({ json: { changed: true } });
       }
       const responses = {
         '/api/admin/session': { admin: { id: 1, role: 'admin', fullName: 'Fixture Admin' } },
@@ -68,6 +75,15 @@ async function main() {
       assert.equal(await save.isDisabled(), true);
       await dialog.getByRole('checkbox', { name: /the caretaker agreed/i }).check();
       await save.click();
+      const confirmation = page.getByRole('dialog', { name: 'Save SMS recipients for Fixture Pen?', exact: true });
+      await confirmation.getByText(/ending in 4444/).waitFor();
+      assert.ok(!(await confirmation.textContent()).includes('09987654321'));
+      await page.keyboard.press('Escape');
+      await confirmation.waitFor({ state: 'hidden' });
+      assert.ok(await dialog.isVisible());
+      assert.equal(writes.length, width === 1440 ? 0 : 1);
+      await save.click();
+      await confirmation.getByRole('button', { name: 'Save recipients' }).click();
       await dialog.getByText('SMS recipients saved. No message was sent.').waitFor();
       assert.equal(await noOverflow(dialog), true);
 
@@ -82,6 +98,16 @@ async function main() {
       assert.equal(await noOverflow(sms), true);
       await page.getByText('Change password', { exact: true }).click();
       await page.getByLabel('Current password', { exact: true }).waitFor();
+      if (width === 1440) {
+        await page.getByLabel('Current password', { exact: true }).fill('fixture-current');
+        await page.getByLabel('New password', { exact: true }).fill('fixture-new-pass');
+        await page.getByLabel('Confirm new password', { exact: true }).fill('fixture-new-pass');
+        await page.getByRole('button', { name: 'Save new password' }).click();
+        await page.getByRole('alert').filter({ hasText: 'Current password is incorrect.' }).waitFor();
+        assert.equal(await page.locator('.swal2-toast').count(), 0);
+        await page.getByRole('button', { name: 'Save new password' }).click();
+        await page.locator('.swal2-toast').getByText('Password changed.', { exact: true }).waitFor();
+      }
       const profile = page.getByRole('main');
       await profile.getByRole('button', { name: 'Filipino', exact: true }).click();
       await page.getByText('Makipag-ugnayan sa admin para baguhin ang mga tatanggap ng SMS.', { exact: true }).waitFor();
@@ -90,6 +116,7 @@ async function main() {
     assert.deepEqual(writes, [1440, 320].map(() => [smsPath, { fishpenId: assignment.id, ownerAlertPhone: '0914 444 4444', caretakerPhone: '09987654321', caretakerEnabled: true, consentConfirmed: true }]));
     assert.deepEqual(unexpected, []);
     assert.deepEqual(errors, []);
+    assert.equal(passwordAttempts, 2);
     console.log('SMS recipient UI checks passed on desktop and mobile.');
   } finally { await browser.close(); }
 }

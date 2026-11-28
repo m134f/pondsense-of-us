@@ -113,7 +113,7 @@ async function check(channel, viewport, mobile = false) {
       await page.getByLabel('Password', { exact: true }).fill('fixture-password');
       await page.getByRole('button', { name: 'Login', exact: true }).click();
       await page.waitForURL('**/dashboard');
-      await page.getByRole('heading', { name: 'Water Monitoring' }).waitFor();
+      await page.getByRole('heading', { name: 'Water Quality Monitoring' }).waitFor();
       await noAdminOnFarmer();
       rejectedStatus = 403;
       await go('/admin/passkeys');

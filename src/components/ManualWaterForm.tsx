@@ -12,6 +12,9 @@ const fields = {
 
 export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpecies[]; lang: "en" | "tl"; onAnalyze: (values: Partial<WaterParams>, saveTime: string) => void | Promise<void> }) {
   const submitting = useRef(false);
+  const alertOpen = useRef(false);
+  const form = useRef<HTMLFormElement>(null);
+  const submitButton = useRef<HTMLButtonElement>(null);
   const pending = useRef<{ key: string; time: string } | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
@@ -24,22 +27,52 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
   const [numericErrors, setNumericErrors] = useState<Partial<Record<keyof WaterParams, boolean>>>({});
   const validation = validateManual(draft);
   const warnings = manualWarnings(validation.values, fish);
+  const numericMessage = lang === 'tl' ? 'Numero lamang ang ilagay, halimbawa 7.2.' : 'Enter numbers only, for example 7.2.';
+  const rangeMessage = (key: typeof manualParameters[number], range: string) =>
+    `${lang === 'tl' ? 'Maglagay ng numero sa pagitan ng' : 'Enter a number between'} ${range}${fields[key].unit ? ` ${fields[key].unit}` : ''}.`;
+  const focusField = (key: typeof manualParameters[number]) =>
+    form.current?.querySelector<HTMLInputElement>(`#manual-${key}`)?.focus();
+  const notify = async (title: string, message: string, icon: 'warning' | 'error', focus: () => void) => {
+    alertOpen.current = true;
+    try {
+      const { default: Swal } = await import('sweetalert2');
+      if (!form.current) return;
+      await Swal.fire({
+        titleText: title,
+        text: message,
+        icon,
+        confirmButtonColor: '#087e74',
+        heightAuto: false,
+        returnFocus: false,
+        didClose: focus
+      });
+    } catch {
+      // The inline error stays available if the dialog cannot load.
+      focus();
+    } finally {
+      alertOpen.current = false;
+    }
+  };
   const clearDraft = () => {
     pending.current = null;
     setDraft({}); setFieldErrors({}); setNumericErrors({}); setError('');
     setSaved(false); setEdited(false); setReview(false); setConfirmed(false);
   };
-  return <form noValidate className="card manual-water-form space-y-4 p-5" onSubmit={async event => {
+  return <form ref={form} noValidate className="card manual-water-form space-y-4 p-5" onSubmit={async event => {
     event.preventDefault();
-    if (submitting.current || saved) return;
-    if (Object.values(numericErrors).some(Boolean)) {
-      setError(lang === 'tl' ? 'Itama muna ang field na may babala. Numero lamang ang ilagay.' : 'Correct the highlighted field first. Enter numbers only.');
+    if (submitting.current || alertOpen.current || saved) return;
+    setError('');
+    setFieldErrors(validation.errors);
+    const invalid = manualParameters.find(key => numericErrors[key] || validation.errors[key]);
+    if (invalid) {
+      const message = numericErrors[invalid] ? numericMessage : rangeMessage(invalid, validation.errors[invalid]!);
+      await notify(lang === 'tl' ? `Itama ang ${fields[invalid][lang]}` : `Check ${fields[invalid][lang]}`, message, 'warning', () => focusField(invalid));
       return;
     }
-    setFieldErrors(validation.errors);
-    if (Object.keys(validation.errors).length) return;
     if (validation.empty) {
-      setError(lang === "tl" ? "Maglagay ng kahit isang sukat." : "Enter at least one measurement.");
+      const message = lang === 'tl' ? 'Maglagay ng kahit isang sukat.' : 'Enter at least one measurement.';
+      setError(message);
+      await notify(lang === 'tl' ? 'Walang sukat' : 'No measurements entered', message, 'warning', () => focusField('ph'));
       return;
     }
     if (!review) { setReview(true); setError(''); return; }
@@ -54,16 +87,21 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
       pending.current = null;
       setEdited(false); setSaved(true); setReview(false); setConfirmed(false);
     } catch (failure) {
-      if (failure instanceof Error && failure.cause === 409) {
+      const conflict = failure instanceof Error && failure.cause === 409;
+      if (conflict) {
         pending.current = null; setReview(false); setConfirmed(false);
-        setError(lang === 'tl' ? 'Suriin ang oras ng device at i-review muli ang test.' : 'Check your device clock and review the test again.');
-      } else setError(lang === "tl" ? "Hindi nakumpirma ang pag-save. Subukan muli." : "Could not confirm the save. Please try again.");
+      }
+      const message = conflict
+        ? (lang === 'tl' ? 'Suriin ang oras ng device at i-review muli ang test.' : 'Check your device clock and review the test again.')
+        : (lang === 'tl' ? 'Hindi nakumpirma ang pag-save. Subukan muli.' : 'Could not confirm the save. Please try again.');
+      setError(message);
+      void notify(lang === 'tl' ? 'Hindi nakumpirma ang pag-save' : 'Save not confirmed', message, 'error', () => submitButton.current?.focus());
     } finally { submitting.current = false; setBusy(false); }
   }}>
     <h2 className="text-lg font-bold">{lang === "tl" ? "Manu-manong pagsusuri" : "Manual water analysis"}</h2>
     <p className="text-sm text-slate-600">{lang === "tl" ? "Ilagay ang aktuwal na sukat. Iwanang blangko ang hindi nasukat." : "Enter actual measurements. Leave unmeasured fields blank."}</p>
     <div className="manual-measurement-fields">
-    {manualParameters.map(key => ({ ...fields[key], key })).map(field => <div key={field.key} className="min-w-0 text-sm">
+    {manualParameters.map(key => ({ ...fields[key], key, rangeError: fieldErrors[key] })).map(field => <div key={field.key} className="min-w-0 text-sm">
       <label className="block font-semibold" htmlFor={`manual-${field.key}`}>{field[lang]} {field.unit && <span className="font-normal text-slate-500">({field.unit})</span>}</label>
       <input id={`manual-${field.key}`} type="text" inputMode="decimal" pattern="[0-9]*[.,]?[0-9]*" autoComplete="off" spellCheck={false} disabled={busy || review} aria-invalid={!!fieldErrors[field.key] || !!numericErrors[field.key]} aria-describedby={[fieldErrors[field.key] && `manual-error-${field.key}`, numericErrors[field.key] && `manual-numeric-${field.key}`].filter(Boolean).join(' ') || undefined}
         className="mt-2 w-full rounded-lg border border-slate-300 bg-white px-3 py-3 text-base focus:border-teal-600 focus:outline-none focus:ring-2 focus:ring-teal-100"
@@ -74,8 +112,8 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
           setFieldErrors(previous => ({ ...previous, [field.key]: undefined }));
           setDraft({ ...draft, [field.key]: next.replace(',', '.') }); setEdited(true); setConfirmed(false); setSaved(false);
         }} />
-      {numericErrors[field.key] && <span id={`manual-numeric-${field.key}`} role="alert" className="mt-1 block text-red-700">{lang === 'tl' ? 'Numero lamang ang ilagay, halimbawa 7.2. Hindi tinatanggap ang mga letra.' : 'Enter numbers only, for example 7.2. Letters are not accepted.'}</span>}
-      {fieldErrors[field.key] && <span id={`manual-error-${field.key}`} role="alert" className="mt-1 block text-red-700">{lang === 'tl' ? 'Maglagay ng numero sa pagitan ng' : 'Enter a number between'} {fieldErrors[field.key]} {field.unit}.</span>}
+      {numericErrors[field.key] && <span id={`manual-numeric-${field.key}`} role="alert" className="mt-1 block text-red-700">{numericMessage}</span>}
+      {field.rangeError && <span id={`manual-error-${field.key}`} role="alert" className="mt-1 block text-red-700">{rangeMessage(field.key, field.rangeError)}</span>}
       {review && warnings.includes(field.key) && <span className="mt-1 block text-amber-800">{lang === 'tl' ? 'Babala: Labas ito sa inirerekomendang saklaw ng ilang isda. Suriin muli ang sukat.' : 'Warning: Outside the recommended range for some fish species. Please check your measurement.'}</span>}
     </div>)}
     </div>
@@ -86,8 +124,8 @@ export function ManualWaterForm({ lang, onAnalyze, fish = [] }: { fish?: FishSpe
     {error && <p role="alert" className="text-sm text-red-700">{error}</p>}
     <div className="manual-form-actions">
       {!saved && !review && <button type="button" className="soft-button" onClick={clearDraft} disabled={busy}>{lang === 'tl' ? 'I-clear' : 'Clear'}</button>}
-      {saved ? <button type="button" className="primary-button" onClick={clearDraft}>{lang === 'tl' ? 'Magsimula ng bagong test' : 'Start another test'}</button> :
-        <button disabled={busy || (review && warnings.length > 0 && !confirmed)} className="primary-button disabled:opacity-60">{busy ? <LoaderCircle size={18} className="animate-spin" /> : <Activity size={18} />}{busy ? (lang === "tl" ? "Sinusuri…" : "Analyzing…") : review ? (lang === "tl" ? "Kumpirmahin at suriin" : "Confirm and analyze") : (lang === "tl" ? "Suriin ang mga inilagay" : "Review measurements")}</button>}
+      {saved ? <button key="new-test" type="button" className="primary-button" onClick={clearDraft}>{lang === 'tl' ? 'Magsimula ng bagong test' : 'Start another test'}</button> :
+        <button key="review-test" type="submit" ref={submitButton} disabled={busy || (review && warnings.length > 0 && !confirmed)} className="primary-button disabled:opacity-60">{busy ? <LoaderCircle size={18} className="animate-spin" /> : <Activity size={18} />}{busy ? (lang === "tl" ? "Sinusuri…" : "Analyzing…") : review ? (lang === "tl" ? "Kumpirmahin at suriin" : "Confirm and analyze") : (lang === "tl" ? "Suriin ang mga inilagay" : "Review measurements")}</button>}
     </div>
   </form>;
 }

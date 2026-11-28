@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { Eye, KeyRound, Trash2 } from 'lucide-react';
 import { apiJson } from '../lib/api';
+import { confirmAction, showSuccessToast } from '../lib/actionAlerts';
 import { ProvisionOwner } from './ProvisionOwner';
 import { FarmerRecords } from './AdminRecords';
 import { AdminSmsRecipients } from './AdminSmsRecipients';
@@ -25,21 +26,34 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
   const accounts = users.data?.users.filter(row => row.role === 'farmer' && row.phone !== '+639000000000') ?? [];
   const shown = accounts.filter(row => [row.fullName, row.fishpenName, row.phone, row.accountStatus, row.deviceId && `#${row.deviceId}`].join(' ').toLowerCase().includes(query));
   const owner = accounts.find(row => row.id === selected);
-  const changeStatus = async (row: AdminAccount, status: 'ACTIVE' | 'SUSPENDED') => {
-    if (!window.confirm(`${status === 'ACTIVE' ? 'Reactivate' : 'Suspend'} ${row.fullName}? This changes account access, not saved records.`)) return;
-    setBusy(true); setMessage(null);
-    const r = await apiJson(`/api/admin/users/${row.id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
-    if (!r.error) await users.refresh();
-    setMessage({ text: r.error || `Account ${status === 'ACTIVE' ? 'reactivated' : 'suspended'}.`, error: !!r.error });
-    setBusy(false);
+  const changeStatus = async (row: AdminAccount, status: 'ACTIVE' | 'SUSPENDED', source: HTMLElement) => {
+    if (busy) return;
+    const suspend = status === 'SUSPENDED';
+    setBusy(true);
+    try {
+      if (!await confirmAction({
+        source, title: `${suspend ? 'Suspend' : 'Reactivate'} ${row.fullName}?`,
+        text: suspend ? 'This blocks farmer access without deleting their saved records.' : 'This restores farmer access to their existing records.',
+        label: suspend ? 'Suspend account' : 'Reactivate account', danger: suspend
+      })) return;
+      setMessage(null);
+      const r = await apiJson(`/api/admin/users/${row.id}/status`, { method: 'PATCH', body: JSON.stringify({ status }) });
+      if (!r.error) await users.refresh();
+      setMessage({ text: r.error || `Account ${suspend ? 'suspended' : 'reactivated'}.`, error: !!r.error });
+    } finally { setBusy(false); }
   };
-  const resetPassword = async (row: AdminAccount) => {
-    if (!window.confirm(`Reset the password for ${row.fullName}? Existing sessions will be invalidated.`)) return;
-    setBusy(true); setMessage(null); setPassword(null);
-    const r = await apiJson<{ temporaryPassword: string }>(`/api/admin/owners/${row.id}/reset-password`, { method: 'POST', body: '{}' });
-    if (r.data) { setSelected(null); setPassword({ name: row.fullName, value: r.data.temporaryPassword }); }
-    else setMessage({ text: r.error || 'Could not confirm password reset.', error: true });
-    setBusy(false);
+  const resetPassword = async (row: AdminAccount, source: HTMLElement) => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      if (!await confirmAction({ source, title: `Reset the password for ${row.fullName}?`,
+        text: 'Existing sessions will be invalidated. The farmer will need a temporary password.',
+        label: 'Reset password', danger: true })) return;
+      setMessage(null); setPassword(null);
+      const r = await apiJson<{ temporaryPassword: string }>(`/api/admin/owners/${row.id}/reset-password`, { method: 'POST', body: '{}' });
+      if (r.data?.temporaryPassword) { setSelected(null); setPassword({ name: row.fullName, value: r.data.temporaryPassword }); }
+      else setMessage({ text: r.error || 'Could not confirm password reset.', error: true });
+    } finally { setBusy(false); }
   };
   const deleteFarmer = async (row: AdminAccount) => {
     if (busy || confirmation !== 'DELETE' || row.accountStatus !== 'SUSPENDED') return;
@@ -49,7 +63,7 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
       setSelected(null);
       setConfirmation(null);
       await users.refresh();
-      setMessage({ text: 'Farmer account deleted.', error: false });
+      void showSuccessToast('Farmer account deleted.');
     } else setMessage({ text: r.error || 'Could not confirm account deletion.', error: true });
     setBusy(false);
   };
@@ -77,8 +91,8 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
       <div><dt>Created</dt><dd>{adminTime(owner.createdAt) || missing}</dd></div>
     </dl>
       <div className="admin-actions">
-        {owner.accountStatus && <button type="button" className="soft-button" disabled={busy || !!users.error} onClick={() => void changeStatus(owner, owner.accountStatus === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE')}>{owner.accountStatus === 'ACTIVE' ? 'Suspend account' : 'Reactivate account'}</button>}
-        <button type="button" className="soft-button" disabled={busy || !!users.error} onClick={() => void resetPassword(owner)}><KeyRound size={15} aria-hidden="true" /> Reset password</button>
+        {owner.accountStatus && <button type="button" className="soft-button" disabled={busy || !!users.error} onClick={event => void changeStatus(owner, owner.accountStatus === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE', event.currentTarget)}>{owner.accountStatus === 'ACTIVE' ? 'Suspend account' : 'Reactivate account'}</button>}
+        <button type="button" className="soft-button" disabled={busy || !!users.error} onClick={event => void resetPassword(owner, event.currentTarget)}><KeyRound size={15} aria-hidden="true" /> Reset password</button>
         {owner.accountStatus === 'SUSPENDED' && <button type="button" className="soft-button admin-danger-button" disabled={busy || !!users.error} onClick={() => { setMessage(null); setConfirmation(''); }}><Trash2 size={15} aria-hidden="true" /> Delete account</button>}
       </div>
       <ActionMessage message={message} />

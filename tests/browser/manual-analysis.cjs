@@ -1,4 +1,4 @@
-// Run with Vite on port 5175 and PONDSENSE_PLAYWRIGHT pointing to a Playwright installation.
+// Run with Vite (port 5175 by default) and PONDSENSE_PLAYWRIGHT pointing to a Playwright installation.
 const { chromium } = require(process.env.PONDSENSE_PLAYWRIGHT || 'playwright');
 const assert = require('node:assert/strict');
 
@@ -31,26 +31,43 @@ async function main() {
     const noOverflow = async () => assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
     const button = name => page.getByRole('button', { name, exact: true });
     const field = pattern => page.getByRole('textbox', { name: pattern });
+    const dismissAlert = async (title, message, focus) => {
+      const dialog = page.getByRole('dialog', { name: title });
+      await dialog.getByText(message, { exact: true }).waitFor();
+      assert.equal(await dialog.getByRole('button', { name: 'OK', exact: true }).count(), 1);
+      await dialog.getByRole('button', { name: 'OK', exact: true }).press('Enter');
+      await dialog.waitFor({ state: 'hidden' });
+      await focus.and(page.locator(':focus')).waitFor();
+    };
     const review = async () => {
       await button('Review measurements').click();
       await page.getByText('Review the measurements above before continuing.').waitFor();
       const warnings = page.getByRole('checkbox', { name: 'I have checked the measurements with warnings.' });
       if (await warnings.count()) await warnings.check();
     };
-    await page.goto('http://localhost:5175/analysis');
+    await page.goto(new URL('/analysis', process.env.PONDSENSE_BROWSER_URL || 'http://localhost:5175').href);
     await field(/^pH$/).fill('7.2');
     await button('Clear').click();
     assert.equal(await field(/^pH$/).inputValue(), '');
     assert.equal(posts.length, 0);
+    await button('Review measurements').click();
+    await dismissAlert('No measurements entered', 'Enter at least one measurement.', field(/^pH$/));
+    await field(/^pH$/).fill('abc');
+    assert.equal(await page.getByRole('dialog').count(), 0);
+    await button('Review measurements').click();
+    await dismissAlert('Check pH', 'Enter numbers only, for example 7.2.', field(/^pH$/));
     await field(/^pH$/).fill('15');
     await button('Review measurements').click();
-    await page.getByText(/Enter a number between 0 - 14/).waitFor();
+    await dismissAlert('Check pH', 'Enter a number between 0 - 14.', field(/^pH$/));
+    assert.equal(await page.locator('#manual-error-ph').textContent(), 'Enter a number between 0 - 14.');
+    assert.equal(posts.length, 0);
     await field(/^pH$/).fill('9');
     await field(/^Temperature/).fill('35');
     await review();
     assert.equal(posts.length, 0);
     await page.locator('form').filter({ hasText: 'Manual water analysis' }).evaluate(form => { form.requestSubmit(); form.requestSubmit(); });
-    await page.getByText('Could not confirm the save. Please try again.').waitFor();
+    await dismissAlert('Save not confirmed', 'Could not confirm the save. Please try again.', button('Confirm and analyze'));
+    await page.getByText('Could not confirm the save. Please try again.', { exact: true }).waitFor();
     assert.equal(posts.length, 1);
     await button('Confirm and analyze').click();
     await page.getByText('2 of 4 measured').waitFor();
@@ -89,7 +106,7 @@ async function main() {
     await page.getByText('No live sensor recommendation is available.').waitFor();
     assert.equal(await page.getByRole('heading', { name: 'Water quality summary' }).count(), 0);
     assert.equal(posts.length, 3);
-    console.log('Passed manual test at mobile/desktop widths with review-only validation, duplicate submission guard, lost-response retry, missing/zero values, no-match ranking, sources, Filipino, and Monitoring separation.');
+    console.log('Passed manual test at mobile/desktop widths with validation alerts and focus, review, duplicate submission guard, lost-response alert and retry, missing/zero values, no-match ranking, sources, Filipino, and Monitoring separation.');
   } finally {
     await browser.close();
   }

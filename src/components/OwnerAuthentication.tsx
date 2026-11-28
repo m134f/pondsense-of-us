@@ -1,5 +1,6 @@
 import { useState } from 'react';
 import { apiJson } from '../lib/api';
+import { showSuccessToast } from '../lib/actionAlerts';
 import { farmerBrand } from '../lib/farmerBrand';
 import type { AppUser } from '../lib/storage';
 
@@ -39,7 +40,7 @@ export function OwnerLogin({ onLogin }: { onLogin: (user: AppUser, message: stri
     </div></section></main>;
 }
 
-export function OwnerPasswordForm({ onDone, lang = 'en', temporary = false }: { onDone: () => void; lang?: 'en' | 'tl'; temporary?: boolean }) {
+export function OwnerPasswordForm({ onDone, lang = 'en', temporary = false }: { onDone?: () => void; lang?: 'en' | 'tl'; temporary?: boolean }) {
   const tl = lang === 'tl';
   const [current, setCurrent] = useState(''); const [password, setPassword] = useState(''); const [confirm, setConfirm] = useState('');
   const [busy, setBusy] = useState(false); const [error, setError] = useState('');
@@ -54,7 +55,11 @@ export function OwnerPasswordForm({ onDone, lang = 'en', temporary = false }: { 
     const result = await apiJson<{ changed: boolean }>('/api/owner/password', { method: 'POST', body: JSON.stringify({ currentPassword: current, newPassword: password }) });
     setBusy(false);
     if (!result.data?.changed) setError(result.error || (tl ? 'Hindi napalitan ang password.' : 'Password could not be changed.'));
-    else { setCurrent(''); setPassword(''); setConfirm(''); onDone(); }
+    else {
+      setCurrent(''); setPassword(''); setConfirm('');
+      if (!temporary) void showSuccessToast(tl ? 'Napalitan na ang password.' : 'Password changed.');
+      onDone?.();
+    }
   }}>
     <p className="text-sm text-slate-600">{tl ? 'Gumamit ng hindi bababa sa 12 character.' : 'Use at least 12 characters.'}</p>
     {fields.map(({ value, set, label, auto }) => <label key={label} className="block text-sm font-semibold">{label}<input required disabled={busy} type="password" minLength={auto === 'new-password' ? 12 : undefined} autoComplete={auto} className="mt-2 w-full rounded-md border border-slate-300 p-3 text-base" value={value} onChange={e => set(e.target.value)} /></label>)}
