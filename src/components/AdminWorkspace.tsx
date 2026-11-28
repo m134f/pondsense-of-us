@@ -7,6 +7,8 @@ import { AdminDeviceSettings } from './AdminDeviceSecurity';
 import { AdminUsers } from './AdminPeople';
 import { SharedHardware, type HardwareRow } from './SharedHardware';
 import { AdminThresholds } from './AdminPreferences';
+import { AdminWaterQuality } from './AdminWaterQuality';
+import type { FarmerWaterReport } from '../lib/farmerWaterQuality';
 import './admin.css';
 
 const menu = [
@@ -84,6 +86,7 @@ type Overview = {
 function AdminOverview({ navigate, onCreate }: { navigate: (path: string) => void; onCreate: () => void }) {
   const overview = useAdminResource<Overview>('/api/admin/overview', 30_000);
   const inventory = useAdminResource<{ hardware: HardwareRow[] }>('/api/admin/hardware', 30_000);
+  const waterQuality = useAdminResource<FarmerWaterReport>('/api/admin/farmer-water-quality');
   const data = overview.error ? null : overview.data;
   const devices = inventory.error ? undefined : inventory.data?.hardware;
   const fleetValue = (value: (row: HardwareRow) => string) => !devices ? undefined :
@@ -96,7 +99,7 @@ function AdminOverview({ navigate, onCreate }: { navigate: (path: string) => voi
     ['Currently Assigned Farmer', devices?.length === 0 ? 'None' : fleetValue(row => row.farmer ?? 'None'), UserPlus]
   ] as const;
   return <>
-    <AdminHeading title="Dashboard"><AdminRefresh busy={overview.busy || inventory.busy} refresh={() => { void overview.refresh(); void inventory.refresh(); }} /></AdminHeading>
+    <AdminHeading title="Dashboard"><AdminRefresh busy={overview.busy || inventory.busy || waterQuality.busy} refresh={() => { void overview.refresh(); void inventory.refresh(); void waterQuality.refresh(); }} /></AdminHeading>
     <AdminLoad resource={{ ...overview, data }} />
     <AdminLoad resource={{ ...inventory, data: inventory.error ? null : inventory.data }} />
     <dl className="admin-metrics">{counts.map(([label, value, Icon]) => <div className="admin-panel admin-metric" key={label}>
@@ -112,5 +115,6 @@ function AdminOverview({ navigate, onCreate }: { navigate: (path: string) => voi
         <button type="button" className="soft-button" onClick={() => navigate('/admin/thresholds')}><Gauge size={17} aria-hidden="true" /> Configure thresholds</button>
       </div>
     </section>
+    <AdminWaterQuality resource={waterQuality} />
   </>;
 }

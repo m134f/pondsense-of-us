@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Eye, KeyRound } from 'lucide-react';
+import { Eye, KeyRound, Trash2 } from 'lucide-react';
 import { apiJson } from '../lib/api';
 import { ProvisionOwner } from './ProvisionOwner';
 import { FarmerRecords } from './AdminRecords';
@@ -20,6 +20,7 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<Message | null>(null);
   const [password, setPassword] = useState<{ name: string; value: string } | null>(null);
+  const [confirmation, setConfirmation] = useState<string | null>(null);
   const query = search.trim().toLowerCase();
   const accounts = users.data?.users.filter(row => row.role === 'farmer' && row.phone !== '+639000000000') ?? [];
   const shown = accounts.filter(row => [row.fullName, row.fishpenName, row.phone, row.accountStatus, row.deviceId && `#${row.deviceId}`].join(' ').toLowerCase().includes(query));
@@ -40,6 +41,19 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
     else setMessage({ text: r.error || 'Could not confirm password reset.', error: true });
     setBusy(false);
   };
+  const deleteFarmer = async (row: AdminAccount) => {
+    if (busy || confirmation !== 'DELETE' || row.accountStatus !== 'SUSPENDED') return;
+    setBusy(true); setMessage(null);
+    const r = await apiJson<{ deleted: boolean }>(`/api/admin/owners/${row.id}`, { method: 'DELETE', body: JSON.stringify({ confirm: confirmation }) });
+    if (r.data?.deleted) {
+      setSelected(null);
+      setConfirmation(null);
+      await users.refresh();
+      setMessage({ text: 'Farmer account deleted.', error: false });
+    } else setMessage({ text: r.error || 'Could not confirm account deletion.', error: true });
+    setBusy(false);
+  };
+  const cancelDelete = () => { setConfirmation(null); setMessage(null); };
   const statusBadge = (status?: AdminAccount['accountStatus']) => <AdminBadge tone={status === 'ACTIVE' ? 'good' : status === 'SUSPENDED' ? 'warning' : 'neutral'}>{status ? `${status[0]}${status.slice(1).toLowerCase()}` : 'Unknown'}</AdminBadge>;
   return <>
     <AdminHeading title="Users"><AdminRefresh busy={users.busy} refresh={users.refresh} /></AdminHeading>
@@ -55,7 +69,7 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
         rows={shown.map(row => ({ id: row.id, cells: [<strong>{row.fullName}</strong>, row.fishpenName || 'Unassigned', row.phone || missing, statusBadge(row.accountStatus), row.deviceId ? `Hardware #${row.deviceId}` : 'Not assigned',
           <button type="button" className="soft-button" onClick={() => { setSelected(row.id); setMessage(null); }}><Eye size={15} aria-hidden="true" /> View</button>] }))} />}
     </section>
-    {owner && <AdminDetails title={owner.fullName} close={() => setSelected(null)} locked={busy}><dl className="admin-definition">
+    {owner && confirmation === null && <AdminDetails title={owner.fullName} close={() => setSelected(null)} locked={busy}><dl className="admin-definition">
       <div><dt>Fishpen</dt><dd>{owner.fishpenName || 'Unassigned'}</dd></div>
       <div><dt>Mobile number</dt><dd>{owner.phone || missing}</dd></div>
       <div><dt>Account status</dt><dd>{statusBadge(owner.accountStatus)}</dd></div>
@@ -65,10 +79,22 @@ export function AdminUsers({ openCreate }: { openCreate: boolean }) {
       <div className="admin-actions">
         {owner.accountStatus && <button type="button" className="soft-button" disabled={busy || !!users.error} onClick={() => void changeStatus(owner, owner.accountStatus === 'ACTIVE' ? 'SUSPENDED' : 'ACTIVE')}>{owner.accountStatus === 'ACTIVE' ? 'Suspend account' : 'Reactivate account'}</button>}
         <button type="button" className="soft-button" disabled={busy || !!users.error} onClick={() => void resetPassword(owner)}><KeyRound size={15} aria-hidden="true" /> Reset password</button>
+        {owner.accountStatus === 'SUSPENDED' && <button type="button" className="soft-button admin-danger-button" disabled={busy || !!users.error} onClick={() => { setMessage(null); setConfirmation(''); }}><Trash2 size={15} aria-hidden="true" /> Delete account</button>}
       </div>
       <ActionMessage message={message} />
       <AdminSmsRecipients key={owner.id} ownerId={owner.id} />
       <FarmerRecords ownerId={owner.id} />
+    </AdminDetails>}
+    {owner && confirmation !== null && <AdminDetails title="Delete farmer account" close={cancelDelete} locked={busy}>
+      <p>Permanently delete <strong>{owner.fullName}</strong>? The account and its unused fishpen setup will be removed. Accounts with linked records cannot be deleted.</p>
+      <form onSubmit={event => { event.preventDefault(); void deleteFarmer(owner); }}>
+        <label>Type DELETE to confirm<input value={confirmation} onChange={event => setConfirmation(event.target.value)} autoComplete="off" disabled={busy} /></label>
+        <div className="admin-actions">
+          <button type="button" className="soft-button" disabled={busy} onClick={cancelDelete}>Cancel</button>
+          <button type="submit" className="soft-button admin-danger-button" disabled={busy || confirmation !== 'DELETE'}><Trash2 size={15} aria-hidden="true" /> {busy ? 'Deleting...' : 'Delete permanently'}</button>
+        </div>
+      </form>
+      <ActionMessage message={message} />
     </AdminDetails>}
     {password && <AdminDetails title="Temporary password" close={() => setPassword(null)}>
       <p className="admin-muted">For {password.name}. Expires in 24 hours. Share privately.</p><code className="admin-secret">{password.value}</code>

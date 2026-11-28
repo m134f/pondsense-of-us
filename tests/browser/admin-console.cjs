@@ -9,6 +9,7 @@ const output = 'outputs/shared-hardware';
 const now = new Date().toISOString();
 const farmer = { id: 2, role: 'farmer', fullName: 'Sample Farmer', phone: '+639111111111', accountStatus: 'ACTIVE', fishpenName: 'Cuyab Demonstration Pen', deviceId: 14 };
 const other = { ...farmer, id: 3, fullName: 'Other Farmer', phone: '+639222222222', fishpenName: 'Other Pen', deviceId: 17 };
+const unused = { ...farmer, id: 4, fullName: 'Unused Farmer', phone: '+639333333333', fishpenName: 'Empty Pen', deviceId: null, accountStatus: 'SUSPENDED' };
 const sampleAssignment = 'aaaaaaaa-1234-4321-1234-123456789abc';
 const monitor = { id: 1, credentialDeviceId: 14, name: 'Shared ESP32', chipId: '001122AABBCC', farmer: farmer.fullName,
   fishpen: farmer.fishpenName, assignmentId: sampleAssignment, status: 'Online', lastUpload: now, active: 1 };
@@ -16,6 +17,20 @@ const hardware = [monitor];
 const tilapia = { id: 5, name: 'Tilapia', optimal_ph_min: '6.5', optimal_ph_max: '8.5', optimal_temp_min: 25, optimal_temp_max: 32,
   optimal_do_min: 5, optimal_do_max: 8, optimal_turb_min: 25, optimal_turb_max: 100, max_ammonia: '0.0500' };
 const fish = [tilapia, { id: 'mamali', name: 'Mamali', validationPending: true }, { ...tilapia, id: 6, name: 'Bangus (Milkfish)' }];
+const past = new Date(Date.now() - 2 * 86_400_000).toISOString();
+const assessment = (source, status, assessedAt) => ({
+  source, status, assessedAt, sampledAt: source === 'sensor' ? assessedAt : null,
+  receivedAt: assessedAt, previousAssignment: false
+});
+const qualityReport = {
+  updatedAt: now, totals: { safe: 1, warning: 1, critical: 1, noData: 3 },
+  farmers: [
+    { id: 2, name: farmer.fullName, fishpenName: farmer.fishpenName, latest: assessment('sensor', 'warning', past), counts: { safe: 3, warning: 2, critical: 0 } },
+    { id: 3, name: other.fullName, fishpenName: other.fishpenName, latest: assessment('manual', 'critical', now), counts: { safe: 0, warning: 0, critical: 1 } },
+    { id: 4, name: unused.fullName, fishpenName: unused.fishpenName, latest: assessment('manual', 'safe', now), counts: { safe: 1, warning: 0, critical: 0 } },
+    ...[5, 6, 7].map(id => ({ id, name: 'No Data Farmer ' + id, fishpenName: null, latest: null, counts: { safe: 0, warning: 0, critical: 0 } }))
+  ]
+};
 
 async function main() {
   const browser = await chromium.launch({ channel: 'msedge', headless: true });
@@ -26,6 +41,7 @@ async function main() {
     page.setDefaultTimeout(10_000);
     const errors = [], reads = [], writes = [];
     let overviewUnavailable = true;
+    let unusedDeleted = false;
     page.on('pageerror', error => errors.push(error.message));
     await page.route('**/api/**', async route => {
       const request = route.request();
@@ -35,6 +51,14 @@ async function main() {
       else writes.push([method, url.pathname, request.postDataJSON()]);
       if (url.pathname === '/api/admin/overview' && overviewUnavailable) return route.fulfill({ status: 503, json: { message: 'Overview temporarily unavailable.' } });
       if (url.pathname === '/api/admin/users/2/status' && method === 'PATCH') farmer.accountStatus = request.postDataJSON().status;
+      if (method === 'DELETE' && url.pathname === '/api/admin/owners/2') {
+        return route.fulfill({ status: 409, json: { message: 'This account has linked history and was not deleted.' } });
+      }
+      if (method === 'DELETE' && url.pathname === '/api/admin/owners/4') {
+        assert.deepEqual(request.postDataJSON(), { confirm: 'DELETE' });
+        unusedDeleted = true;
+        return route.fulfill({ json: { deleted: true } });
+      }
       if (url.pathname === '/api/admin/thresholds/5' && method === 'PATCH') Object.assign(tilapia, request.postDataJSON());
       if (url.pathname === '/api/admin/hardware' && method === 'POST') {
         hardware.push({ ...monitor, id: 2, chipId: '001122AABBEE', name: 'Fixture spare', assignmentId: null, farmer: null, fishpen: null, lastUpload: null, status: 'Unassigned' });
@@ -48,7 +72,8 @@ async function main() {
         '/api/admin/overview': { counts: { farmers: 2, sensorReadings: 142, criticalToday: 7, smsToday: 3 },
           devices: { online: 1, offline: 1, never: 1, inactive: 1, assigned: 1 },
           activity: [{ id: 1, kind: 'upload', happened_at: now, label: 'Hidden fixture activity', device_id: 14 }] },
-        '/api/admin/users': { users: [farmer, other] },
+        '/api/admin/farmer-water-quality': qualityReport,
+        '/api/admin/users': { users: [farmer, other, ...(unusedDeleted ? [] : [unused])] },
         '/api/admin/owners': { temporaryPassword: 'fixture-password' },
         '/api/admin/hardware': { hardware },
         '/api/admin/hardware/fishpens': { fishpens: [{ ownerId: 2, farmer: farmer.fullName, fishpenId: 9, fishpen: farmer.fishpenName },
@@ -81,8 +106,6 @@ async function main() {
     if (screenshots) fs.mkdirSync(output, { recursive: true });
 
     await go('/admin/login');
-    await page.getByText('Recover admin access', { exact: true }).click();
-    await page.getByText(/contact the system operator/).waitFor();
     await page.getByLabel('Admin password').fill('fixture-only');
     await page.getByLabel('Admin PIN').fill('0000');
     await page.getByRole('button', { name: 'Login to Admin' }).click();
@@ -95,6 +118,23 @@ async function main() {
     assert.ok(await page.locator('.admin-sidebar-footer').getByRole('button', { name: 'Logout' }).isVisible());
     assert.deepEqual(await page.locator('.admin-metric dd').allTextContents(), ['2', '1', 'Online', farmer.fullName]);
     assert.equal(await page.getByText(/Sensor Readings|Critical Alerts Today|Recent Activity|SMS Accepted|Farmer Dashboard|Danger Zone/).count(), 0);
+    const quality = page.getByRole('region', { name: 'Farmer Water Quality Records', exact: true }).filter({ has: page.getByRole('heading', { name: 'Farmer Water Quality Records' }) });
+    const qualityTable = quality.getByRole('table', { name: 'Farmer water quality records' });
+    await qualityTable.getByText('Outdated', { exact: true }).waitFor();
+    assert.deepEqual(await quality.locator('.admin-quality-totals dd').allTextContents(), ['1', '1', '1', '3']);
+    assert.equal(await quality.getByRole('row').count(), 6);
+    await quality.getByRole('button', { name: 'Next page' }).click();
+    await qualityTable.getByText('No Data Farmer 7', { exact: true }).waitFor();
+    await quality.getByRole('combobox', { name: 'Filter by water quality status' }).selectOption('warning');
+    await qualityTable.getByText('Warning 2', { exact: true }).waitFor();
+    await quality.getByRole('combobox', { name: 'Filter by assessment source' }).selectOption('manual');
+    await quality.getByText('No farmer records match these filters.').waitFor();
+    await quality.getByRole('combobox', { name: 'Filter by water quality status' }).selectOption('all');
+    await quality.getByRole('searchbox', { name: 'Search farmer or fishpen' }).fill(other.fishpenName);
+    await qualityTable.getByText(other.fullName, { exact: true }).waitFor();
+    assert.equal(await qualityTable.getByText(farmer.fullName, { exact: true }).count(), 0);
+    await quality.getByRole('searchbox', { name: 'Search farmer or fishpen' }).clear();
+    await quality.getByRole('combobox', { name: 'Filter by assessment source' }).selectOption('all');
     await save('desktop-dashboard');
 
     await page.getByRole('button', { name: 'Create farmer account' }).click();
@@ -117,6 +157,7 @@ async function main() {
     await farmerTable.getByRole('button', { name: 'View', exact: true }).click();
     const farmerDetail = page.getByRole('dialog', { name: farmer.fullName });
     await farmerDetail.getByText(farmer.fishpenName).waitFor();
+    assert.equal(await farmerDetail.getByRole('button', { name: 'Delete account' }).count(), 0);
     assert.ok(!reads.includes('/api/admin/logs'));
     await farmerDetail.getByText('Farmer records', { exact: true }).click();
     const manual = farmerDetail.getByRole('table', { name: 'Manual analyses' });
@@ -134,6 +175,16 @@ async function main() {
     page.once('dialog', dialog => dialog.accept());
     await farmerDetail.getByRole('button', { name: 'Suspend account' }).click();
     await farmerDetail.getByRole('button', { name: 'Reactivate account' }).waitFor();
+    await farmerDetail.getByRole('button', { name: 'Delete account' }).click();
+    const confirmDelete = page.getByRole('dialog', { name: 'Delete farmer account' });
+    assert.ok(await confirmDelete.getByRole('button', { name: 'Delete permanently' }).isDisabled());
+    await confirmDelete.getByRole('button', { name: 'Cancel' }).click();
+    assert.equal(writes.filter(([method]) => method === 'DELETE').length, 0);
+    await farmerDetail.getByRole('button', { name: 'Delete account' }).click();
+    await confirmDelete.getByLabel('Type DELETE to confirm').fill('DELETE');
+    await confirmDelete.getByRole('button', { name: 'Delete permanently' }).click();
+    await confirmDelete.getByRole('alert').filter({ hasText: 'linked history' }).waitFor();
+    await confirmDelete.getByRole('button', { name: 'Cancel' }).click();
     page.once('dialog', dialog => dialog.accept());
     await farmerDetail.getByRole('button', { name: 'Reactivate account' }).click();
     await farmerDetail.getByRole('button', { name: 'Suspend account' }).waitFor();
@@ -142,6 +193,13 @@ async function main() {
     await page.getByRole('dialog', { name: 'Temporary password' }).getByText('fixture-reset').waitFor();
     await page.getByRole('button', { name: 'Hide password' }).click();
     assert.equal(writes.filter(([, path]) => path.endsWith('/device-key')).length, 0);
+    await page.getByRole('searchbox', { name: 'Search users' }).fill(unused.fullName);
+    await farmerTable.getByRole('button', { name: 'View', exact: true }).click();
+    await page.getByRole('dialog', { name: unused.fullName }).getByRole('button', { name: 'Delete account' }).click();
+    await confirmDelete.getByLabel('Type DELETE to confirm').fill('DELETE');
+    await confirmDelete.getByRole('button', { name: 'Delete permanently' }).click();
+    await page.getByRole('status').filter({ hasText: 'Farmer account deleted.' }).waitFor();
+    await page.getByText('No farmer accounts match.').waitFor();
 
     await open('Devices');
     const deviceTable = page.getByRole('table', { name: 'Registered hardware' });
@@ -230,7 +288,9 @@ async function main() {
       await page.waitForURL('**/admin/dashboard');
       await page.getByRole('heading', { name: 'Dashboard', exact: true }).waitFor();
     }
-    assert.ok(writes.every(([method]) => method !== 'DELETE'));
+    assert.deepEqual(writes.filter(([method]) => method === 'DELETE'), [
+      ['DELETE', '/api/admin/owners/2', { confirm: 'DELETE' }], ['DELETE', '/api/admin/owners/4', { confirm: 'DELETE' }]
+    ]);
     const pages = { Dashboard: 'dashboard', Users: 'users', Devices: 'devices', Thresholds: 'thresholds' };
     for (const width of [320, 390, 768, 1024, 1440]) {
       await page.setViewportSize({ width, height: 900 });
